@@ -14,7 +14,12 @@ export default function SavedScreen() {
     return (
       <View style={styles.emptyContainer}>
         <Text style={styles.title}>Saved</Text>
-        <Text style={styles.description}>Your saved dramas will appear here.</Text>
+        <View style={styles.emptyPanel}>
+          <Text style={styles.emptyTitle}>No saved dramas yet</Text>
+          <Text style={styles.description}>
+            Save a drama from the feed and it will appear here for quick access.
+          </Text>
+        </View>
       </View>
     );
   }
@@ -22,6 +27,7 @@ export default function SavedScreen() {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Saved</Text>
+      <Text style={styles.description}>Your saved Mandarin short dramas.</Text>
       <FlatList
         data={savedVideos}
         keyExtractor={(item) => item.id}
@@ -71,13 +77,14 @@ function SavedVideoCard({ video, likeCount, onUnsave }: SavedVideoCardProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 24,
+    paddingHorizontal: 20,
+    paddingTop: 24,
     backgroundColor: '#fff',
   },
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
-    padding: 24,
+    padding: 20,
     backgroundColor: '#fff',
   },
   title: {
@@ -91,16 +98,28 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     color: '#4b5563',
   },
+  emptyPanel: {
+    marginTop: 18,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    backgroundColor: '#f9fafb',
+  },
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+  },
   listContent: {
-    gap: 12,
-    paddingTop: 20,
-    paddingBottom: 24,
+    gap: 14,
+    paddingTop: 18,
+    paddingBottom: 96,
   },
   card: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     justifyContent: 'space-between',
-    gap: 16,
+    gap: 14,
     padding: 16,
     borderWidth: 1,
     borderColor: '#e5e7eb',
@@ -140,6 +159,7 @@ const styles = StyleSheet.create({
     color: '#6b7280',
   },
   unsaveButton: {
+    alignSelf: 'flex-start',
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 8,

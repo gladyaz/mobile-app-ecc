@@ -11,16 +11,18 @@ export default function ProfileScreen() {
   if (isAuthenticated && user) {
     return (
       <View style={styles.container}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{user.name.charAt(0)}</Text>
-        </View>
-        <Text style={styles.title}>{user.name}</Text>
-        <Text style={styles.username}>@{user.username}</Text>
-        <Text style={styles.email}>{user.email}</Text>
+        <View style={styles.profilePanel}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{user.name.charAt(0)}</Text>
+          </View>
+          <Text style={styles.title}>{user.name}</Text>
+          <Text style={styles.username}>@{user.username}</Text>
+          <Text style={styles.email}>{user.email}</Text>
 
-        <View style={styles.statsBox}>
-          <Text style={styles.statsValue}>{savedVideos.length}</Text>
-          <Text style={styles.statsLabel}>Saved videos</Text>
+          <View style={styles.statsBox}>
+            <Text style={styles.statsValue}>{savedVideos.length}</Text>
+            <Text style={styles.statsLabel}>Saved videos</Text>
+          </View>
         </View>
 
         <Pressable
@@ -35,16 +37,21 @@ export default function ProfileScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Guest User</Text>
-      <Text style={styles.description}>Login to view your profile and saved drama activity.</Text>
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => {
-          router.push('/login');
-        }}
-        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
-        <Text style={styles.buttonText}>Login</Text>
-      </Pressable>
+      <View style={styles.profilePanel}>
+        <View style={styles.guestAvatar}>
+          <Text style={styles.guestAvatarText}>G</Text>
+        </View>
+        <Text style={styles.title}>Guest User</Text>
+        <Text style={styles.description}>Login to view your profile and saved drama activity.</Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            router.push('/login');
+          }}
+          style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
+          <Text style={styles.buttonText}>Login</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -53,8 +60,16 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: 'center',
-    padding: 24,
+    padding: 20,
     backgroundColor: '#fff',
+  },
+  profilePanel: {
+    alignItems: 'flex-start',
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    backgroundColor: '#f9fafb',
   },
   title: {
     fontSize: 28,
@@ -66,6 +81,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 24,
     color: '#4b5563',
+  },
+  guestAvatar: {
+    width: 72,
+    height: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 18,
+    borderRadius: 36,
+    backgroundColor: '#111827',
+  },
+  guestAvatarText: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#fff',
   },
   avatar: {
     width: 84,
@@ -115,7 +144,6 @@ const styles = StyleSheet.create({
   },
   button: {
     alignItems: 'center',
-    alignSelf: 'flex-start',
     marginTop: 16,
     paddingHorizontal: 18,
     paddingVertical: 12,

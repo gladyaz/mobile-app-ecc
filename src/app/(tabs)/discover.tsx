@@ -1,24 +1,15 @@
 import { useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { mockDramaVideos } from '@/data/mock-drama-videos';
+import {
+  getCategories,
+  searchVideos,
+  type VideoCategoryFilter,
+} from '@/services/videos/video-service';
 import { useVideoInteractions } from '@/stores/video-interactions';
-import type { Video, VideoCategory } from '@/types/video';
+import type { Video } from '@/types/video';
 
-type CategoryFilter = 'All' | VideoCategory;
-
-const categoryFilters: readonly CategoryFilter[] = [
-  'All',
-  'Romance',
-  'Revenge',
-  'Family',
-  'CEO',
-  'Historical',
-];
-
-function normalizeSearchValue(value: string) {
-  return value.trim().toLowerCase();
-}
+const categoryFilters = getCategories();
 
 function formatLikeCount(likeCount: number) {
   if (likeCount >= 1000) {
@@ -28,36 +19,13 @@ function formatLikeCount(likeCount: number) {
   return `${likeCount}`;
 }
 
-function videoMatchesSearch(video: Video, normalizedQuery: string) {
-  if (!normalizedQuery) {
-    return true;
-  }
-
-  const searchableValues = [
-    video.title,
-    video.caption,
-    video.channelName,
-    video.indonesianSubtitlePreview,
-    video.category,
-  ];
-
-  return searchableValues.some((value) => value.toLowerCase().includes(normalizedQuery));
-}
-
 export default function DiscoverScreen() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<CategoryFilter>('All');
+  const [selectedCategory, setSelectedCategory] = useState<VideoCategoryFilter>('All');
   const { getLikeCount } = useVideoInteractions();
 
   const filteredVideos = useMemo(() => {
-    const normalizedQuery = normalizeSearchValue(searchQuery);
-
-    return mockDramaVideos.filter((video) => {
-      const matchesCategory = selectedCategory === 'All' || video.category === selectedCategory;
-      const matchesSearch = videoMatchesSearch(video, normalizedQuery);
-
-      return matchesCategory && matchesSearch;
-    });
+    return searchVideos(searchQuery, selectedCategory);
   }, [searchQuery, selectedCategory]);
 
   return (

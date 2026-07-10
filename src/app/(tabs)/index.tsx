@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 
 import { DramaFeedItem } from '@/components/drama-feed-item';
-import { mockDramaVideos } from '@/data/mock-drama-videos';
+import { useVideoFeed } from '@/features/feed/hooks/use-video-feed';
 import { useVideoInteractions } from '@/stores/video-interactions';
 import type { Video } from '@/types/video';
 
@@ -27,9 +27,10 @@ type WebShareNavigator = {
 
 export default function HomeScreen() {
   const { height } = useWindowDimensions();
+  const videos = useVideoFeed();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
   const [feedHeight, setFeedHeight] = useState(height);
-  const [activeVideoId, setActiveVideoId] = useState(mockDramaVideos[0]?.id);
+  const [activeVideoId, setActiveVideoId] = useState(videos[0]?.id);
   const viewabilityConfig = useRef<ViewabilityConfig>({
     itemVisiblePercentThreshold: 80,
   });
@@ -120,7 +121,7 @@ export default function HomeScreen() {
   return (
     <View style={styles.container} onLayout={handleLayout}>
       <FlatList
-        data={mockDramaVideos}
+        data={videos}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         extraData={activeVideoId}

@@ -1,11 +1,14 @@
+import { useMemo } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatLikeCount } from '@/components/drama-feed-item';
+import { getSavedVideos } from '@/services/videos/video-service';
 import { useVideoInteractions } from '@/stores/video-interactions';
 import type { Video } from '@/types/video';
 
 export default function SavedScreen() {
-  const { getLikeCount, savedVideos, toggleSave } = useVideoInteractions();
+  const { getLikeCount, savedVideoIds, toggleSave } = useVideoInteractions();
+  const savedVideos = useMemo(() => getSavedVideos(savedVideoIds), [savedVideoIds]);
 
   if (savedVideos.length === 0) {
     return (

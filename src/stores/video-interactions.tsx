@@ -1,6 +1,6 @@
 import { PropsWithChildren, createContext, useCallback, useContext, useMemo, useState } from 'react';
 
-import { mockDramaVideos } from '@/data/mock-drama-videos';
+import { getSavedVideos, getVideoFeed } from '@/services/videos/video-service';
 import type { Video } from '@/types/video';
 
 type VideoInteraction = {
@@ -11,6 +11,7 @@ type VideoInteraction = {
 type VideoInteractionsContextValue = {
   readonly getInteraction: (videoId: string) => VideoInteraction;
   readonly getLikeCount: (video: Video) => number;
+  readonly savedVideoIds: readonly string[];
   readonly savedVideos: readonly Video[];
   readonly toggleLike: (videoId: string) => void;
   readonly toggleSave: (videoId: string) => void;
@@ -24,7 +25,7 @@ const defaultInteraction: VideoInteraction = {
 const VideoInteractionsContext = createContext<VideoInteractionsContextValue | null>(null);
 
 function createInitialInteractions() {
-  return mockDramaVideos.reduce<Record<string, VideoInteraction>>(
+  return getVideoFeed().reduce<Record<string, VideoInteraction>>(
     (nextInteractions, video) => ({
       ...nextInteractions,
       [video.id]: {
@@ -49,9 +50,17 @@ export function VideoInteractionsProvider({ children }: PropsWithChildren) {
     [getInteraction]
   );
 
+  const savedVideoIds = useMemo(
+    () =>
+      Object.entries(interactions)
+        .filter(([, interaction]) => interaction.isSaved)
+        .map(([videoId]) => videoId),
+    [interactions]
+  );
+
   const savedVideos = useMemo(
-    () => mockDramaVideos.filter((video) => getInteraction(video.id).isSaved),
-    [getInteraction]
+    () => getSavedVideos(savedVideoIds),
+    [savedVideoIds]
   );
 
   const toggleLike = useCallback((videoId: string) => {
@@ -86,11 +95,12 @@ export function VideoInteractionsProvider({ children }: PropsWithChildren) {
     () => ({
       getInteraction,
       getLikeCount,
+      savedVideoIds,
       savedVideos,
       toggleLike,
       toggleSave,
     }),
-    [getInteraction, getLikeCount, savedVideos, toggleLike, toggleSave]
+    [getInteraction, getLikeCount, savedVideoIds, savedVideos, toggleLike, toggleSave]
   );
 
   return (

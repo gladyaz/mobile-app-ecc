@@ -147,7 +147,8 @@ function DiscoverResultCard({ video, likeCount }: DiscoverResultCardProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 24,
+    paddingHorizontal: 20,
+    paddingTop: 24,
     backgroundColor: '#fff',
   },
   title: {
@@ -156,7 +157,8 @@ const styles = StyleSheet.create({
     color: '#111827',
   },
   searchInput: {
-    marginTop: 20,
+    marginTop: 18,
+    marginBottom: 18,
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderWidth: 1,
@@ -167,14 +169,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   categoryList: {
+    alignItems: 'center',
     gap: 8,
-    paddingVertical: 4,
-    paddingRight: 24,
+    paddingVertical: 6,
+    paddingRight: 40,
   },
   categoryScroller: {
     flexGrow: 0,
-    marginTop: 16,
-    marginBottom: 18,
+    minHeight: 48,
+    marginBottom: 20,
   },
   categoryChip: {
     paddingHorizontal: 14,
@@ -197,9 +200,8 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   resultList: {
-    gap: 12,
-    paddingTop: 2,
-    paddingBottom: 24,
+    gap: 14,
+    paddingBottom: 120,
   },
   resultCard: {
     padding: 16,
@@ -210,6 +212,7 @@ const styles = StyleSheet.create({
   },
   resultMetaRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,

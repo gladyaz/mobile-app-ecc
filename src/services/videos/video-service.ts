@@ -33,12 +33,14 @@ function videoMatchesSearch(video: Video, normalizedQuery: string) {
 }
 
 export function getVideoFeed(): readonly Video[] {
-  // Future backend integration will fetch the personalized feed through the API client.
+  // Future backend integration will fetch playbackUrl values from the backend/CDN.
+  // storageKey remains backend-only and should never be read directly by the mobile app.
   return mockDramaVideos;
 }
 
 export function getVideoById(id: string): Video | undefined {
   // Future backend integration will fetch a single video by id from the API.
+  // The response should include a playable playbackUrl or a signed media URL.
   return mockDramaVideos.find((video) => video.id === id);
 }
 

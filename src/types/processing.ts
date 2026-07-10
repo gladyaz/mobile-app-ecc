@@ -6,6 +6,10 @@ export type ProcessingJob = {
   readonly title: string;
   readonly episodeNumber: number;
   readonly fileName: string;
+  readonly rawVideoPath: string;
+  readonly processedVideoPath: string | null;
+  readonly subtitlePath: string | null;
+  readonly thumbnailPath: string | null;
   readonly status: ProcessingStatus;
   readonly progress: number;
   readonly subtitleLanguage: string;

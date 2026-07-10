@@ -38,7 +38,7 @@ export function DramaFeedItem({
   onToggleSave,
 }: DramaFeedItemProps) {
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
-  const player = useVideoPlayer(video.videoUrl, (nextPlayer) => {
+  const player = useVideoPlayer(video.playbackUrl, (nextPlayer) => {
     nextPlayer.loop = true;
     nextPlayer.muted = true;
   });

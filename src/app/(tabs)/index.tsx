@@ -51,7 +51,7 @@ export default function HomeScreen() {
   }, []);
 
   const handleShare = useCallback(async (video: Video) => {
-    const message = `${video.title} - Episode ${video.episodeNumber}\n${video.caption}\n${video.videoUrl}`;
+    const message = `${video.title} - Episode ${video.episodeNumber}\n${video.caption}\n${video.playbackUrl}`;
 
     try {
       if (Platform.OS === 'web') {
@@ -61,7 +61,7 @@ export default function HomeScreen() {
           await webNavigator.share({
             title: video.title,
             text: message,
-            url: video.videoUrl,
+            url: video.playbackUrl,
           });
           return;
         }
@@ -80,7 +80,7 @@ export default function HomeScreen() {
         {
           title: video.title,
           message,
-          url: video.videoUrl,
+          url: video.playbackUrl,
         },
         {
           dialogTitle: video.title,

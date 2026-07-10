@@ -77,6 +77,7 @@ export default function DiscoverScreen() {
       <ScrollView
         horizontal
         contentContainerStyle={styles.categoryList}
+        style={styles.categoryScroller}
         showsHorizontalScrollIndicator={false}>
         {categoryFilters.map((category) => {
           const isSelected = selectedCategory === category;
@@ -167,8 +168,13 @@ const styles = StyleSheet.create({
   },
   categoryList: {
     gap: 8,
-    paddingTop: 16,
-    paddingBottom: 16,
+    paddingVertical: 4,
+    paddingRight: 24,
+  },
+  categoryScroller: {
+    flexGrow: 0,
+    marginTop: 16,
+    marginBottom: 18,
   },
   categoryChip: {
     paddingHorizontal: 14,
@@ -192,6 +198,7 @@ const styles = StyleSheet.create({
   },
   resultList: {
     gap: 12,
+    paddingTop: 2,
     paddingBottom: 24,
   },
   resultCard: {

@@ -76,6 +76,7 @@ export function DramaFeedItem({
         />
         <SubtitleOverlay subtitles={video.indonesianSubtitles} />
       </View>
+      <View pointerEvents="none" style={styles.bottomScrim} />
 
       <Pressable
         accessibilityRole="button"
@@ -86,9 +87,11 @@ export function DramaFeedItem({
 
       <View style={styles.content}>
         <View style={styles.details}>
-          <Text style={styles.episode}>Episode {video.episodeNumber}</Text>
+          <View style={styles.metaRow}>
+            <Text style={styles.episode}>Episode {video.episodeNumber}</Text>
+            <Text style={styles.channel}>{video.channelName}</Text>
+          </View>
           <Text style={styles.title}>{video.title}</Text>
-          <Text style={styles.channel}>{video.channelName}</Text>
           <Text style={styles.caption}>{video.caption}</Text>
         </View>
 
@@ -144,16 +147,24 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
   },
+  bottomScrim: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    left: 0,
+    height: 260,
+    backgroundColor: 'rgba(0, 0, 0, 0.38)',
+  },
   playPauseButton: {
     position: 'absolute',
-    top: 56,
-    right: 20,
-    minWidth: 72,
+    top: 54,
+    right: 18,
+    minWidth: 82,
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderRadius: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
   },
   playPauseText: {
     fontSize: 14,
@@ -168,28 +179,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
-    gap: 16,
-    paddingHorizontal: 20,
-    paddingBottom: 24,
+    gap: 18,
+    paddingHorizontal: 18,
+    paddingBottom: 28,
   },
   details: {
     flex: 1,
+    paddingRight: 4,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
   },
   episode: {
-    marginBottom: 6,
     fontSize: 14,
     fontWeight: '700',
     color: '#fecdd3',
   },
   title: {
+    marginTop: 8,
     fontSize: 22,
     lineHeight: 28,
     fontWeight: '800',
     color: '#fff',
   },
   channel: {
-    marginTop: 6,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     color: '#f3f4f6',
   },
@@ -201,15 +218,17 @@ const styles = StyleSheet.create({
   },
   actions: {
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
   actionButton: {
-    minWidth: 58,
+    minWidth: 66,
+    minHeight: 54,
     alignItems: 'center',
-    paddingHorizontal: 10,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
   },
   actionButtonActive: {
     backgroundColor: 'rgba(209, 31, 63, 0.72)',

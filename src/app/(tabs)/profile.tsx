@@ -27,6 +27,15 @@ export default function ProfileScreen() {
 
         <Pressable
           accessibilityRole="button"
+          onPress={() => {
+            router.push('../processing');
+          }}
+          style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
+          <Text style={styles.buttonText}>Processing History</Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
           onPress={logout}
           style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}>
           <Text style={styles.secondaryButtonText}>Logout</Text>

@@ -27,8 +27,13 @@ Auth model assumption: authenticated endpoints use `Authorization: Bearer <acces
   "channelName": "Mandarin Drama ID",
   "category": "CEO",
   "caption": "Pertemuan pertama yang mengubah hidup Lin Yue.",
-  "videoUrl": "https://cdn.example.com/videos/video_001.mp4",
+  "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
+  "playbackUrl": "https://media.example.com/videos/video_001.mp4",
   "thumbnailUrl": "https://cdn.example.com/videos/video_001.jpg",
+  "subtitleTrackUrl": "https://cdn.example.com/subtitles/video_001-id.srt",
+  "sourceLanguage": "Mandarin",
+  "subtitleLanguage": "Indonesian",
+  "processingStatus": "completed",
   "durationSeconds": 72,
   "mandarinSubtitlePreview": "Original Mandarin subtitle preview",
   "indonesianSubtitlePreview": "Sebenarnya apa yang kamu inginkan?",
@@ -40,6 +45,8 @@ Auth model assumption: authenticated endpoints use `Authorization: Bearer <acces
   "updatedAt": "2026-07-10T00:00:00.000Z"
 }
 ```
+
+The mobile app uses `playbackUrl` for video playback. `storageKey` and raw internal storage paths are backend-only values and must not be treated as mobile-readable file paths.
 
 ### Subtitle
 
@@ -216,7 +223,13 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
         "episodeNumber": 1,
         "channelName": "Mandarin Drama ID",
         "category": "CEO",
-        "videoUrl": "https://cdn.example.com/videos/video_001.mp4",
+        "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
+        "playbackUrl": "https://media.example.com/videos/video_001.mp4",
+        "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
+        "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
+        "sourceLanguage": "Mandarin",
+        "subtitleLanguage": "Indonesian",
+        "processingStatus": "completed",
         "indonesianSubtitlePreview": "Sebenarnya apa yang kamu inginkan?",
         "likeCount": 12800,
         "isLiked": false,
@@ -233,7 +246,7 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
 
 - Mobile screen: Home
 - MVP priority: P0
-- Backend notes: Optimize for paginated mobile playback and CDN-hosted video URLs.
+- Backend notes: Optimize for paginated mobile playback. Backend can serve processed videos through a media/static endpoint first, then later return CDN or signed URLs in `playbackUrl`.
 
 ### GET /videos/:id
 
@@ -261,7 +274,13 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
       "channelName": "Mandarin Drama ID",
       "category": "CEO",
       "caption": "Pertemuan pertama yang mengubah hidup Lin Yue.",
-      "videoUrl": "https://cdn.example.com/videos/video_001.mp4",
+      "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
+      "playbackUrl": "https://media.example.com/videos/video_001.mp4",
+      "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
+      "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
+      "sourceLanguage": "Mandarin",
+      "subtitleLanguage": "Indonesian",
+      "processingStatus": "completed",
       "likeCount": 12800,
       "isLiked": false,
       "isSaved": false
@@ -274,7 +293,7 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
 
 - Mobile screen: Future video detail, Home
 - MVP priority: P1
-- Backend notes: Return 404 with the standard error envelope when the video does not exist.
+- Backend notes: Return 404 with the standard error envelope when the video does not exist. `storageKey` should identify internal storage records, while `playbackUrl` should be the only field used for mobile playback.
 
 ### POST /videos/:id/view
 
@@ -539,6 +558,13 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
         "episodeNumber": 1,
         "channelName": "Mandarin Drama ID",
         "category": "CEO",
+        "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
+        "playbackUrl": "https://media.example.com/videos/video_001.mp4",
+        "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
+        "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
+        "sourceLanguage": "Mandarin",
+        "subtitleLanguage": "Indonesian",
+        "processingStatus": "completed",
         "indonesianSubtitlePreview": "Sebenarnya apa yang kamu inginkan?",
         "likeCount": 12800,
         "isSaved": true
@@ -584,6 +610,13 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
         "episodeNumber": 1,
         "channelName": "Mandarin Drama ID",
         "category": "CEO",
+        "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
+        "playbackUrl": "https://media.example.com/videos/video_001.mp4",
+        "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
+        "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
+        "sourceLanguage": "Mandarin",
+        "subtitleLanguage": "Indonesian",
+        "processingStatus": "completed",
         "indonesianSubtitlePreview": "Sebenarnya apa yang kamu inginkan?",
         "likeCount": 12800
       }
@@ -650,7 +683,13 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
         "title": "Kontrak Cinta CEO Dingin",
         "episodeNumber": 1,
         "category": "CEO",
-        "videoUrl": "https://cdn.example.com/videos/video_001.mp4"
+        "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
+        "playbackUrl": "https://media.example.com/videos/video_001.mp4",
+        "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
+        "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
+        "sourceLanguage": "Mandarin",
+        "subtitleLanguage": "Indonesian",
+        "processingStatus": "completed"
       }
     ]
   },
@@ -663,7 +702,7 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
 
 - Mobile screen: Discover
 - MVP priority: P1
-- Backend notes: This may share implementation with `/videos/search`.
+- Backend notes: This may share implementation with `/videos/search`. Mobile should use `playbackUrl`; internal storage paths remain backend-only.
 
 ### GET /users/me
 

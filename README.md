@@ -1,56 +1,82 @@
-# Welcome to your Expo app 👋
+# AI Short Drama Mobile App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Mobile app for Mandarin/Chinese short drama videos with Indonesian subtitles. The current app is an Expo React Native prototype using mock data and local state, with a service layer prepared for future backend integration.
 
-## Get started
+## Tech Stack
 
-1. Install dependencies
+- React Native
+- Expo
+- Expo Router
+- TypeScript
+- `expo-video`
+- Local state/context
+- Mock data/service layer
 
-   ```bash
-   npm install
-   ```
+## Current Features
 
-2. Start the app
+- Expo Router navigation with Home, Discover, Saved, and Profile tabs.
+- Login screen with dummy local auth state.
+- Profile guest/login/logout flow.
+- Vertical short-drama feed on Home.
+- Real video playback with `expo-video`.
+- Active feed item plays while inactive items pause.
+- Manual play/pause per feed item.
+- Indonesian subtitle overlay on video.
+- Local like, save, and share interactions.
+- Saved tab with saved videos and empty state.
+- Discover tab with local search, category chips, and result cards.
+- Video service layer that currently reads mock data.
 
-   ```bash
-   npx expo start
-   ```
+## How To Run
 
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+Install dependencies:
 
 ```bash
-npm run reset-project
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Start Expo with a clean cache:
 
-### Other setup steps
+```bash
+npx expo start -c
+```
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Then use the Expo terminal shortcuts:
 
-## Learn more
+- Press `i` for iOS Simulator.
+- Press `w` for Web.
 
-To learn more about developing your project with Expo, look at the following resources:
+## Folder Structure
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+- `src/app` - Expo Router routes, layouts, tabs, and screens.
+- `src/components` - Reusable UI components such as feed items and subtitle overlays.
+- `src/data` - Mock drama video data used by the service layer.
+- `src/features` - Feature-specific hooks and future feature modules.
+- `src/services` - API client placeholder and domain services for future backend integration.
+- `src/stores` - Local React context stores for auth and video interactions.
+- `src/types` - Shared TypeScript models for videos and subtitles.
+- `docs` - Project documentation, including the mobile API contract.
 
-## Join the community
+## Current Limitations
 
-Join our community of developers creating universal apps.
+- Backend is not connected yet.
+- Auth is dummy/local and not persisted.
+- Video data is mock data.
+- Like/save state is local only.
+- Subtitle overlay uses mock Indonesian subtitle text.
+- Video URLs are sample public MP4 URLs.
+- No real upload, processing, or CDN integration exists yet.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## API Contract
+
+Future backend endpoint contracts are documented in [docs/api-contract.md](docs/api-contract.md). The app currently uses `src/services/videos/video-service.ts` as the boundary between screens and mock data.
+
+## Next Planned Tasks
+
+- Real backend integration.
+- Real auth/JWT support.
+- Real subtitle API.
+- Video feed API.
+- Processing history.
+- Uploaded videos list.
+- Production video storage/CDN.

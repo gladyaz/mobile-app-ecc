@@ -71,6 +71,10 @@ Then use the Expo terminal shortcuts:
 
 Future backend endpoint contracts are documented in [docs/api-contract.md](docs/api-contract.md). The app currently uses `src/services/videos/video-service.ts` as the boundary between screens and mock data.
 
+## Internal Storage
+
+Real company videos should live in backend/internal storage, not inside this mobile app project. The mobile app should receive backend-provided `playbackUrl`, `thumbnailUrl`, and `subtitleTrackUrl` values. See [docs/internal-storage.md](docs/internal-storage.md).
+
 ## Next Planned Tasks
 
 - Real backend integration.

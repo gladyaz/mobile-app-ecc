@@ -1,3 +1,5 @@
+import type { Subtitle } from '@/types/subtitle';
+
 export type Video = {
   readonly id: string;
   readonly videoUrl: string;
@@ -7,6 +9,7 @@ export type Video = {
   readonly caption: string;
   readonly mandarinSubtitlePreview: string;
   readonly indonesianSubtitlePreview: string;
+  readonly indonesianSubtitles: readonly Subtitle[];
   readonly likeCount: number;
   readonly isSaved: boolean;
 };

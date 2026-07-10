@@ -3,6 +3,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { SubtitleOverlay } from '@/components/subtitle-overlay';
 import type { Video } from '@/types/video';
 
 type DramaFeedItemProps = {
@@ -57,10 +58,7 @@ export function DramaFeedItem({ video, height, isActive }: DramaFeedItemProps) {
           playsInline
           style={styles.video}
         />
-        <View style={styles.subtitleBox}>
-          <Text style={styles.mandarinSubtitle}>{video.mandarinSubtitlePreview}</Text>
-          <Text style={styles.indonesianSubtitle}>{video.indonesianSubtitlePreview}</Text>
-        </View>
+        <SubtitleOverlay subtitles={video.indonesianSubtitles} />
       </View>
 
       <Pressable
@@ -119,17 +117,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
   },
-  subtitleBox: {
-    position: 'absolute',
-    right: 24,
-    bottom: 132,
-    left: 24,
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
-  },
   playPauseButton: {
     position: 'absolute',
     top: 56,
@@ -145,20 +132,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#fff',
-  },
-  mandarinSubtitle: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: '#e5e7eb',
-    textAlign: 'center',
-  },
-  indonesianSubtitle: {
-    marginTop: 4,
-    fontSize: 18,
-    lineHeight: 26,
-    fontWeight: '700',
-    color: '#fff',
-    textAlign: 'center',
   },
   content: {
     position: 'absolute',

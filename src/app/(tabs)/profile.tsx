@@ -1,4 +1,4 @@
-import { Link } from 'expo-router';
+import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useAuth } from '@/stores/auth';
@@ -37,11 +37,14 @@ export default function ProfileScreen() {
     <View style={styles.container}>
       <Text style={styles.title}>Guest User</Text>
       <Text style={styles.description}>Login to view your profile and saved drama activity.</Text>
-      <Link href="/login" asChild>
-        <Pressable style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
-          <Text style={styles.buttonText}>Login</Text>
-        </Pressable>
-      </Link>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => {
+          router.push('/login');
+        }}
+        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
+        <Text style={styles.buttonText}>Login</Text>
+      </Pressable>
     </View>
   );
 }

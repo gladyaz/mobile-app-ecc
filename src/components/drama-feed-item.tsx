@@ -10,9 +10,15 @@ type DramaFeedItemProps = {
   readonly video: Video;
   readonly height: number;
   readonly isActive: boolean;
+  readonly isLiked: boolean;
+  readonly isSaved: boolean;
+  readonly likeCount: number;
+  readonly onShare: () => void;
+  readonly onToggleLike: () => void;
+  readonly onToggleSave: () => void;
 };
 
-function formatLikeCount(likeCount: number) {
+export function formatLikeCount(likeCount: number) {
   if (likeCount >= 1000) {
     return `${(likeCount / 1000).toFixed(1)}K`;
   }
@@ -20,7 +26,17 @@ function formatLikeCount(likeCount: number) {
   return `${likeCount}`;
 }
 
-export function DramaFeedItem({ video, height, isActive }: DramaFeedItemProps) {
+export function DramaFeedItem({
+  video,
+  height,
+  isActive,
+  isLiked,
+  isSaved,
+  likeCount,
+  onShare,
+  onToggleLike,
+  onToggleSave,
+}: DramaFeedItemProps) {
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const player = useVideoPlayer(video.videoUrl, (nextPlayer) => {
     nextPlayer.loop = true;
@@ -79,17 +95,28 @@ export function DramaFeedItem({ video, height, isActive }: DramaFeedItemProps) {
         <View style={styles.actions}>
           <Pressable
             accessibilityRole="button"
-            style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
-            <Text style={styles.actionLabel}>Like</Text>
-            <Text style={styles.actionValue}>{formatLikeCount(video.likeCount)}</Text>
+            onPress={onToggleLike}
+            style={({ pressed }) => [
+              styles.actionButton,
+              isLiked && styles.actionButtonActive,
+              pressed && styles.buttonPressed,
+            ]}>
+            <Text style={styles.actionLabel}>{isLiked ? 'Liked' : 'Like'}</Text>
+            <Text style={styles.actionValue}>{formatLikeCount(likeCount)}</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
-            style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
-            <Text style={styles.actionLabel}>{video.isSaved ? 'Saved' : 'Save'}</Text>
+            onPress={onToggleSave}
+            style={({ pressed }) => [
+              styles.actionButton,
+              isSaved && styles.actionButtonActive,
+              pressed && styles.buttonPressed,
+            ]}>
+            <Text style={styles.actionLabel}>{isSaved ? 'Saved' : 'Save'}</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
+            onPress={onShare}
             style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
             <Text style={styles.actionLabel}>Share</Text>
           </Pressable>
@@ -183,6 +210,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 8,
     backgroundColor: 'rgba(255, 255, 255, 0.18)',
+  },
+  actionButtonActive: {
+    backgroundColor: 'rgba(209, 31, 63, 0.72)',
   },
   actionLabel: {
     fontSize: 13,

@@ -25,7 +25,7 @@ export const mockDramaVideos: readonly Video[] = [
       },
     ],
     likeCount: 12800,
-    isSaved: true,
+    isSaved: false,
   },
   {
     id: 'drama-episode-2',
@@ -103,7 +103,7 @@ export const mockDramaVideos: readonly Video[] = [
       },
     ],
     likeCount: 15100,
-    isSaved: true,
+    isSaved: false,
   },
   {
     id: 'drama-episode-5',

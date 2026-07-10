@@ -3,6 +3,7 @@ import type { Video } from '@/types/video';
 export const mockDramaVideos: readonly Video[] = [
   {
     id: 'drama-episode-1',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
     title: 'Kontrak Cinta CEO Dingin',
     episodeNumber: 1,
     channelName: 'Mandarin Drama ID',
@@ -14,6 +15,7 @@ export const mockDramaVideos: readonly Video[] = [
   },
   {
     id: 'drama-episode-2',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
     title: 'Rahasia Putri yang Hilang',
     episodeNumber: 2,
     channelName: 'CDrama Mini',
@@ -25,6 +27,7 @@ export const mockDramaVideos: readonly Video[] = [
   },
   {
     id: 'drama-episode-3',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
     title: 'Balas Dendam Sang Pewaris',
     episodeNumber: 3,
     channelName: 'Short Drama Mandarin',
@@ -36,6 +39,7 @@ export const mockDramaVideos: readonly Video[] = [
   },
   {
     id: 'drama-episode-4',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
     title: 'Pernikahan Kilat Nona Shen',
     episodeNumber: 4,
     channelName: 'Drama Harian CN',
@@ -47,6 +51,7 @@ export const mockDramaVideos: readonly Video[] = [
   },
   {
     id: 'drama-episode-5',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
     title: 'Cinta di Balik Topeng',
     episodeNumber: 5,
     channelName: 'Mandarin Hits',

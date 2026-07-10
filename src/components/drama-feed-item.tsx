@@ -1,3 +1,6 @@
+import { useEvent } from 'expo';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Video } from '@/types/video';
@@ -5,6 +8,7 @@ import type { Video } from '@/types/video';
 type DramaFeedItemProps = {
   readonly video: Video;
   readonly height: number;
+  readonly isActive: boolean;
 };
 
 function formatLikeCount(likeCount: number) {
@@ -15,17 +19,56 @@ function formatLikeCount(likeCount: number) {
   return `${likeCount}`;
 }
 
-export function DramaFeedItem({ video, height }: DramaFeedItemProps) {
+export function DramaFeedItem({ video, height, isActive }: DramaFeedItemProps) {
+  const [isManuallyPaused, setIsManuallyPaused] = useState(false);
+  const player = useVideoPlayer(video.videoUrl, (nextPlayer) => {
+    nextPlayer.loop = true;
+    nextPlayer.muted = true;
+  });
+  const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
+
+  useEffect(() => {
+    if (isActive && !isManuallyPaused) {
+      player.play();
+      return;
+    }
+
+    player.pause();
+  }, [isActive, isManuallyPaused, player]);
+
+  const handlePlayPause = useCallback(() => {
+    if (isPlaying) {
+      player.pause();
+      setIsManuallyPaused(true);
+      return;
+    }
+
+    player.play();
+    setIsManuallyPaused(false);
+  }, [isPlaying, player]);
+
   return (
     <View style={[styles.container, { height }]}>
-      <View style={styles.videoPlaceholder}>
-        <View style={styles.placeholderGlow} />
-        <Text style={styles.placeholderText}>Video Placeholder</Text>
+      <View style={styles.videoLayer}>
+        <VideoView
+          contentFit="cover"
+          nativeControls={false}
+          player={player}
+          playsInline
+          style={styles.video}
+        />
         <View style={styles.subtitleBox}>
           <Text style={styles.mandarinSubtitle}>{video.mandarinSubtitlePreview}</Text>
           <Text style={styles.indonesianSubtitle}>{video.indonesianSubtitlePreview}</Text>
         </View>
       </View>
+
+      <Pressable
+        accessibilityRole="button"
+        onPress={handlePlayPause}
+        style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
+        <Text style={styles.playPauseText}>{isPlaying ? 'Pause' : 'Play'}</Text>
+      </Pressable>
 
       <View style={styles.content}>
         <View style={styles.details}>
@@ -63,25 +106,18 @@ const styles = StyleSheet.create({
     position: 'relative',
     backgroundColor: '#111827',
   },
-  videoPlaceholder: {
+  videoLayer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
-    backgroundColor: '#1f2937',
+    backgroundColor: '#000',
   },
-  placeholderGlow: {
+  video: {
     position: 'absolute',
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: '#d11f3f',
-    opacity: 0.22,
-  },
-  placeholderText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#f9fafb',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
   },
   subtitleBox: {
     position: 'absolute',
@@ -93,6 +129,22 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 8,
     backgroundColor: 'rgba(0, 0, 0, 0.55)',
+  },
+  playPauseButton: {
+    position: 'absolute',
+    top: 56,
+    right: 20,
+    minWidth: 72,
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  playPauseText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
   },
   mandarinSubtitle: {
     fontSize: 15,

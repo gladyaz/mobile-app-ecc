@@ -1,5 +1,6 @@
 export type Video = {
   readonly id: string;
+  readonly videoUrl: string;
   readonly title: string;
   readonly episodeNumber: number;
   readonly channelName: string;

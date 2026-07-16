@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -25,23 +25,26 @@ type WebShareNavigator = {
   readonly share?: (data: { readonly title?: string; readonly text?: string; readonly url?: string }) => Promise<void>;
 };
 
+const VIEWABILITY_CONFIG: ViewabilityConfig = {
+  itemVisiblePercentThreshold: 80,
+};
+
 export default function HomeScreen() {
   const { height } = useWindowDimensions();
   const videos = useVideoFeed();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
   const [feedHeight, setFeedHeight] = useState(height);
   const [activeVideoId, setActiveVideoId] = useState(videos[0]?.id);
-  const viewabilityConfig = useRef<ViewabilityConfig>({
-    itemVisiblePercentThreshold: 80,
-  });
-  const onViewableItemsChanged = useRef(
+
+  const handleViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken<Video>[] }) => {
       const activeItem = viewableItems.find((viewableItem) => viewableItem.isViewable);
 
       if (activeItem?.item) {
         setActiveVideoId(activeItem.item.id);
       }
-    }
+    },
+    []
   );
 
   const handleLayout = useCallback((event: LayoutChangeEvent) => {
@@ -130,8 +133,8 @@ export default function HomeScreen() {
         snapToInterval={feedHeight}
         decelerationRate="fast"
         showsVerticalScrollIndicator={false}
-        viewabilityConfig={viewabilityConfig.current}
-        onViewableItemsChanged={onViewableItemsChanged.current}
+        viewabilityConfig={VIEWABILITY_CONFIG}
+        onViewableItemsChanged={handleViewableItemsChanged}
         getItemLayout={(_data, index) => ({
           length: feedHeight,
           offset: feedHeight * index,

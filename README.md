@@ -25,7 +25,9 @@ Mobile app for Mandarin/Chinese short drama videos with Indonesian subtitles. Th
 - Local like, save, and share interactions.
 - Saved tab with saved videos and empty state.
 - Discover tab with local search, category chips, and result cards.
-- Video service layer that currently reads mock data.
+- Processing history screen with per-video processing status, linked from Profile.
+- Video model aligned with backend playback fields (`playbackUrl`, `thumbnailUrl`, `subtitleTrackUrl`, `storageKey`).
+- Video and processing service layers that currently read mock data.
 
 ## How To Run
 
@@ -81,6 +83,5 @@ Real company videos should live in backend/internal storage, not inside this mob
 - Real auth/JWT support.
 - Real subtitle API.
 - Video feed API.
-- Processing history.
 - Uploaded videos list.
 - Production video storage/CDN.

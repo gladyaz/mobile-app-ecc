@@ -1,12 +1,15 @@
 import { useCallback, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
   LayoutChangeEvent,
   ListRenderItem,
   Platform,
+  Pressable,
   Share,
   StyleSheet,
+  Text,
   useWindowDimensions,
   View,
   ViewToken,
@@ -31,7 +34,7 @@ const VIEWABILITY_CONFIG: ViewabilityConfig = {
 
 export default function HomeScreen() {
   const { height } = useWindowDimensions();
-  const { videos } = useVideoCatalog();
+  const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
   const [feedHeight, setFeedHeight] = useState(height);
   const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
@@ -130,6 +133,37 @@ export default function HomeScreen() {
     ]
   );
 
+  if (isLoading && videos.length === 0) {
+    return (
+      <View style={[styles.container, styles.centerState]}>
+        <ActivityIndicator color="#fff" size="large" />
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={[styles.container, styles.centerState]}>
+        <Text style={styles.stateTitle}>Video gagal dimuat.</Text>
+        {__DEV__ ? <Text style={styles.stateDetail}>{error.message}</Text> : null}
+        <Pressable
+          accessibilityRole="button"
+          onPress={refresh}
+          style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}>
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  if (videos.length === 0) {
+    return (
+      <View style={[styles.container, styles.centerState]}>
+        <Text style={styles.stateTitle}>Belum ada video tersedia.</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container} onLayout={handleLayout}>
       <FlatList
@@ -158,5 +192,38 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#111827',
+  },
+  centerState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 32,
+  },
+  stateTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#fff',
+    textAlign: 'center',
+  },
+  stateDetail: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#9ca3af',
+    textAlign: 'center',
+  },
+  retryButton: {
+    marginTop: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: '#d11f3f',
+  },
+  retryButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  buttonPressed: {
+    opacity: 0.7,
   },
 });

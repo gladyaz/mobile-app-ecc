@@ -3,7 +3,6 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { SubtitleOverlay } from '@/components/subtitle-overlay';
 import type { Video } from '@/types/video';
 
 type DramaFeedItemProps = {
@@ -74,7 +73,6 @@ export function DramaFeedItem({
           playsInline
           style={styles.video}
         />
-        <SubtitleOverlay subtitles={video.indonesianSubtitles} />
       </View>
       <View pointerEvents="none" style={styles.bottomScrim} />
 

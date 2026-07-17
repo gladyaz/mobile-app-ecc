@@ -6,7 +6,7 @@ import { useVideoInteractions } from '@/stores/video-interactions';
 
 export default function ProfileScreen() {
   const { isAuthenticated, logout, user } = useAuth();
-  const { savedVideos } = useVideoInteractions();
+  const { savedVideoIds } = useVideoInteractions();
 
   if (isAuthenticated && user) {
     return (
@@ -20,7 +20,7 @@ export default function ProfileScreen() {
           <Text style={styles.email}>{user.email}</Text>
 
           <View style={styles.statsBox}>
-            <Text style={styles.statsValue}>{savedVideos.length}</Text>
+            <Text style={styles.statsValue}>{savedVideoIds.length}</Text>
             <Text style={styles.statsLabel}>Saved videos</Text>
           </View>
         </View>

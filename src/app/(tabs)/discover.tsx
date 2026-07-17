@@ -1,6 +1,16 @@
 import { useMemo, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
+import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import {
   getCategories,
   searchVideos,
@@ -23,10 +33,11 @@ export default function DiscoverScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<VideoCategoryFilter>('All');
   const { getLikeCount } = useVideoInteractions();
+  const { videos, isLoading, error, refresh } = useVideoCatalog();
 
   const filteredVideos = useMemo(() => {
-    return searchVideos(searchQuery, selectedCategory);
-  }, [searchQuery, selectedCategory]);
+    return searchVideos(videos, searchQuery, selectedCategory);
+  }, [videos, searchQuery, selectedCategory]);
 
   return (
     <View style={styles.container}>
@@ -75,10 +86,26 @@ export default function DiscoverScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.resultList}
         ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>No dramas found</Text>
-            <Text style={styles.emptyDescription}>Try another keyword or category.</Text>
-          </View>
+          isLoading ? (
+            <View style={styles.emptyState}>
+              <ActivityIndicator color="#d11f3f" size="large" />
+            </View>
+          ) : error ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>Video gagal dimuat.</Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={refresh}
+                style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}>
+                <Text style={styles.retryButtonText}>Retry</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>No dramas found</Text>
+              <Text style={styles.emptyDescription}>Try another keyword or category.</Text>
+            </View>
+          )
         }
         renderItem={({ item }) => (
           <DiscoverResultCard video={item} likeCount={getLikeCount(item)} />
@@ -239,6 +266,18 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#6b7280',
     textAlign: 'center',
+  },
+  retryButton: {
+    marginTop: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: '#d11f3f',
+  },
+  retryButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
   },
   buttonPressed: {
     opacity: 0.72,

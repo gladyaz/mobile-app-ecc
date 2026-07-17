@@ -66,15 +66,14 @@ export async function getVideoById(id: string): Promise<Video | undefined> {
   }
 }
 
-// TODO(commit 5): take the fetched catalog as a param instead of closing
-// over mockDramaVideos, and update the discover.tsx/saved.tsx call sites.
 export function searchVideos(
+  videos: readonly Video[],
   query: string,
   category: VideoCategoryFilter = 'All'
 ): readonly Video[] {
   const normalizedQuery = normalizeSearchValue(query);
 
-  return mockDramaVideos.filter((video) => {
+  return videos.filter((video) => {
     const matchesCategory = category === 'All' || video.category === category;
     const matchesSearch = videoMatchesSearch(video, normalizedQuery);
 
@@ -82,10 +81,17 @@ export function searchVideos(
   });
 }
 
-export function getSavedVideos(savedVideoIds: readonly string[]): readonly Video[] {
+/**
+ * Resolves saved video IDs against the given catalog. IDs with no matching
+ * video in the catalog (e.g. removed from the backend) are safely skipped.
+ */
+export function getSavedVideos(
+  videos: readonly Video[],
+  savedVideoIds: readonly string[]
+): readonly Video[] {
   const savedVideoIdSet = new Set(savedVideoIds);
 
-  return mockDramaVideos.filter((video) => savedVideoIdSet.has(video.id));
+  return videos.filter((video) => savedVideoIdSet.has(video.id));
 }
 
 export function getCategories(): readonly VideoCategoryFilter[] {

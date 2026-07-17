@@ -1,6 +1,6 @@
 import { useEvent } from 'expo';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Video } from '@/types/video';
@@ -37,20 +37,49 @@ export function DramaFeedItem({
   onToggleSave,
 }: DramaFeedItemProps) {
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
-  const player = useVideoPlayer(video.playbackUrl, (nextPlayer) => {
+  const hasPlaybackUrl = video.playbackUrl.length > 0;
+  const player = useVideoPlayer(hasPlaybackUrl ? video.playbackUrl : null, (nextPlayer) => {
     nextPlayer.loop = true;
     nextPlayer.muted = true;
   });
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
+  const { status, error } = useEvent(player, 'statusChange', {
+    status: player.status,
+    error: undefined,
+  });
+  const hasPlaybackError = !hasPlaybackUrl || status === 'error';
+  const hasLoggedErrorRef = useRef(false);
 
   useEffect(() => {
+    if (!hasPlaybackError) {
+      hasLoggedErrorRef.current = false;
+      return;
+    }
+
+    if (!__DEV__ || hasLoggedErrorRef.current) {
+      return;
+    }
+
+    hasLoggedErrorRef.current = true;
+    console.warn(
+      `[DramaFeedItem] Unable to play "${video.title}". playbackUrl=${
+        video.playbackUrl || '(empty)'
+      }${error ? ` error=${error.message}` : ''}`
+    );
+  }, [error, hasPlaybackError, video.playbackUrl, video.title]);
+
+  useEffect(() => {
+    if (!hasPlaybackUrl) {
+      return;
+    }
+
     if (isActive && !isManuallyPaused) {
       player.play();
       return;
     }
 
     player.pause();
-  }, [isActive, isManuallyPaused, player]);
+  }, [hasPlaybackUrl, isActive, isManuallyPaused, player]);
 
   const handlePlayPause = useCallback(() => {
     if (isPlaying) {
@@ -66,22 +95,31 @@ export function DramaFeedItem({
   return (
     <View style={[styles.container, { height }]}>
       <View style={styles.videoLayer}>
-        <VideoView
-          contentFit="cover"
-          nativeControls={false}
-          player={player}
-          playsInline
-          style={styles.video}
-        />
+        {hasPlaybackError ? (
+          <View style={styles.errorState}>
+            <Text style={styles.errorTitle}>Video unavailable</Text>
+            <Text style={styles.errorHint}>Check the local media server connection.</Text>
+          </View>
+        ) : (
+          <VideoView
+            contentFit="cover"
+            nativeControls={false}
+            player={player}
+            playsInline
+            style={styles.video}
+          />
+        )}
       </View>
       <View pointerEvents="none" style={styles.bottomScrim} />
 
-      <Pressable
-        accessibilityRole="button"
-        onPress={handlePlayPause}
-        style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
-        <Text style={styles.playPauseText}>{isPlaying ? 'Pause' : 'Play'}</Text>
-      </Pressable>
+      {hasPlaybackError ? null : (
+        <Pressable
+          accessibilityRole="button"
+          onPress={handlePlayPause}
+          style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
+          <Text style={styles.playPauseText}>{isPlaying ? 'Pause' : 'Play'}</Text>
+        </Pressable>
+      )}
 
       <View style={styles.content}>
         <View style={styles.details}>
@@ -144,6 +182,23 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
+  },
+  errorState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 32,
+  },
+  errorTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  errorHint: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#9ca3af',
+    textAlign: 'center',
   },
   bottomScrim: {
     position: 'absolute',

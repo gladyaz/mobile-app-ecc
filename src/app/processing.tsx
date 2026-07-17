@@ -47,7 +47,8 @@ export default function ProcessingHistoryScreen() {
 
       <Text style={styles.title}>Processing History</Text>
       <Text style={styles.description}>
-        Track uploaded dramas as Indonesian subtitles are prepared for review.
+        Track uploaded dramas as Indonesian subtitles are embedded into the final video for
+        review.
       </Text>
 
       <View style={styles.summaryGrid}>

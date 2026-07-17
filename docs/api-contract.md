@@ -30,13 +30,10 @@ Auth model assumption: authenticated endpoints use `Authorization: Bearer <acces
   "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
   "playbackUrl": "https://media.example.com/videos/video_001.mp4",
   "thumbnailUrl": "https://cdn.example.com/videos/video_001.jpg",
-  "subtitleTrackUrl": "https://cdn.example.com/subtitles/video_001-id.srt",
   "sourceLanguage": "Mandarin",
-  "subtitleLanguage": "Indonesian",
+  "hasEmbeddedIndonesianSubtitle": true,
   "processingStatus": "completed",
   "durationSeconds": 72,
-  "mandarinSubtitlePreview": "Original Mandarin subtitle preview",
-  "indonesianSubtitlePreview": "Sebenarnya apa yang kamu inginkan?",
   "likeCount": 12800,
   "viewCount": 245000,
   "isLiked": false,
@@ -46,25 +43,7 @@ Auth model assumption: authenticated endpoints use `Authorization: Bearer <acces
 }
 ```
 
-The mobile app uses `playbackUrl` for video playback. `storageKey` and raw internal storage paths are backend-only values and must not be treated as mobile-readable file paths.
-
-### Subtitle
-
-```json
-{
-  "id": "subtitle_001",
-  "videoId": "video_001",
-  "language": "id",
-  "sourceLanguage": "zh",
-  "startTimeSeconds": 0,
-  "endTimeSeconds": 3,
-  "text": "Sebenarnya apa yang kamu inginkan?",
-  "isGenerated": true,
-  "confidence": 0.94
-}
-```
-
-Indonesian (`id`) is the default target subtitle language for the mobile app.
+The mobile app uses `playbackUrl` for the final processed video, which already has Indonesian subtitles burned in. `storageKey` and raw internal storage paths are backend-only values and must not be treated as mobile-readable file paths. The mobile app does not request or render separate subtitle tracks.
 
 ### User
 
@@ -226,11 +205,9 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
         "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
         "playbackUrl": "https://media.example.com/videos/video_001.mp4",
         "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
-        "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
         "sourceLanguage": "Mandarin",
-        "subtitleLanguage": "Indonesian",
+        "hasEmbeddedIndonesianSubtitle": true,
         "processingStatus": "completed",
-        "indonesianSubtitlePreview": "Sebenarnya apa yang kamu inginkan?",
         "likeCount": 12800,
         "isLiked": false,
         "isSaved": false
@@ -277,9 +254,8 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
       "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
       "playbackUrl": "https://media.example.com/videos/video_001.mp4",
       "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
-      "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
       "sourceLanguage": "Mandarin",
-      "subtitleLanguage": "Indonesian",
+      "hasEmbeddedIndonesianSubtitle": true,
       "processingStatus": "completed",
       "likeCount": 12800,
       "isLiked": false,
@@ -326,84 +302,6 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
 - Mobile screen: Home
 - MVP priority: P1
 - Backend notes: Deduplicate noisy events and avoid blocking playback on failures.
-
-### GET /videos/:id/subtitles
-
-- Purpose: Return all subtitle tracks for a video.
-- Method and path: `GET /videos/:id/subtitles`
-- Auth required: No
-- Request path params:
-
-```json
-{
-  "id": "video_001"
-}
-```
-
-- Example response:
-
-```json
-{
-  "success": true,
-  "data": {
-    "subtitles": [
-      {
-        "id": "subtitle_001",
-        "videoId": "video_001",
-        "language": "id",
-        "startTimeSeconds": 0,
-        "endTimeSeconds": 3,
-        "text": "Sebenarnya apa yang kamu inginkan?"
-      }
-    ]
-  },
-  "error": null,
-  "meta": null
-}
-```
-
-- Mobile screen: Home
-- MVP priority: P0
-- Backend notes: Return Indonesian subtitles by default when available.
-
-### GET /videos/:id/subtitles/:language
-
-- Purpose: Return subtitles for one language.
-- Method and path: `GET /videos/:id/subtitles/:language`
-- Auth required: No
-- Request path params:
-
-```json
-{
-  "id": "video_001",
-  "language": "id"
-}
-```
-
-- Example response:
-
-```json
-{
-  "success": true,
-  "data": {
-    "language": "id",
-    "subtitles": [
-      {
-        "id": "subtitle_001",
-        "startTimeSeconds": 0,
-        "endTimeSeconds": 3,
-        "text": "Sebenarnya apa yang kamu inginkan?"
-      }
-    ]
-  },
-  "error": null,
-  "meta": null
-}
-```
-
-- Mobile screen: Home
-- MVP priority: P0
-- Backend notes: Use ISO language codes; Indonesian (`id`) is the primary target.
 
 ### POST /videos/:id/like
 
@@ -561,11 +459,9 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
         "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
         "playbackUrl": "https://media.example.com/videos/video_001.mp4",
         "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
-        "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
         "sourceLanguage": "Mandarin",
-        "subtitleLanguage": "Indonesian",
+        "hasEmbeddedIndonesianSubtitle": true,
         "processingStatus": "completed",
-        "indonesianSubtitlePreview": "Sebenarnya apa yang kamu inginkan?",
         "likeCount": 12800,
         "isSaved": true
       }
@@ -613,11 +509,9 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
         "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
         "playbackUrl": "https://media.example.com/videos/video_001.mp4",
         "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
-        "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
         "sourceLanguage": "Mandarin",
-        "subtitleLanguage": "Indonesian",
+        "hasEmbeddedIndonesianSubtitle": true,
         "processingStatus": "completed",
-        "indonesianSubtitlePreview": "Sebenarnya apa yang kamu inginkan?",
         "likeCount": 12800
       }
     ]
@@ -631,7 +525,7 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
 
 - Mobile screen: Discover
 - MVP priority: P0
-- Backend notes: Search title, caption, channel, category, and subtitle previews.
+- Backend notes: Search title, caption, channel, and category.
 
 ### GET /videos/categories
 
@@ -686,9 +580,8 @@ Indonesian (`id`) is the default target subtitle language for the mobile app.
         "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
         "playbackUrl": "https://media.example.com/videos/video_001.mp4",
         "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
-        "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt",
         "sourceLanguage": "Mandarin",
-        "subtitleLanguage": "Indonesian",
+        "hasEmbeddedIndonesianSubtitle": true,
         "processingStatus": "completed"
       }
     ]

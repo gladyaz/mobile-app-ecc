@@ -4,7 +4,7 @@ This document describes how real company Mandarin drama videos should be organiz
 
 ## Purpose
 
-Internal storage keeps source videos, processed videos, subtitle files, and thumbnails in a predictable backend-owned structure. The backend is responsible for reading these internal files and returning mobile-safe URLs such as `playbackUrl`, `thumbnailUrl`, and `subtitleTrackUrl`.
+Internal storage keeps source videos, processed videos, subtitle files, and thumbnails in a predictable backend-owned structure. The backend is responsible for reading these internal files and returning mobile-safe URLs such as `playbackUrl` and `thumbnailUrl`. Indonesian subtitles are embedded (burned in) directly into the processed video; the mobile app does not receive or render a separate subtitle track.
 
 ## Recommended Folder Structure
 
@@ -19,8 +19,8 @@ storage/
 ## Folder Meaning
 
 - `raw-videos/` stores original Mandarin videos exactly as uploaded by the company.
-- `processed-videos/` stores videos prepared for mobile playback, including Indonesian subtitle versions when the product chooses burned-in subtitle output.
-- `subtitles/` stores subtitle sidecar files such as `.srt` files.
+- `processed-videos/` stores final MP4 files prepared for mobile playback, with Indonesian subtitles burned directly into the video.
+- `subtitles/` stores optional `.srt` sidecar files retained internally for editing and QA; these are not sent to or consumed by the mobile app.
 - `thumbnails/` stores preview images used by lists, search results, and future detail pages.
 
 ## Example Paths
@@ -44,7 +44,7 @@ The backend should translate internal storage records into mobile-safe response 
   "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
   "playbackUrl": "https://media.example.com/videos/video_001.mp4",
   "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
-  "subtitleTrackUrl": "https://media.example.com/subtitles/video_001-id.srt"
+  "hasEmbeddedIndonesianSubtitle": true
 }
 ```
 
@@ -57,9 +57,9 @@ The backend should translate internal storage records into mobile-safe response 
 - Store processed playback output under `processed-videos/`.
 - Store generated Indonesian `.srt` files under `subtitles/`.
 - Store generated or selected thumbnails under `thumbnails/`.
-- Return `playbackUrl`, `thumbnailUrl`, and `subtitleTrackUrl` to the mobile app.
+- Return `playbackUrl` and `thumbnailUrl` to the mobile app. Do not return subtitle track URLs; Indonesian subtitles must already be embedded in the processed video.
 - Avoid exposing raw storage paths as playable mobile URLs.
 
 ## Future CDN Option
 
-The backend can start by serving files through a media/static endpoint. Later, the same contract can point `playbackUrl`, `thumbnailUrl`, and `subtitleTrackUrl` to CDN URLs without changing the mobile app data model.
+The backend can start by serving files through a media/static endpoint. Later, the same contract can point `playbackUrl` and `thumbnailUrl` to CDN URLs without changing the mobile app data model.

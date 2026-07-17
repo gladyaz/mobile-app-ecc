@@ -21,12 +21,11 @@ Mobile app for Mandarin/Chinese short drama videos with Indonesian subtitles. Th
 - Real video playback with `expo-video`.
 - Active feed item plays while inactive items pause.
 - Manual play/pause per feed item.
-- Indonesian subtitle overlay on video.
 - Local like, save, and share interactions.
 - Saved tab with saved videos and empty state.
 - Discover tab with local search, category chips, and result cards.
 - Processing history screen with per-video processing status, linked from Profile.
-- Video model aligned with backend playback fields (`playbackUrl`, `thumbnailUrl`, `subtitleTrackUrl`, `storageKey`).
+- Video model aligned with backend playback fields (`playbackUrl`, `thumbnailUrl`, `storageKey`, `hasEmbeddedIndonesianSubtitle`). Indonesian subtitles are already burned into the final video, so the app does not render its own subtitle overlay.
 - Video and processing service layers that currently read mock data.
 
 ## How To Run
@@ -65,7 +64,6 @@ Then use the Expo terminal shortcuts:
 - Auth is dummy/local and not persisted.
 - Video data is mock data.
 - Like/save state is local only.
-- Subtitle overlay uses mock Indonesian subtitle text.
 - Video URLs are sample public MP4 URLs.
 - No real upload, processing, or CDN integration exists yet.
 
@@ -75,7 +73,7 @@ Future backend endpoint contracts are documented in [docs/api-contract.md](docs/
 
 ## Internal Storage
 
-Real company videos should live in backend/internal storage, not inside this mobile app project. The mobile app should receive backend-provided `playbackUrl`, `thumbnailUrl`, and `subtitleTrackUrl` values. See [docs/internal-storage.md](docs/internal-storage.md).
+Real company videos should live in backend/internal storage, not inside this mobile app project. The mobile app should receive backend-provided `playbackUrl` and `thumbnailUrl` values. Indonesian subtitles are embedded directly in the final video, so the mobile app does not receive a separate subtitle track. See [docs/internal-storage.md](docs/internal-storage.md).
 
 ## Next Planned Tasks
 

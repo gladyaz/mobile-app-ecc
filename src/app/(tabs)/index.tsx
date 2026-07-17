@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 
 import { DramaFeedItem } from '@/components/drama-feed-item';
-import { useVideoFeed } from '@/features/feed/hooks/use-video-feed';
+import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { useVideoInteractions } from '@/stores/video-interactions';
 import type { Video } from '@/types/video';
 
@@ -31,10 +31,11 @@ const VIEWABILITY_CONFIG: ViewabilityConfig = {
 
 export default function HomeScreen() {
   const { height } = useWindowDimensions();
-  const videos = useVideoFeed();
+  const { videos } = useVideoCatalog();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
   const [feedHeight, setFeedHeight] = useState(height);
-  const [activeVideoId, setActiveVideoId] = useState(videos[0]?.id);
+  const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
+  const resolvedActiveVideoId = activeVideoId ?? videos[0]?.id;
 
   const handleViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken<Video>[] }) => {
@@ -102,7 +103,7 @@ export default function HomeScreen() {
         <DramaFeedItem
           video={item}
           height={feedHeight}
-          isActive={item.id === activeVideoId}
+          isActive={item.id === resolvedActiveVideoId}
           isLiked={interaction.isLiked}
           isSaved={interaction.isSaved}
           likeCount={getLikeCount(item)}
@@ -118,7 +119,15 @@ export default function HomeScreen() {
         />
       );
     },
-    [activeVideoId, feedHeight, getInteraction, getLikeCount, handleShare, toggleLike, toggleSave]
+    [
+      resolvedActiveVideoId,
+      feedHeight,
+      getInteraction,
+      getLikeCount,
+      handleShare,
+      toggleLike,
+      toggleSave,
+    ]
   );
 
   return (
@@ -127,7 +136,7 @@ export default function HomeScreen() {
         data={videos}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
-        extraData={activeVideoId}
+        extraData={resolvedActiveVideoId}
         pagingEnabled
         snapToAlignment="start"
         snapToInterval={feedHeight}

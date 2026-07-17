@@ -1,6 +1,6 @@
 import { PropsWithChildren, createContext, useCallback, useContext, useMemo, useState } from 'react';
 
-import { getSavedVideos, getVideoFeed } from '@/services/videos/video-service';
+import { getSavedVideos } from '@/services/videos/video-service';
 import type { Video } from '@/types/video';
 
 type VideoInteraction = {
@@ -24,21 +24,8 @@ const defaultInteraction: VideoInteraction = {
 
 const VideoInteractionsContext = createContext<VideoInteractionsContextValue | null>(null);
 
-function createInitialInteractions() {
-  return getVideoFeed().reduce<Record<string, VideoInteraction>>(
-    (nextInteractions, video) => ({
-      ...nextInteractions,
-      [video.id]: {
-        isLiked: false,
-        isSaved: video.isSaved,
-      },
-    }),
-    {}
-  );
-}
-
 export function VideoInteractionsProvider({ children }: PropsWithChildren) {
-  const [interactions, setInteractions] = useState(createInitialInteractions);
+  const [interactions, setInteractions] = useState<Record<string, VideoInteraction>>({});
 
   const getInteraction = useCallback(
     (videoId: string) => interactions[videoId] ?? defaultInteraction,

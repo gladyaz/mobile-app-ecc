@@ -1,4 +1,6 @@
 import { mockDramaVideos } from '@/data/mock-drama-videos';
+import { ApiError, request } from '@/services/api/client';
+import { mapBackendVideoToVideo, type BackendVideoDto } from '@/services/videos/video-mapper';
 import type { Video, VideoCategory } from '@/types/video';
 
 export type VideoCategoryFilter = 'All' | VideoCategory;
@@ -11,6 +13,10 @@ const categoryFilters: readonly VideoCategoryFilter[] = [
   'CEO',
   'Historical',
 ];
+
+function shouldUseMockData(): boolean {
+  return process.env.EXPO_PUBLIC_USE_MOCK_DATA === 'true';
+}
 
 function normalizeSearchValue(value: string) {
   return value.trim().toLowerCase();
@@ -26,23 +32,46 @@ function videoMatchesSearch(video: Video, normalizedQuery: string) {
   return searchableValues.some((value) => value.toLowerCase().includes(normalizedQuery));
 }
 
-export function getVideoFeed(): readonly Video[] {
-  // Future backend integration will fetch playbackUrl values from the backend/CDN.
-  // storageKey remains backend-only and should never be read directly by the mobile app.
-  return mockDramaVideos;
+/**
+ * Fetches the video feed from the backend, or resolves the bundled mock
+ * data when EXPO_PUBLIC_USE_MOCK_DATA=true. Real API errors are not caught
+ * here and are not silently replaced with mock data; callers (the video
+ * catalog provider) surface them as a visible error state.
+ */
+export async function getVideoFeed(): Promise<readonly Video[]> {
+  if (shouldUseMockData()) {
+    return mockDramaVideos;
+  }
+
+  const feed = await request<readonly BackendVideoDto[]>('videos/feed');
+
+  return feed.map(mapBackendVideoToVideo);
 }
 
-export function getVideoById(id: string): Video | undefined {
-  // Future backend integration will fetch a single video by id from the API.
-  // The response should include a playable playbackUrl or a signed media URL.
-  return mockDramaVideos.find((video) => video.id === id);
+export async function getVideoById(id: string): Promise<Video | undefined> {
+  if (shouldUseMockData()) {
+    return mockDramaVideos.find((video) => video.id === id);
+  }
+
+  try {
+    const dto = await request<BackendVideoDto>(`videos/${id}`);
+
+    return mapBackendVideoToVideo(dto);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return undefined;
+    }
+
+    throw error;
+  }
 }
 
+// TODO(commit 5): take the fetched catalog as a param instead of closing
+// over mockDramaVideos, and update the discover.tsx/saved.tsx call sites.
 export function searchVideos(
   query: string,
   category: VideoCategoryFilter = 'All'
 ): readonly Video[] {
-  // Future backend integration can move search and category filters to query params.
   const normalizedQuery = normalizeSearchValue(query);
 
   return mockDramaVideos.filter((video) => {
@@ -54,13 +83,11 @@ export function searchVideos(
 }
 
 export function getSavedVideos(savedVideoIds: readonly string[]): readonly Video[] {
-  // Future backend integration can return saved videos for the authenticated user.
   const savedVideoIdSet = new Set(savedVideoIds);
 
   return mockDramaVideos.filter((video) => savedVideoIdSet.has(video.id));
 }
 
 export function getCategories(): readonly VideoCategoryFilter[] {
-  // Future backend integration may fetch dynamic editorial categories.
   return categoryFilters;
 }

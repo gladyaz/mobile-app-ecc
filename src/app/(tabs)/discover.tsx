@@ -36,7 +36,7 @@ export default function DiscoverScreen() {
         autoCorrect={false}
         clearButtonMode="while-editing"
         onChangeText={setSearchQuery}
-        placeholder="Search dramas, channels, subtitles..."
+        placeholder="Search dramas, channels, categories..."
         placeholderTextColor="#9ca3af"
         style={styles.searchInput}
         value={searchQuery}
@@ -105,7 +105,7 @@ function DiscoverResultCard({ video, likeCount }: DiscoverResultCardProps) {
       <Text style={styles.resultTitle}>{video.title}</Text>
       <Text style={styles.channel}>{video.channelName}</Text>
       <Text numberOfLines={2} style={styles.preview}>
-        {video.indonesianSubtitlePreview || video.caption}
+        {video.caption}
       </Text>
       <Text style={styles.likes}>{formatLikeCount(likeCount)} likes</Text>
     </Pressable>

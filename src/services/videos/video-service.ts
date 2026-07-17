@@ -21,13 +21,7 @@ function videoMatchesSearch(video: Video, normalizedQuery: string) {
     return true;
   }
 
-  const searchableValues = [
-    video.title,
-    video.caption,
-    video.channelName,
-    video.indonesianSubtitlePreview,
-    video.category,
-  ];
+  const searchableValues = [video.title, video.caption, video.channelName, video.category];
 
   return searchableValues.some((value) => value.toLowerCase().includes(normalizedQuery));
 }

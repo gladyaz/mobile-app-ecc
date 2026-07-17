@@ -60,7 +60,7 @@ function SavedVideoCard({ video, likeCount, onUnsave }: SavedVideoCardProps) {
         <Text style={styles.cardTitle}>{video.title}</Text>
         <Text style={styles.channel}>{video.channelName}</Text>
         <Text numberOfLines={2} style={styles.subtitle}>
-          {video.indonesianSubtitles[0]?.text ?? video.indonesianSubtitlePreview}
+          {video.caption}
         </Text>
         <Text style={styles.likes}>{formatLikeCount(likeCount)} likes</Text>
       </View>

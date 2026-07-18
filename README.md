@@ -21,6 +21,7 @@ Mobile app for Mandarin/Chinese short drama videos with Indonesian subtitles. Th
 - Real video playback with `expo-video`.
 - Active feed item plays while inactive items pause.
 - Manual play/pause per feed item.
+- Horizontal videos show a Fullscreen button and play in native landscape fullscreen (see "Fullscreen Landscape Support" below); vertical videos are unaffected.
 - Local like, save, and share interactions.
 - Saved tab with saved videos and empty state.
 - Discover tab with local search, category chips, and result cards.
@@ -164,6 +165,21 @@ http://YOUR_MAC_IP:8000/path/to/episode-001.mp4
 - The Python server must keep running whenever you test video playback.
 - This is a development-only stand-in. Real production storage/CDN and the NestJS backend will replace this local server later; nothing about this setup depends on them.
 - If `EXPO_PUBLIC_MEDIA_BASE_URL` is missing, `playbackUrl` values resolve to an empty string, a warning is logged once per video in development, and the Home feed shows a "Video unavailable" placeholder for that item instead of crashing.
+
+## Fullscreen Landscape Support
+
+Horizontal (landscape) videos in the feed show a "Fullscreen" button; vertical videos do not and behave exactly as before.
+
+### How it works
+
+- Uses `expo-video`'s built-in native fullscreen support (`VideoView.enterFullscreen()` + `fullscreenOptions`) on the **same** player already playing that feed item — no `expo-screen-orientation`, no separate fullscreen screen/modal, and never a second competing player.
+- Orientation detection: backend-provided `width`/`height` on the video (instant) when available, otherwise the actual decoded video track once the player loads it, otherwise assumed vertical (no button) if it genuinely can't be determined.
+- `fullscreenOptions={{ orientation: 'landscape', autoExitOnRotate: true }}` locks landscape while in fullscreen and auto-exits back to the feed if the device is rotated back to portrait. The app stays `"orientation": "portrait"` at the `app.json` level at all times — the lock/restore is scoped to the fullscreen presentation itself, not the whole app.
+- The Android system back button and the platform's own native fullscreen exit control both work without any custom code — they're handled by the native fullscreen presentation itself, not by this app's JS.
+
+### Known limitation (Android)
+
+On Android, the JS runtime pauses while `VideoView` is in fullscreen (documented by `expo-video` itself). This means a custom in-app "exit fullscreen" button pressed from JS is not reliable there — exiting must go through the native controls or the system back button, both of which work correctly. This does not affect iOS or web.
 
 ## Folder Structure
 

@@ -180,9 +180,10 @@ Horizontal (landscape) videos in the feed show a "Fullscreen" button; vertical v
 
 ### How it works
 
-- Uses `expo-video`'s built-in native fullscreen support (`VideoView.enterFullscreen()` + `fullscreenOptions`) on the **same** player already playing that feed item — no `expo-screen-orientation`, no separate fullscreen screen/modal, and never a second competing player.
+- Uses `expo-video`'s built-in native fullscreen support (`VideoView.enterFullscreen()` + `fullscreenOptions`) on the **same** player already playing that feed item — no separate fullscreen screen/modal, and never a second competing player.
 - Orientation detection: backend-provided `width`/`height` on the video (instant) when available, otherwise the actual decoded video track once the player loads it, otherwise assumed vertical (no button) if it genuinely can't be determined.
-- `fullscreenOptions={{ orientation: 'landscape', autoExitOnRotate: true }}` locks landscape while in fullscreen and auto-exits back to the feed if the device is rotated back to portrait. The app stays `"orientation": "portrait"` at the `app.json` level at all times — the lock/restore is scoped to the fullscreen presentation itself, not the whole app.
+- `app.json`'s `"orientation"` is `"default"` (not locked to portrait) so the app is allowed to rotate at all. `expo-screen-orientation` locks `PORTRAIT_UP` explicitly at the app root (`_layout.tsx`), so every normal screen still stays portrait regardless of physical device rotation. `DramaFeedItem` overrides this to `LANDSCAPE` only while a video is in fullscreen (`onFullscreenEnter`) and relocks `PORTRAIT_UP` on exit/unmount.
+  - An earlier version of this feature relied on `fullscreenOptions.orientation` alone with the app still locked to `"orientation": "portrait"` in `app.json`. That combination is broken in practice (at least in Expo Go): the video content renders rotated inside a still-portrait window with no visible way to exit fullscreen. The explicit `expo-screen-orientation` lock/unlock above is required, not optional.
 - The Android system back button and the platform's own native fullscreen exit control both work without any custom code — they're handled by the native fullscreen presentation itself, not by this app's JS.
 
 ### Known limitation (Android)

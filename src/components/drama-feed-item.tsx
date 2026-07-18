@@ -37,7 +37,10 @@ export function DramaFeedItem({
   onToggleSave,
 }: DramaFeedItemProps) {
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
+  const [isInFullscreen, setIsInFullscreen] = useState(false);
   const hasPlaybackUrl = video.playbackUrl.length > 0;
+  const videoViewRef = useRef<VideoView>(null);
+  const isInFullscreenRef = useRef(false);
   const player = useVideoPlayer(hasPlaybackUrl ? video.playbackUrl : null, (nextPlayer) => {
     nextPlayer.loop = true;
     nextPlayer.muted = true;
@@ -47,8 +50,32 @@ export function DramaFeedItem({
     status: player.status,
     error: undefined,
   });
+  const { videoTrack } = useEvent(player, 'videoTrackChange', { videoTrack: null });
   const hasPlaybackError = !hasPlaybackUrl || status === 'error';
   const hasLoggedErrorRef = useRef(false);
+
+  // Prefer backend-provided dimensions (instant); fall back to the actual
+  // decoded video track once it loads; default to false (no fullscreen
+  // button) when orientation genuinely cannot be determined.
+  const metadataIsHorizontal =
+    video.width != null && video.height != null ? video.width > video.height : undefined;
+  const runtimeIsHorizontal =
+    videoTrack?.size != null ? videoTrack.size.width > videoTrack.size.height : undefined;
+  const isHorizontal = metadataIsHorizontal ?? runtimeIsHorizontal ?? false;
+
+  useEffect(() => {
+    isInFullscreenRef.current = isInFullscreen;
+  }, [isInFullscreen]);
+
+  useEffect(() => {
+    const videoView = videoViewRef.current;
+
+    return () => {
+      if (isInFullscreenRef.current) {
+        void videoView?.exitFullscreen();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!hasPlaybackError) {
@@ -69,7 +96,7 @@ export function DramaFeedItem({
   }, [error, hasPlaybackError, video.playbackUrl, video.title]);
 
   useEffect(() => {
-    if (!hasPlaybackUrl) {
+    if (!hasPlaybackUrl || isInFullscreen) {
       return;
     }
 
@@ -79,7 +106,13 @@ export function DramaFeedItem({
     }
 
     player.pause();
-  }, [hasPlaybackUrl, isActive, isManuallyPaused, player]);
+  }, [hasPlaybackUrl, isActive, isManuallyPaused, isInFullscreen, player]);
+
+  useEffect(() => {
+    if (status === 'error' && isInFullscreen) {
+      void videoViewRef.current?.exitFullscreen();
+    }
+  }, [status, isInFullscreen]);
 
   const handlePlayPause = useCallback(() => {
     if (isPlaying) {
@@ -92,6 +125,18 @@ export function DramaFeedItem({
     setIsManuallyPaused(false);
   }, [isPlaying, player]);
 
+  const handleEnterFullscreen = useCallback(() => {
+    void videoViewRef.current?.enterFullscreen();
+  }, []);
+
+  const handleFullscreenEnter = useCallback(() => {
+    setIsInFullscreen(true);
+  }, []);
+
+  const handleFullscreenExit = useCallback(() => {
+    setIsInFullscreen(false);
+  }, []);
+
   return (
     <View style={[styles.container, { height }]}>
       <View style={styles.videoLayer}>
@@ -103,9 +148,17 @@ export function DramaFeedItem({
         ) : (
           <VideoView
             contentFit="cover"
+            fullscreenOptions={{
+              enable: isHorizontal,
+              orientation: 'landscape',
+              autoExitOnRotate: true,
+            }}
             nativeControls={false}
+            onFullscreenEnter={handleFullscreenEnter}
+            onFullscreenExit={handleFullscreenExit}
             player={player}
             playsInline
+            ref={videoViewRef}
             style={styles.video}
           />
         )}
@@ -118,6 +171,15 @@ export function DramaFeedItem({
           onPress={handlePlayPause}
           style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
           <Text style={styles.playPauseText}>{isPlaying ? 'Pause' : 'Play'}</Text>
+        </Pressable>
+      )}
+
+      {hasPlaybackError || !isHorizontal ? null : (
+        <Pressable
+          accessibilityRole="button"
+          onPress={handleEnterFullscreen}
+          style={({ pressed }) => [styles.fullscreenButton, pressed && styles.buttonPressed]}>
+          <Text style={styles.fullscreenText}>Fullscreen</Text>
         </Pressable>
       )}
 
@@ -220,6 +282,22 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.58)',
   },
   playPauseText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  fullscreenButton: {
+    position: 'absolute',
+    top: 54,
+    left: 18,
+    minWidth: 82,
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
+  },
+  fullscreenText: {
     fontSize: 14,
     fontWeight: '700',
     color: '#fff',

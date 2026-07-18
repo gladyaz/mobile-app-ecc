@@ -9,6 +9,8 @@ export const mockDramaVideos: readonly Video[] = [
     // /Users/gladyaz/VideoDracin/短剧下载/10-雨夜校花（34集）/01.mp4
     playbackUrl: buildMediaUrl('短剧下载/10-雨夜校花（34集）/01.mp4'),
     thumbnailUrl: 'https://cdn.example.com/thumbnails/drama-china/ceo-dingin/ep-01.jpg',
+    width: 1080,
+    height: 1920,
     title: 'Kontrak Cinta CEO Dingin',
     episodeNumber: 1,
     channelName: 'Mandarin Drama ID',
@@ -27,6 +29,8 @@ export const mockDramaVideos: readonly Video[] = [
     // /Users/gladyaz/VideoDracin/短剧下载/10-花卷致富：我的小吃店通古今！（76集）/1.mp4
     playbackUrl: buildMediaUrl('短剧下载/10-花卷致富：我的小吃店通古今！（76集）/1.mp4'),
     thumbnailUrl: 'https://cdn.example.com/thumbnails/drama-china/putri-hilang/ep-02.jpg',
+    width: 1080,
+    height: 1920,
     title: 'Rahasia Putri yang Hilang',
     episodeNumber: 2,
     channelName: 'CDrama Mini',
@@ -45,6 +49,8 @@ export const mockDramaVideos: readonly Video[] = [
     // /Users/gladyaz/VideoDracin/短剧下载/101-我与女帝的快乐生活（84集）/第1集.mp4
     playbackUrl: buildMediaUrl('短剧下载/101-我与女帝的快乐生活（84集）/第1集.mp4'),
     thumbnailUrl: 'https://cdn.example.com/thumbnails/drama-china/pewaris/ep-03.jpg',
+    width: 1080,
+    height: 1920,
     title: 'Balas Dendam Sang Pewaris',
     episodeNumber: 3,
     channelName: 'Short Drama Mandarin',
@@ -63,6 +69,8 @@ export const mockDramaVideos: readonly Video[] = [
     // /Users/gladyaz/VideoDracin/短剧下载/106-找工作抱歉老娘快成仙了（70集）/1.mp4
     playbackUrl: buildMediaUrl('短剧下载/106-找工作抱歉老娘快成仙了（70集）/1.mp4'),
     thumbnailUrl: 'https://cdn.example.com/thumbnails/drama-china/nona-shen/ep-04.jpg',
+    width: 1080,
+    height: 1920,
     title: 'Pernikahan Kilat Nona Shen',
     episodeNumber: 4,
     channelName: 'Drama Harian CN',
@@ -83,6 +91,8 @@ export const mockDramaVideos: readonly Video[] = [
       '短剧下载/100-过年回家，与三个精神小妹挤软卧（74集）/11.mp4'
     ),
     thumbnailUrl: 'https://cdn.example.com/thumbnails/drama-china/topeng/ep-05.jpg',
+    width: 1080,
+    height: 1920,
     title: 'Cinta di Balik Topeng',
     episodeNumber: 5,
     channelName: 'Mandarin Hits',

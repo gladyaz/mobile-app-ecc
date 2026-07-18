@@ -7,6 +7,8 @@ export type Video = {
   readonly storageKey: string;
   readonly playbackUrl: string;
   readonly thumbnailUrl: string;
+  readonly width?: number;
+  readonly height?: number;
   readonly title: string;
   readonly episodeNumber: number;
   readonly channelName: string;

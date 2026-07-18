@@ -11,6 +11,8 @@ export type BackendVideoDto = {
   readonly storageKey: string;
   readonly playbackUrl: string;
   readonly thumbnailUrl?: string;
+  readonly width?: number;
+  readonly height?: number;
   readonly sourceLanguage: string;
   readonly hasEmbeddedIndonesianSubtitle: boolean;
   readonly likeCount: number;
@@ -71,6 +73,8 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
     storageKey: dto.storageKey,
     playbackUrl: dto.playbackUrl,
     thumbnailUrl: dto.thumbnailUrl ?? '',
+    width: dto.width,
+    height: dto.height,
     title: dto.title,
     episodeNumber: dto.episodeNumber,
     channelName: dto.channelName,

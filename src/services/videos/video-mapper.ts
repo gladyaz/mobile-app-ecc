@@ -49,6 +49,7 @@ function assertField(condition: boolean, fieldName: string, dto: unknown): void 
  */
 export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
   assertField(typeof dto.id === 'string' && dto.id.length > 0, 'id', dto);
+  assertField(typeof dto.seriesId === 'string' && dto.seriesId.length > 0, 'seriesId', dto);
   assertField(typeof dto.title === 'string' && dto.title.length > 0, 'title', dto);
   assertField(typeof dto.episodeNumber === 'number', 'episodeNumber', dto);
   assertField(typeof dto.channelName === 'string', 'channelName', dto);
@@ -70,6 +71,7 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
 
   return {
     id: dto.id,
+    seriesId: dto.seriesId,
     storageKey: dto.storageKey,
     playbackUrl: dto.playbackUrl,
     thumbnailUrl: dto.thumbnailUrl ?? '',

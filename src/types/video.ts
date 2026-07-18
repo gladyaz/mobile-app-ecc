@@ -4,6 +4,7 @@ export type VideoCategory = 'Romance' | 'Revenge' | 'Family' | 'CEO' | 'Historic
 
 export type Video = {
   readonly id: string;
+  readonly seriesId: string;
   readonly storageKey: string;
   readonly playbackUrl: string;
   readonly thumbnailUrl: string;

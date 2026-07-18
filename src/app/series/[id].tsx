@@ -5,11 +5,21 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { SeriesEpisodeRow } from '@/components/series-episode-row';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { getSeriesById } from '@/services/videos/series-service';
+import type { Episode } from '@/types/series';
 
 export default function SeriesDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const series = getSeriesById(videos, id);
+
+  const handleSelectEpisode = (episode: Episode) => {
+    if (episode.accessType === 'premium') {
+      // Premium preview blocking is wired in a later commit.
+      return;
+    }
+
+    router.push({ pathname: '/', params: { videoId: episode.videoId } });
+  };
 
   const handleBack = () => {
     if (router.canGoBack()) {
@@ -56,6 +66,10 @@ export default function SeriesDetailScreen() {
     );
   }
 
+  const firstPlayableEpisode = series.episodes.find(
+    (episode) => episode.accessType === 'free' && episode.isAvailable
+  );
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Pressable
@@ -75,13 +89,27 @@ export default function SeriesDetailScreen() {
       <Text style={styles.episodeCount}>{series.episodeCount} episode</Text>
       <Text style={styles.description}>{series.description}</Text>
 
+      {firstPlayableEpisode ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => handleSelectEpisode(firstPlayableEpisode)}
+          style={({ pressed }) => [styles.playButton, pressed && styles.buttonPressed]}>
+          <Text style={styles.playButtonText}>Mulai Menonton</Text>
+        </Pressable>
+      ) : null}
+
       <Text style={styles.sectionTitle}>Episodes</Text>
       <View style={styles.episodeList}>
         {series.episodes.length === 0 ? (
           <Text style={styles.emptyText}>Belum ada episode tersedia.</Text>
         ) : (
           series.episodes.map((episode) => (
-            <SeriesEpisodeRow episode={episode} isCurrentlyPlaying={false} key={episode.videoId} />
+            <SeriesEpisodeRow
+              episode={episode}
+              isCurrentlyPlaying={false}
+              key={episode.videoId}
+              onPress={() => handleSelectEpisode(episode)}
+            />
           ))
         )}
       </View>
@@ -177,6 +205,19 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     color: '#374151',
+  },
+  playButton: {
+    marginTop: 16,
+    marginHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    backgroundColor: '#d11f3f',
+  },
+  playButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
   },
   sectionTitle: {
     marginTop: 24,

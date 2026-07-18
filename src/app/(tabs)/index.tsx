@@ -1,5 +1,5 @@
-import { useIsFocused } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useIsFocused, useLocalSearchParams } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -36,11 +36,36 @@ const VIEWABILITY_CONFIG: ViewabilityConfig = {
 export default function HomeScreen() {
   const { height } = useWindowDimensions();
   const isScreenFocused = useIsFocused();
+  const { videoId: requestedVideoId } = useLocalSearchParams<{ videoId?: string }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
   const [feedHeight, setFeedHeight] = useState(height);
   const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
-  const resolvedActiveVideoId = activeVideoId ?? videos[0]?.id;
+  const requestedVideoIsInCatalog =
+    requestedVideoId != null && videos.some((video) => video.id === requestedVideoId);
+  const resolvedActiveVideoId =
+    activeVideoId ?? (requestedVideoIsInCatalog ? requestedVideoId : videos[0]?.id);
+  const flatListRef = useRef<FlatList<Video>>(null);
+  const handledRequestedVideoIdRef = useRef<string | undefined>(undefined);
+
+  // A Series Detail episode selection returns here with ?videoId=... so the
+  // selected episode plays in the existing feed player instead of a second,
+  // duplicate player screen. resolvedActiveVideoId already reflects the
+  // requested episode above; this effect only performs the imperative scroll.
+  useEffect(() => {
+    if (
+      !requestedVideoId ||
+      !requestedVideoIsInCatalog ||
+      handledRequestedVideoIdRef.current === requestedVideoId
+    ) {
+      return;
+    }
+
+    const targetIndex = videos.findIndex((video) => video.id === requestedVideoId);
+
+    handledRequestedVideoIdRef.current = requestedVideoId;
+    flatListRef.current?.scrollToIndex({ index: targetIndex, animated: true });
+  }, [requestedVideoId, requestedVideoIsInCatalog, videos]);
 
   const handleViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken<Video>[] }) => {
@@ -171,6 +196,7 @@ export default function HomeScreen() {
   return (
     <View style={styles.container} onLayout={handleLayout}>
       <FlatList
+        ref={flatListRef}
         data={videos}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
@@ -182,6 +208,9 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
         viewabilityConfig={VIEWABILITY_CONFIG}
         onViewableItemsChanged={handleViewableItemsChanged}
+        onScrollToIndexFailed={({ index }) => {
+          flatListRef.current?.scrollToOffset({ offset: feedHeight * index, animated: false });
+        }}
         getItemLayout={(_data, index) => ({
           length: feedHeight,
           offset: feedHeight * index,

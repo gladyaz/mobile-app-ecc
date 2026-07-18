@@ -1,3 +1,4 @@
+import { useIsFocused } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
@@ -34,6 +35,7 @@ const VIEWABILITY_CONFIG: ViewabilityConfig = {
 
 export default function HomeScreen() {
   const { height } = useWindowDimensions();
+  const isScreenFocused = useIsFocused();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
   const [feedHeight, setFeedHeight] = useState(height);
@@ -107,6 +109,7 @@ export default function HomeScreen() {
           video={item}
           height={feedHeight}
           isActive={item.id === resolvedActiveVideoId}
+          isScreenFocused={isScreenFocused}
           isLiked={interaction.isLiked}
           isSaved={interaction.isSaved}
           likeCount={getLikeCount(item)}
@@ -124,6 +127,7 @@ export default function HomeScreen() {
     },
     [
       resolvedActiveVideoId,
+      isScreenFocused,
       feedHeight,
       getInteraction,
       getLikeCount,

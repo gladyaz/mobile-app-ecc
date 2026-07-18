@@ -12,6 +12,7 @@ type DramaFeedItemProps = {
   readonly video: Video;
   readonly height: number;
   readonly isActive: boolean;
+  readonly isScreenFocused: boolean;
   readonly isLiked: boolean;
   readonly isSaved: boolean;
   readonly likeCount: number;
@@ -32,6 +33,7 @@ export function DramaFeedItem({
   video,
   height,
   isActive,
+  isScreenFocused,
   isLiked,
   isSaved,
   likeCount,
@@ -104,13 +106,13 @@ export function DramaFeedItem({
       return;
     }
 
-    if (isActive && !isManuallyPaused) {
+    if (isActive && isScreenFocused && !isManuallyPaused) {
       player.play();
       return;
     }
 
     player.pause();
-  }, [hasPlaybackUrl, isActive, isManuallyPaused, isInFullscreen, player]);
+  }, [hasPlaybackUrl, isActive, isScreenFocused, isManuallyPaused, isInFullscreen, player]);
 
   useEffect(() => {
     if (status === 'error' && isInFullscreen) {

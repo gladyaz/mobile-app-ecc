@@ -1,5 +1,6 @@
 import { useEvent } from 'expo';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -73,6 +74,7 @@ export function DramaFeedItem({
     return () => {
       if (isInFullscreenRef.current) {
         void videoView?.exitFullscreen();
+        void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
       }
     };
   }, []);
@@ -131,10 +133,12 @@ export function DramaFeedItem({
 
   const handleFullscreenEnter = useCallback(() => {
     setIsInFullscreen(true);
+    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
   }, []);
 
   const handleFullscreenExit = useCallback(() => {
     setIsInFullscreen(false);
+    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
   }, []);
 
   return (

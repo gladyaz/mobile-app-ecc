@@ -147,7 +147,7 @@ export function DramaFeedItem({
           </View>
         ) : (
           <VideoView
-            contentFit="cover"
+            contentFit={isHorizontal ? 'contain' : 'cover'}
             fullscreenOptions={{
               enable: isHorizontal,
               orientation: 'landscape',

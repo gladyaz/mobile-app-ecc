@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -120,10 +121,11 @@ type DiscoverResultCardProps = {
   readonly likeCount: number;
 };
 
-function DiscoverResultCard({ video, likeCount }: DiscoverResultCardProps) {
+export function DiscoverResultCard({ video, likeCount }: DiscoverResultCardProps) {
   return (
     <Pressable
       accessibilityRole="button"
+      onPress={() => router.push({ pathname: '/series/[id]', params: { id: video.seriesId } })}
       style={({ pressed }) => [styles.resultCard, pressed && styles.buttonPressed]}>
       <View style={styles.resultMetaRow}>
         <Text style={styles.episode}>Episode {video.episodeNumber}</Text>

@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import { useMemo } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -57,10 +58,13 @@ type SavedVideoCardProps = {
   readonly onUnsave: () => void;
 };
 
-function SavedVideoCard({ video, likeCount, onUnsave }: SavedVideoCardProps) {
+export function SavedVideoCard({ video, likeCount, onUnsave }: SavedVideoCardProps) {
   return (
     <View style={styles.card}>
-      <View style={styles.cardContent}>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => router.push({ pathname: '/series/[id]', params: { id: video.seriesId } })}
+        style={({ pressed }) => [styles.cardContent, pressed && styles.buttonPressed]}>
         <Text style={styles.episode}>Episode {video.episodeNumber}</Text>
         <Text style={styles.cardTitle}>{video.title}</Text>
         <Text style={styles.channel}>{video.channelName}</Text>
@@ -68,7 +72,7 @@ function SavedVideoCard({ video, likeCount, onUnsave }: SavedVideoCardProps) {
           {video.caption}
         </Text>
         <Text style={styles.likes}>{formatLikeCount(likeCount)} likes</Text>
-      </View>
+      </Pressable>
       <Pressable
         accessibilityRole="button"
         onPress={onUnsave}

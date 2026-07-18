@@ -1,4 +1,5 @@
 import { useEvent } from 'expo';
+import { router } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { SymbolView } from 'expo-symbols';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -193,14 +194,19 @@ export function DramaFeedItem({
       )}
 
       <View style={styles.content}>
-        <View style={styles.details}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() =>
+            router.push({ pathname: '/series/[id]', params: { id: video.seriesId } })
+          }
+          style={({ pressed }) => [styles.details, pressed && styles.buttonPressed]}>
           <View style={styles.metaRow}>
             <Text style={styles.episode}>Episode {video.episodeNumber}</Text>
             <Text style={styles.channel}>{video.channelName}</Text>
           </View>
           <Text style={styles.title}>{video.title}</Text>
           <Text style={styles.caption}>{video.caption}</Text>
-        </View>
+        </Pressable>
 
         <View style={styles.actions}>
           <Pressable

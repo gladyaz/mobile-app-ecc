@@ -128,10 +128,18 @@ The Home feed plays real company drama videos from a local HTTP media server dur
 
 ```bash
 cd "/Users/gladyaz/VideoDracin"
-python3 -m http.server 8000 --bind 0.0.0.0
+npx http-server -p 8000
 ```
 
 Leave this running in its own terminal tab. It must stay up for playback to work.
+
+> **Do not use `python3 -m http.server`** for this. It does not support HTTP
+> Range requests, which iOS's AVFoundation requires to play video — every
+> video fails to load with an error like `byte range length mismatch` /
+> "The server is not correctly configured." `http-server` (above) supports
+> Range requests correctly. Web playback can tolerate the Python server
+> since browsers are more lenient, which is why this can look fine on web
+> and still fail on iOS/Android.
 
 **B. Find your Mac's local network IP:**
 
@@ -162,7 +170,7 @@ http://YOUR_MAC_IP:8000/path/to/episode-001.mp4
 - Web running on the same Mac can use `http://localhost:8000`.
 - The iOS Simulator or a physical phone should generally use the Mac's LAN IP (from step B), not `localhost`.
 - The Mac and any physical test device must be on the same network.
-- The Python server must keep running whenever you test video playback.
+- The local media server must keep running whenever you test video playback.
 - This is a development-only stand-in. Real production storage/CDN and the NestJS backend will replace this local server later; nothing about this setup depends on them.
 - If `EXPO_PUBLIC_MEDIA_BASE_URL` is missing, `playbackUrl` values resolve to an empty string, a warning is logged once per video in development, and the Home feed shows a "Video unavailable" placeholder for that item instead of crashing.
 

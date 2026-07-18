@@ -3,7 +3,7 @@
     "name": "mobile-app-ecc",
     "slug": "mobile-app-ecc",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "mobileappecc",
     "userInterfaceStyle": "automatic",
@@ -33,7 +33,8 @@
           "imageWidth": 76
         }
       ],
-      "expo-video"
+      "expo-video",
+      "expo-screen-orientation"
     ],
     "experiments": {
       "typedRoutes": true,

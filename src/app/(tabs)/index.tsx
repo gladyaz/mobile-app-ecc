@@ -19,6 +19,7 @@ import {
 
 import { DramaFeedItem } from '@/components/drama-feed-item';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
+import { getNextEpisode, getSeriesById } from '@/services/videos/series-service';
 import { useVideoInteractions } from '@/stores/video-interactions';
 import type { Video } from '@/types/video';
 
@@ -128,6 +129,11 @@ export default function HomeScreen() {
   const renderItem: ListRenderItem<Video> = useCallback(
     ({ item }) => {
       const interaction = getInteraction(item.id);
+      const series = getSeriesById(videos, item.seriesId);
+      const nextEpisode = series ? getNextEpisode(series, item.episodeNumber) : undefined;
+      const firstFreeEpisodeInSeries = series?.episodes.find(
+        (episode) => episode.accessType === 'free' && episode.isAvailable
+      );
 
       return (
         <DramaFeedItem
@@ -138,6 +144,8 @@ export default function HomeScreen() {
           isLiked={interaction.isLiked}
           isSaved={interaction.isSaved}
           likeCount={getLikeCount(item)}
+          nextEpisode={nextEpisode}
+          firstFreeEpisodeInSeries={firstFreeEpisodeInSeries}
           onShare={() => {
             void handleShare(item);
           }}
@@ -151,6 +159,7 @@ export default function HomeScreen() {
       );
     },
     [
+      videos,
       resolvedActiveVideoId,
       isScreenFocused,
       feedHeight,

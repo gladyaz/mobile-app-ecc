@@ -6,6 +6,8 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { PremiumPreviewModal } from '@/components/premium-preview-modal';
+import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
 
 type DramaFeedItemProps = {
@@ -16,6 +18,8 @@ type DramaFeedItemProps = {
   readonly isLiked: boolean;
   readonly isSaved: boolean;
   readonly likeCount: number;
+  readonly nextEpisode?: Episode;
+  readonly firstFreeEpisodeInSeries?: Episode;
   readonly onShare: () => void;
   readonly onToggleLike: () => void;
   readonly onToggleSave: () => void;
@@ -37,12 +41,15 @@ export function DramaFeedItem({
   isLiked,
   isSaved,
   likeCount,
+  nextEpisode,
+  firstFreeEpisodeInSeries,
   onShare,
   onToggleLike,
   onToggleSave,
 }: DramaFeedItemProps) {
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const [isInFullscreen, setIsInFullscreen] = useState(false);
+  const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
   const hasPlaybackUrl = video.playbackUrl.length > 0;
   const videoViewRef = useRef<VideoView>(null);
   const isInFullscreenRef = useRef(false);
@@ -135,6 +142,27 @@ export function DramaFeedItem({
     void videoViewRef.current?.enterFullscreen();
   }, []);
 
+  const handleNextEpisode = useCallback(() => {
+    if (!nextEpisode) {
+      return;
+    }
+
+    if (nextEpisode.accessType === 'premium') {
+      setIsPremiumModalVisible(true);
+      return;
+    }
+
+    router.push({ pathname: '/', params: { videoId: nextEpisode.videoId } });
+  }, [nextEpisode]);
+
+  const handleGoToFreeEpisode = useCallback(() => {
+    setIsPremiumModalVisible(false);
+
+    if (firstFreeEpisodeInSeries) {
+      router.push({ pathname: '/', params: { videoId: firstFreeEpisodeInSeries.videoId } });
+    }
+  }, [firstFreeEpisodeInSeries]);
+
   const handleFullscreenEnter = useCallback(() => {
     setIsInFullscreen(true);
     void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
@@ -195,6 +223,15 @@ export function DramaFeedItem({
         </Pressable>
       )}
 
+      {nextEpisode ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={handleNextEpisode}
+          style={({ pressed }) => [styles.nextEpisodeButton, pressed && styles.buttonPressed]}>
+          <Text style={styles.nextEpisodeText}>Episode Berikutnya</Text>
+        </Pressable>
+      ) : null}
+
       <View style={styles.content}>
         <Pressable
           accessibilityRole="button"
@@ -240,6 +277,12 @@ export function DramaFeedItem({
           </Pressable>
         </View>
       </View>
+
+      <PremiumPreviewModal
+        onDismiss={() => setIsPremiumModalVisible(false)}
+        onGoToFreeEpisode={firstFreeEpisodeInSeries ? handleGoToFreeEpisode : undefined}
+        visible={isPremiumModalVisible}
+      />
     </View>
   );
 }
@@ -315,6 +358,22 @@ const styles = StyleSheet.create({
   },
   fullscreenText: {
     fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  nextEpisodeButton: {
+    position: 'absolute',
+    top: 54,
+    right: 18,
+    minWidth: 82,
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
+  },
+  nextEpisodeText: {
+    fontSize: 13,
     fontWeight: '700',
     color: '#fff',
   },

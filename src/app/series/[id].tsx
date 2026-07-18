@@ -1,7 +1,9 @@
 import { Image } from 'expo-image';
 import { router, useLocalSearchParams } from 'expo-router';
+import { useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { SeriesEpisodeRow } from '@/components/series-episode-row';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { getSeriesById } from '@/services/videos/series-service';
@@ -11,10 +13,11 @@ export default function SeriesDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const series = getSeriesById(videos, id);
+  const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
 
   const handleSelectEpisode = (episode: Episode) => {
     if (episode.accessType === 'premium') {
-      // Premium preview blocking is wired in a later commit.
+      setIsPremiumModalVisible(true);
       return;
     }
 
@@ -113,6 +116,19 @@ export default function SeriesDetailScreen() {
           ))
         )}
       </View>
+
+      <PremiumPreviewModal
+        onDismiss={() => setIsPremiumModalVisible(false)}
+        onGoToFreeEpisode={
+          firstPlayableEpisode
+            ? () => {
+                setIsPremiumModalVisible(false);
+                handleSelectEpisode(firstPlayableEpisode);
+              }
+            : undefined
+        }
+        visible={isPremiumModalVisible}
+      />
     </ScrollView>
   );
 }

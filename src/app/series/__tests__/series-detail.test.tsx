@@ -17,6 +17,12 @@ jest.mock('@/features/videos/video-catalog-provider', () => ({
   useVideoCatalog: () => mockUseVideoCatalog(),
 }));
 
+const mockGetProgress = jest.fn();
+
+jest.mock('@/stores/series-progress', () => ({
+  useSeriesProgress: () => ({ getProgress: mockGetProgress, recordProgress: jest.fn() }),
+}));
+
 function buildEpisode(episodeNumber: number): Video {
   return {
     id: `series-x-ep-${episodeNumber}`,
@@ -47,6 +53,7 @@ beforeEach(() => {
     error: null,
     refresh: jest.fn(),
   });
+  mockGetProgress.mockReturnValue(undefined);
 });
 
 describe('SeriesDetailScreen', () => {
@@ -70,5 +77,17 @@ describe('SeriesDetailScreen', () => {
 
     expect(router.push).not.toHaveBeenCalled();
     expect(getByText('Episode ini termasuk konten premium.')).toBeTruthy();
+  });
+
+  it('shows Continue Watching and the currently-playing indicator when progress exists', async () => {
+    mockGetProgress.mockReturnValue({
+      lastWatchedVideoId: 'series-x-ep-2',
+      lastWatchedEpisodeNumber: 2,
+    });
+
+    const { getByText } = await render(<SeriesDetailScreen />);
+
+    expect(getByText('Lanjutkan Menonton')).toBeTruthy();
+    expect(getByText('Sedang diputar')).toBeTruthy();
   });
 });

@@ -7,11 +7,13 @@ import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { SeriesEpisodeRow } from '@/components/series-episode-row';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { getSeriesById } from '@/services/videos/series-service';
+import { useSeriesProgress } from '@/stores/series-progress';
 import type { Episode } from '@/types/series';
 
 export default function SeriesDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
+  const { getProgress } = useSeriesProgress();
   const series = getSeriesById(videos, id);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
 
@@ -72,6 +74,11 @@ export default function SeriesDetailScreen() {
   const firstPlayableEpisode = series.episodes.find(
     (episode) => episode.accessType === 'free' && episode.isAvailable
   );
+  const progress = getProgress(series.id);
+  const continueEpisode = progress
+    ? series.episodes.find((episode) => episode.videoId === progress.lastWatchedVideoId)
+    : undefined;
+  const primaryPlaybackEpisode = continueEpisode ?? firstPlayableEpisode;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -92,12 +99,14 @@ export default function SeriesDetailScreen() {
       <Text style={styles.episodeCount}>{series.episodeCount} episode</Text>
       <Text style={styles.description}>{series.description}</Text>
 
-      {firstPlayableEpisode ? (
+      {primaryPlaybackEpisode ? (
         <Pressable
           accessibilityRole="button"
-          onPress={() => handleSelectEpisode(firstPlayableEpisode)}
+          onPress={() => handleSelectEpisode(primaryPlaybackEpisode)}
           style={({ pressed }) => [styles.playButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.playButtonText}>Mulai Menonton</Text>
+          <Text style={styles.playButtonText}>
+            {continueEpisode ? 'Lanjutkan Menonton' : 'Mulai Menonton'}
+          </Text>
         </Pressable>
       ) : null}
 
@@ -109,7 +118,7 @@ export default function SeriesDetailScreen() {
           series.episodes.map((episode) => (
             <SeriesEpisodeRow
               episode={episode}
-              isCurrentlyPlaying={false}
+              isCurrentlyPlaying={episode.videoId === progress?.lastWatchedVideoId}
               key={episode.videoId}
               onPress={() => handleSelectEpisode(episode)}
             />

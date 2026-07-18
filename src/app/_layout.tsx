@@ -7,6 +7,7 @@ import { useColorScheme } from 'react-native';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { VideoCatalogProvider } from '@/features/videos/video-catalog-provider';
 import { AuthProvider } from '@/stores/auth';
+import { SeriesProgressProvider } from '@/stores/series-progress';
 import { VideoInteractionsProvider } from '@/stores/video-interactions';
 
 SplashScreen.preventAutoHideAsync();
@@ -25,12 +26,14 @@ export default function RootLayout() {
       <AuthProvider>
         <VideoCatalogProvider>
           <VideoInteractionsProvider>
-            <AnimatedSplashOverlay />
-            <Stack>
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen name="login" options={{ headerShown: false }} />
-              <Stack.Screen name="series/[id]" options={{ headerShown: false }} />
-            </Stack>
+            <SeriesProgressProvider>
+              <AnimatedSplashOverlay />
+              <Stack>
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen name="login" options={{ headerShown: false }} />
+                <Stack.Screen name="series/[id]" options={{ headerShown: false }} />
+              </Stack>
+            </SeriesProgressProvider>
           </VideoInteractionsProvider>
         </VideoCatalogProvider>
       </AuthProvider>

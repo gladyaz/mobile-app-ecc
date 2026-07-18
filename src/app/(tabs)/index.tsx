@@ -20,6 +20,7 @@ import {
 import { DramaFeedItem } from '@/components/drama-feed-item';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { getNextEpisode, getSeriesById } from '@/services/videos/series-service';
+import { useSeriesProgress } from '@/stores/series-progress';
 import { useVideoInteractions } from '@/stores/video-interactions';
 import type { Video } from '@/types/video';
 
@@ -40,6 +41,7 @@ export default function HomeScreen() {
   const { videoId: requestedVideoId } = useLocalSearchParams<{ videoId?: string }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
+  const { recordProgress } = useSeriesProgress();
   const [feedHeight, setFeedHeight] = useState(height);
   const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
   const requestedVideoIsInCatalog =
@@ -74,9 +76,10 @@ export default function HomeScreen() {
 
       if (activeItem?.item) {
         setActiveVideoId(activeItem.item.id);
+        recordProgress(activeItem.item.seriesId, activeItem.item.id, activeItem.item.episodeNumber);
       }
     },
-    []
+    [recordProgress]
   );
 
   const handleLayout = useCallback((event: LayoutChangeEvent) => {

@@ -30,6 +30,7 @@ Mobile app for Mandarin/Chinese short drama videos with Indonesian subtitles. Th
 - Video catalog fetched once from the NestJS backend and shared across Home, Discover, and Saved via `VideoCatalogProvider` (falls back to bundled mock data only when `EXPO_PUBLIC_USE_MOCK_DATA=true`).
 - Home and Discover show loading, error-with-retry, and empty states for the video feed; a failed backend call never silently falls back to mock data.
 - Processing service layer that currently reads mock data.
+- Series Detail screen (`/series/[id]`) grouping episodes by series, reachable from Home, Discover, and Saved — see "Series and Episode Model" below.
 
 ## How To Run
 
@@ -190,6 +191,15 @@ Horizontal (landscape) videos in the feed show a "Fullscreen" button; vertical v
 
 On Android, the JS runtime pauses while `VideoView` is in fullscreen (documented by `expo-video` itself). This means a custom in-app "exit fullscreen" button pressed from JS is not reliable there — exiting must go through the native controls or the system back button, both of which work correctly. This does not affect iOS or web.
 
+## Series and Episode Model (Phase 6A)
+
+- Episodes are grouped into series client-side, derived from the already-fetched video catalog by `seriesId` (`src/services/videos/series-service.ts`). No new backend endpoint was added; `seriesId` already existed on backend video responses and is now preserved by the mobile mapper instead of being dropped.
+- `/series/[id]` (`src/app/series/[id].tsx`) shows the series cover, title, category, channel, description, episode count, a Play/Continue Watching button, and the episode list with Free/Premium badges.
+- Access rule: episodes 1-5 are free, episode 6 onward is premium (`FREE_EPISODE_LIMIT` in `series-service.ts`). **No real payment, subscription, credit balance, or purchase flow is implemented.** Selecting a premium episode shows a preview modal ("Episode ini termasuk konten premium.") with "Segera Hadir" and "Kembali ke Episode Gratis" actions only.
+- Selecting a free episode returns to Home with the episode's `videoId` as a route param; Home scrolls the existing feed to it and plays it there — there is no second, dedicated player screen, so only one video ever plays at a time.
+- `DramaFeedItem` has an "Episode Berikutnya" (Next Episode) control that follows the same free/premium rule.
+- Last-watched episode per series is tracked in-memory only (`src/stores/series-progress.tsx`, `SeriesProgressProvider`); it resets on app restart. Selected series/episode are ordinary route params and local component state, not global state.
+
 ## Folder Structure
 
 - `src/app` - Expo Router routes, layouts, tabs, and screens.
@@ -208,6 +218,8 @@ On Android, the JS runtime pauses while `VideoView` is in fullscreen (documented
 - Processing History still reads local mock data (not backend-connected in this phase).
 - Video playback in development requires the backend's `playbackUrl` to resolve to a reachable server — see "Local Company Video Playback" below if you're serving raw files locally rather than through the backend.
 - No real upload or production video storage/CDN integration exists yet.
+- Premium episode access is a display-only rule (episode 6+); there is no payment, subscription, credit, or purchase system.
+- Series progress (last-watched episode) is in-memory only and resets on app restart.
 
 ## API Contract
 

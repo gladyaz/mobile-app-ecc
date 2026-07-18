@@ -22,6 +22,7 @@ Auth model assumption: authenticated endpoints use `Authorization: Bearer <acces
 ```json
 {
   "id": "video_001",
+  "seriesId": "series_ceo_dingin",
   "title": "Kontrak Cinta CEO Dingin",
   "episodeNumber": 1,
   "channelName": "Mandarin Drama ID",
@@ -43,7 +44,51 @@ Auth model assumption: authenticated endpoints use `Authorization: Bearer <acces
 }
 ```
 
-The mobile app uses `playbackUrl` for the final processed video, which already has Indonesian subtitles burned in. `storageKey` and raw internal storage paths are backend-only values and must not be treated as mobile-readable file paths. The mobile app does not request or render separate subtitle tracks.
+The mobile app uses `playbackUrl` for the final processed video, which already has Indonesian subtitles burned in. `storageKey` and raw internal storage paths are backend-only values and must not be treated as mobile-readable file paths. The mobile app does not request or render separate subtitle tracks. `seriesId` groups episodes that belong to the same drama; it has been present on backend video responses since before Phase 6A but was previously dropped by the mobile mapper.
+
+### Series and Episode (Phase 6A, client-derived — not a backend schema)
+
+Phase 6A does not add a `/series` backend endpoint. Instead, the mobile app groups the existing `/videos/feed` response by `seriesId` at runtime (`src/services/videos/series-service.ts`). The shapes below describe that derived, in-memory model, not a wire format:
+
+```json
+{
+  "id": "series_ceo_dingin",
+  "title": "Kontrak Cinta CEO Dingin",
+  "description": "Pertemuan pertama yang mengubah hidup Lin Yue.",
+  "category": "CEO",
+  "channelName": "Mandarin Drama ID",
+  "coverUrl": "https://cdn.example.com/videos/video_001.jpg",
+  "totalEpisodes": 7,
+  "episodeCount": 7,
+  "releaseStatus": "ongoing",
+  "episodes": [
+    {
+      "videoId": "video_001",
+      "seriesId": "series_ceo_dingin",
+      "episodeNumber": 1,
+      "title": "Kontrak Cinta CEO Dingin",
+      "thumbnailUrl": "https://cdn.example.com/videos/video_001.jpg",
+      "playbackUrl": "https://media.example.com/videos/video_001.mp4",
+      "accessType": "free",
+      "isAvailable": true,
+      "hasEmbeddedIndonesianSubtitle": true
+    }
+  ]
+}
+```
+
+Access rule: episodes 1-5 are `"free"`, episode 6 onward is `"premium"` (`FREE_EPISODE_LIMIT = 5`). This is a display/UX rule only — **no payment, subscription, credit balance, or purchase flow is implemented**. Premium episodes are blocked client-side with a preview modal; there is nothing on the backend enforcing this yet.
+
+### Recommended Future: Series Endpoints (not implemented)
+
+If series metadata ever outgrows what a client-side group-by can support (e.g. per-series descriptions/covers distinct from any single episode, moderation state, release calendars), the smallest useful backend addition would be:
+
+- `GET /series` — paginated list of series summaries
+- `GET /series/:id` — one series with its episode list
+- `GET /series/:id/episodes` — episode list only
+- `GET /series/:id/episodes/:episodeNumber` — one episode's detail
+
+None of these exist yet and Phase 6A does not require them: `seriesId` already round-trips through `/videos/feed`, so the mobile client groups locally. `playbackUrl` would continue to be backend-generated in all cases; internal storage paths remain backend-only. An unknown series or episode should return the standard error envelope with a `404`-equivalent `code` such as `SERIES_NOT_FOUND` / `EPISODE_NOT_FOUND`.
 
 ### User
 

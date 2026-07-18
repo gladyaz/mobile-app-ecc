@@ -1,6 +1,7 @@
 import { useEvent } from 'expo';
-import { useVideoPlayer, VideoView } from 'expo-video';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import { SymbolView } from 'expo-symbols';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -174,7 +175,11 @@ export function DramaFeedItem({
           accessibilityRole="button"
           onPress={handlePlayPause}
           style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.playPauseText}>{isPlaying ? 'Pause' : 'Play'}</Text>
+          <SymbolView
+            name={{ ios: isPlaying ? 'pause.fill' : 'play.fill', android: isPlaying ? 'pause' : 'play_arrow', web: isPlaying ? 'pause' : 'play_arrow' }}
+            size={28}
+            tintColor="#fff"
+          />
         </Pressable>
       )}
 
@@ -278,19 +283,16 @@ const styles = StyleSheet.create({
   },
   playPauseButton: {
     position: 'absolute',
-    top: 54,
-    right: 18,
-    minWidth: 82,
+    top: '50%',
+    left: '50%',
+    marginTop: -32,
+    marginLeft: -32,
+    width: 64,
+    height: 64,
     alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.58)',
-  },
-  playPauseText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#fff',
+    justifyContent: 'center',
+    borderRadius: 32,
+    backgroundColor: 'rgba(0, 0, 0, 0.32)',
   },
   fullscreenButton: {
     position: 'absolute',

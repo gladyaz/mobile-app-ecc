@@ -58,6 +58,7 @@ export function DramaFeedItem({
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const [isInFullscreen, setIsInFullscreen] = useState(false);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
+  const [isIndicatorVisible, setIsIndicatorVisible] = useState(true);
   const hasPlaybackUrl = video.playbackUrl.length > 0;
   const videoViewRef = useRef<VideoView>(null);
   const isInFullscreenRef = useRef(false);
@@ -136,7 +137,23 @@ export function DramaFeedItem({
     }
   }, [status, isInFullscreen]);
 
+  // Auto-hide the play/pause icon shortly after playback starts, so it's a
+  // brief confirmation rather than a permanent obstruction. While paused it
+  // stays visible (set directly by handlePlayPause) so tapping-to-resume is
+  // always discoverable.
+  useEffect(() => {
+    if (!isPlaying) {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => setIsIndicatorVisible(false), 900);
+
+    return () => clearTimeout(timeoutId);
+  }, [isPlaying]);
+
   const handlePlayPause = useCallback(() => {
+    setIsIndicatorVisible(true);
+
     if (isPlaying) {
       player.pause();
       setIsManuallyPaused(true);
@@ -221,11 +238,13 @@ export function DramaFeedItem({
           accessibilityRole="button"
           onPress={handlePlayPause}
           style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
-          <SymbolView
-            name={{ ios: isPlaying ? 'pause.fill' : 'play.fill', android: isPlaying ? 'pause' : 'play_arrow', web: isPlaying ? 'pause' : 'play_arrow' }}
-            size={28}
-            tintColor="#fff"
-          />
+          {isIndicatorVisible ? (
+            <SymbolView
+              name={{ ios: isPlaying ? 'pause.fill' : 'play.fill', android: isPlaying ? 'pause' : 'play_arrow', web: isPlaying ? 'pause' : 'play_arrow' }}
+              size={28}
+              tintColor="#fff"
+            />
+          ) : null}
         </Pressable>
       )}
 

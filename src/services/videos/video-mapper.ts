@@ -27,8 +27,15 @@ const VIDEO_CATEGORIES: readonly VideoCategory[] = [
   'Historical',
 ];
 
-function isVideoCategory(value: string): value is VideoCategory {
-  return (VIDEO_CATEGORIES as readonly string[]).includes(value);
+/**
+ * Backend category casing has been observed to vary (e.g. "romance" instead
+ * of "Romance"); match case-insensitively and normalize to the mobile
+ * app's canonical casing instead of rejecting an otherwise-valid category.
+ */
+function normalizeCategory(value: string): VideoCategory | undefined {
+  return VIDEO_CATEGORIES.find(
+    (category) => category.toLowerCase() === value.toLowerCase()
+  );
 }
 
 function assertField(condition: boolean, fieldName: string, dto: unknown): void {
@@ -54,7 +61,10 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
   assertField(typeof dto.episodeNumber === 'number', 'episodeNumber', dto);
   assertField(typeof dto.channelName === 'string', 'channelName', dto);
   assertField(typeof dto.caption === 'string', 'caption', dto);
-  assertField(typeof dto.category === 'string' && isVideoCategory(dto.category), 'category', dto);
+  const normalizedCategory =
+    typeof dto.category === 'string' ? normalizeCategory(dto.category) : undefined;
+
+  assertField(normalizedCategory !== undefined, 'category', dto);
   assertField(typeof dto.storageKey === 'string', 'storageKey', dto);
   assertField(
     typeof dto.playbackUrl === 'string' && dto.playbackUrl.length > 0,
@@ -80,7 +90,7 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
     title: dto.title,
     episodeNumber: dto.episodeNumber,
     channelName: dto.channelName,
-    category: dto.category as VideoCategory,
+    category: normalizedCategory as VideoCategory,
     sourceLanguage: dto.sourceLanguage,
     hasEmbeddedIndonesianSubtitle: dto.hasEmbeddedIndonesianSubtitle,
     // The feed only returns playable videos, so treat every backend-fetched

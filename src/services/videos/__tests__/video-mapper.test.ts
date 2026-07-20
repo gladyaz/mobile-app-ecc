@@ -30,4 +30,16 @@ describe('mapBackendVideoToVideo', () => {
 
     expect(() => mapBackendVideoToVideo(dtoWithEmptySeriesId)).toThrow(/seriesId/);
   });
+
+  it('normalizes a lowercase backend category to the canonical casing', () => {
+    const video = mapBackendVideoToVideo(buildDto({ category: 'romance' }));
+
+    expect(video.category).toBe('Romance');
+  });
+
+  it('throws when category does not match any known category, case-insensitively', () => {
+    const dtoWithUnknownCategory = buildDto({ category: 'not-a-real-category' });
+
+    expect(() => mapBackendVideoToVideo(dtoWithUnknownCategory)).toThrow(/category/);
+  });
 });

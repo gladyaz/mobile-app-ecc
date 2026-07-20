@@ -99,13 +99,25 @@ export function DramaFeedItem({
     videoTrack?.size != null ? videoTrack.size.width > videoTrack.size.height : undefined;
   const isHorizontal = metadataIsHorizontal ?? runtimeIsHorizontal ?? false;
 
+  // Home passes a fresh onRecordProgress closure on every render (it's an
+  // inline arrow per feed item), so reading it directly would make
+  // flushProgress's identity churn every render too - and since
+  // flushProgress is an effect dependency below, that churn combined with
+  // recordProgress triggering a re-render caused an infinite update loop.
+  // Storing it in a ref keeps flushProgress's own identity stable.
+  const onRecordProgressRef = useRef(onRecordProgress);
+
+  useEffect(() => {
+    onRecordProgressRef.current = onRecordProgress;
+  }, [onRecordProgress]);
+
   const flushProgress = useCallback(() => {
-    if (!onRecordProgress || !hasPlaybackUrl) {
+    if (!onRecordProgressRef.current || !hasPlaybackUrl) {
       return;
     }
 
-    onRecordProgress(player.currentTime, player.duration || undefined);
-  }, [onRecordProgress, hasPlaybackUrl, player]);
+    onRecordProgressRef.current(player.currentTime, player.duration || undefined);
+  }, [hasPlaybackUrl, player]);
 
   // Resume once per mount, as soon as the player has a real duration to seek
   // within. Guarded by a ref so this never re-fires from later renders.

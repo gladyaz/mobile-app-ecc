@@ -117,12 +117,12 @@ const baseProps = {
 };
 
 describe('DramaFeedItem', () => {
-  it('clamps title and caption to 2 lines by default', async () => {
+  it('clamps title to 2 lines and caption to 1 line by default', async () => {
     const video = buildVideo();
     const { getByText } = await render(<DramaFeedItem video={video} {...baseProps} />);
 
     expect(getByText(video.title).props.numberOfLines).toBe(2);
-    expect(getByText(video.caption).props.numberOfLines).toBe(2);
+    expect(getByText(video.caption).props.numberOfLines).toBe(1);
   });
 
   it('expands a long caption when "Lebih banyak" is pressed', async () => {

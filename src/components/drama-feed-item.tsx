@@ -16,7 +16,7 @@ import type { Video } from '@/types/video';
 // the feed item's own rendered height, which Home already measures as the
 // tab screen's content area (excluding the bottom tab bar) - see
 // (tabs)/index.tsx's onLayout handler.
-const SUBTITLE_SAFE_ZONE_RATIO = 0.16;
+const SUBTITLE_SAFE_ZONE_RATIO = 0.22;
 
 // Above this length, the 2-line-clamped caption is likely to actually
 // truncate, so it's worth offering a "Lebih banyak" expand affordance.
@@ -288,7 +288,7 @@ export function DramaFeedItem({
             {video.title}
           </Text>
           <Text
-            numberOfLines={isCaptionExpanded ? undefined : 2}
+            numberOfLines={isCaptionExpanded ? undefined : 1}
             style={[styles.caption, styles.textShadow]}>
             {video.caption}
             {video.caption.length > CAPTION_EXPAND_THRESHOLD ? (

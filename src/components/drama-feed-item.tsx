@@ -247,7 +247,7 @@ export function DramaFeedItem({
         </Pressable>
       ) : null}
 
-      <View style={styles.content}>
+      <View style={[styles.content, { bottom: subtitleSafeZoneHeight }]}>
         <Pressable
           accessibilityRole="button"
           onPress={() =>
@@ -255,11 +255,17 @@ export function DramaFeedItem({
           }
           style={({ pressed }) => [styles.details, pressed && styles.buttonPressed]}>
           <View style={styles.metaRow}>
-            <Text style={styles.episode}>Episode {video.episodeNumber}</Text>
-            <Text style={styles.channel}>{video.channelName}</Text>
+            <Text style={[styles.episode, styles.textShadow]}>
+              Episode {video.episodeNumber}
+            </Text>
+            <Text style={[styles.channel, styles.textShadow]}>{video.channelName}</Text>
           </View>
-          <Text style={styles.title}>{video.title}</Text>
-          <Text style={styles.caption}>{video.caption}</Text>
+          <Text numberOfLines={2} style={[styles.title, styles.textShadow]}>
+            {video.title}
+          </Text>
+          <Text numberOfLines={1} style={[styles.caption, styles.textShadow]}>
+            {video.caption}
+          </Text>
         </Pressable>
 
         <View style={styles.actions}>
@@ -391,16 +397,12 @@ const styles = StyleSheet.create({
   content: {
     position: 'absolute',
     right: 0,
-    // Leaves a bottom safe-zone clear of the info block so burned-in
-    // subtitles (typically the bottom ~10-15% of the frame) stay readable.
-    bottom: 56,
     left: 0,
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
     gap: 18,
     paddingHorizontal: 18,
-    paddingBottom: 28,
   },
   details: {
     flex: 1,
@@ -412,6 +414,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  textShadow: {
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
   episode: {
     fontSize: 14,
     fontWeight: '700',
@@ -419,8 +426,8 @@ const styles = StyleSheet.create({
   },
   title: {
     marginTop: 8,
-    fontSize: 22,
-    lineHeight: 28,
+    fontSize: 19,
+    lineHeight: 24,
     fontWeight: '800',
     color: '#fff',
   },

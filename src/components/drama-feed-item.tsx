@@ -10,6 +10,14 @@ import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
 
+// Embedded (burned-in) Indonesian subtitles typically sit in the bottom
+// ~10-15% of the frame. Reserve a proportional safe zone (rather than a
+// fixed pixel value) so it scales across device heights. `height` here is
+// the feed item's own rendered height, which Home already measures as the
+// tab screen's content area (excluding the bottom tab bar) - see
+// (tabs)/index.tsx's onLayout handler.
+const SUBTITLE_SAFE_ZONE_RATIO = 0.16;
+
 type DramaFeedItemProps = {
   readonly video: Video;
   readonly height: number;
@@ -74,6 +82,7 @@ export function DramaFeedItem({
   const runtimeIsHorizontal =
     videoTrack?.size != null ? videoTrack.size.width > videoTrack.size.height : undefined;
   const isHorizontal = metadataIsHorizontal ?? runtimeIsHorizontal ?? false;
+  const subtitleSafeZoneHeight = Math.round(height * SUBTITLE_SAFE_ZONE_RATIO);
 
   useEffect(() => {
     isInFullscreenRef.current = isInFullscreen;
@@ -199,7 +208,13 @@ export function DramaFeedItem({
           />
         )}
       </View>
-      <View pointerEvents="none" style={styles.bottomScrim} />
+      <View
+        pointerEvents="none"
+        style={[
+          styles.bottomScrim,
+          { bottom: subtitleSafeZoneHeight, height: subtitleSafeZoneHeight + 130 },
+        ]}
+      />
 
       {hasPlaybackError ? null : (
         <Pressable
@@ -327,10 +342,8 @@ const styles = StyleSheet.create({
   bottomScrim: {
     position: 'absolute',
     right: 0,
-    bottom: 0,
     left: 0,
-    height: 260,
-    backgroundColor: 'rgba(0, 0, 0, 0.38)',
+    backgroundColor: 'rgba(0, 0, 0, 0.22)',
   },
   playPauseButton: {
     position: 'absolute',

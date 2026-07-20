@@ -152,12 +152,23 @@ export function DramaFeedItem({
 
   // Flush immediately on unmount (e.g. scrolled far enough away to be
   // recycled) so the last few seconds of watching aren't lost to the next
-  // throttled interval tick.
+  // throttled interval tick. Reads flushProgress via a ref and uses an
+  // empty dependency array deliberately: keying this on [flushProgress]
+  // means the cleanup re-fires whenever that identity changes (e.g. a
+  // spurious effect re-run), which calls recordProgress with the current
+  // (still advancing) playback position, triggers a real state update, and
+  // re-renders - causing an infinite loop instead of a genuine unmount flush.
+  const flushProgressRef = useRef(flushProgress);
+
+  useEffect(() => {
+    flushProgressRef.current = flushProgress;
+  }, [flushProgress]);
+
   useEffect(() => {
     return () => {
-      flushProgress();
+      flushProgressRef.current();
     };
-  }, [flushProgress]);
+  }, []);
 
   useEffect(() => {
     isInFullscreenRef.current = isInFullscreen;

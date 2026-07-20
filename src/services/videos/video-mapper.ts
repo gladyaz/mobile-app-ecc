@@ -25,6 +25,7 @@ const VIDEO_CATEGORIES: readonly VideoCategory[] = [
   'Family',
   'CEO',
   'Historical',
+  'Action',
 ];
 
 /**

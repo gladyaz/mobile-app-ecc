@@ -1,6 +1,6 @@
 import type { ProcessingStatus } from '@/types/processing';
 
-export type VideoCategory = 'Romance' | 'Revenge' | 'Family' | 'CEO' | 'Historical';
+export type VideoCategory = 'Romance' | 'Revenge' | 'Family' | 'CEO' | 'Historical' | 'Action';
 
 export type Video = {
   readonly id: string;

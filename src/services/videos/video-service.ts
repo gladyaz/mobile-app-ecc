@@ -13,6 +13,8 @@ const categoryFilters: readonly VideoCategoryFilter[] = [
   'CEO',
   'Historical',
   'Action',
+  'Comedy',
+  'Drama',
 ];
 
 function shouldUseMockData(): boolean {

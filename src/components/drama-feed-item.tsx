@@ -342,8 +342,6 @@ const styles = StyleSheet.create({
     height: 64,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 32,
-    backgroundColor: 'rgba(0, 0, 0, 0.32)',
   },
   fullscreenButton: {
     position: 'absolute',
@@ -380,7 +378,9 @@ const styles = StyleSheet.create({
   content: {
     position: 'absolute',
     right: 0,
-    bottom: 0,
+    // Leaves a bottom safe-zone clear of the info block so burned-in
+    // subtitles (typically the bottom ~10-15% of the frame) stay readable.
+    bottom: 56,
     left: 0,
     flexDirection: 'row',
     alignItems: 'flex-end',

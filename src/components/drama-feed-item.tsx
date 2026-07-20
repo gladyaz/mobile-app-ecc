@@ -16,7 +16,7 @@ import type { Video } from '@/types/video';
 // the feed item's own rendered height, which Home already measures as the
 // tab screen's content area (excluding the bottom tab bar) - see
 // (tabs)/index.tsx's onLayout handler.
-const SUBTITLE_SAFE_ZONE_RATIO = 0.22;
+const SUBTITLE_SAFE_ZONE_RATIO = 0.18;
 
 // Above this length, the 2-line-clamped caption is likely to actually
 // truncate, so it's worth offering a "Lebih banyak" expand affordance.

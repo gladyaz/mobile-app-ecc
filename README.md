@@ -198,7 +198,16 @@ On Android, the JS runtime pauses while `VideoView` is in fullscreen (documented
 - Access rule: episodes 1-5 are free, episode 6 onward is premium (`FREE_EPISODE_LIMIT` in `series-service.ts`). **No real payment, subscription, credit balance, or purchase flow is implemented.** Selecting a premium episode shows a preview modal ("Episode ini termasuk konten premium.") with "Segera Hadir" and "Kembali ke Episode Gratis" actions only.
 - Selecting a free episode returns to Home with the episode's `videoId` as a route param; Home scrolls the existing feed to it and plays it there — there is no second, dedicated player screen, so only one video ever plays at a time.
 - `DramaFeedItem` has an "Episode Berikutnya" (Next Episode) control that follows the same free/premium rule.
-- Last-watched episode per series is tracked in-memory only (`src/stores/series-progress.tsx`, `SeriesProgressProvider`); it resets on app restart. Selected series/episode are ordinary route params and local component state, not global state.
+- Last-watched episode per series, including playback position, is persisted locally (`src/stores/series-progress.tsx`, `SeriesProgressProvider`) — see "Local Persistence" below. Selected series/episode are ordinary route params and local component state, not global state.
+
+## Local Persistence (Phase 7A)
+
+- A small typed storage layer (`src/services/storage/local-storage.ts`) wraps `@react-native-async-storage/async-storage` with a versioned envelope (`{ version, data }`). Malformed JSON, a version mismatch, or a storage read failure all safely resolve to "no persisted state" instead of crashing — every store already has a sensible in-memory default to fall back to.
+- **Persisted:** the dummy auth session (`stores/auth.tsx`), liked/saved video IDs (`stores/video-interactions.tsx`), and per-series watch progress including playback position (`stores/series-progress.tsx`). Only IDs, booleans, numbers, and timestamps are persisted — never full `Video` objects or `playbackUrl`s.
+- **Hydration:** each store exposes `isHydrated`; the root layout (`src/app/_layout.tsx`) keeps the native splash screen visible until all three resolve, so the app never briefly flashes a Guest state or an empty Saved tab before real persisted data loads.
+- **Resume playback:** `DramaFeedItem` seeks once per mount to the persisted position (via `player.seekBy()`, guarded so it never re-fires) and writes progress on a throttled 5-second interval while actively playing, plus immediately on pause, fullscreen exit, and unmount. Within the last 5 seconds of an episode, progress resets to 0 instead of "resuming" right at the end.
+- **Dev reset:** Profile has a `Reset Local Data (Dev)` button, visible only when `__DEV__` is true, that clears all three persisted keys (requires a manual app reload afterward to see the reset state reflected).
+- **Not secure production auth:** the persisted auth session is still dummy auth — there is no password anywhere in this flow, and this remains explicitly not secure production authentication. It will be replaced by real backend auth and secure tokens later.
 
 ## Folder Structure
 
@@ -213,13 +222,13 @@ On Android, the JS runtime pauses while `VideoView` is in fullscreen (documented
 
 ## Current Limitations
 
-- Auth is dummy/local and not persisted.
-- Like/save state is local only; not synced to the backend.
+- Auth is dummy/local; it's now persisted on-device (see "Local Persistence" above) but is still not real, secure production authentication.
+- Like/save state is local only, persisted on-device, but not synced to the backend.
 - Processing History still reads local mock data (not backend-connected in this phase).
 - Video playback in development requires the backend's `playbackUrl` to resolve to a reachable server — see "Local Company Video Playback" below if you're serving raw files locally rather than through the backend.
 - No real upload or production video storage/CDN integration exists yet.
 - Premium episode access is a display-only rule (episode 6+); there is no payment, subscription, credit, or purchase system.
-- Series progress (last-watched episode) is in-memory only and resets on app restart.
+- Series progress (last-watched episode + playback position) is persisted on-device only; it is not synced across devices or to any backend/database.
 
 ## API Contract
 

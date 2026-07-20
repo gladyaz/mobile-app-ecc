@@ -1,8 +1,32 @@
 import { router } from 'expo-router';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { resetAllPersistedState } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
 import { useVideoInteractions } from '@/stores/video-interactions';
+
+// Development-only escape hatch to clear persisted auth/likes/saved/watch
+// progress. Storage is cleared immediately; in-memory state for the
+// current session still needs a manual app reload to pick that up, since
+// there's no cross-platform way to force-remount every provider from here.
+function DevResetButton() {
+  if (!__DEV__) {
+    return null;
+  }
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={() => {
+        void resetAllPersistedState().then(() => {
+          Alert.alert('Local data cleared', 'Reload the app to see the reset state.');
+        });
+      }}
+      style={({ pressed }) => [styles.devResetButton, pressed && styles.buttonPressed]}>
+      <Text style={styles.devResetButtonText}>Reset Local Data (Dev)</Text>
+    </Pressable>
+  );
+}
 
 export default function ProfileScreen() {
   const { isAuthenticated, logout, user } = useAuth();
@@ -40,6 +64,8 @@ export default function ProfileScreen() {
           style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}>
           <Text style={styles.secondaryButtonText}>Logout</Text>
         </Pressable>
+
+        <DevResetButton />
       </View>
     );
   }
@@ -60,6 +86,8 @@ export default function ProfileScreen() {
           style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
           <Text style={styles.buttonText}>Login</Text>
         </Pressable>
+
+        <DevResetButton />
       </View>
     </View>
   );
@@ -182,5 +210,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#111827',
+  },
+  devResetButton: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#fef3c7',
+  },
+  devResetButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#92400e',
   },
 });

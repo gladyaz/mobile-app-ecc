@@ -117,12 +117,28 @@ const baseProps = {
 };
 
 describe('DramaFeedItem', () => {
-  it('clamps title to 2 lines and caption to 1 line', async () => {
+  it('clamps title and caption to 2 lines by default', async () => {
     const video = buildVideo();
     const { getByText } = await render(<DramaFeedItem video={video} {...baseProps} />);
 
     expect(getByText(video.title).props.numberOfLines).toBe(2);
-    expect(getByText(video.caption).props.numberOfLines).toBe(1);
+    expect(getByText(video.caption).props.numberOfLines).toBe(2);
+  });
+
+  it('expands a long caption when "Lebih banyak" is pressed', async () => {
+    const longCaption =
+      'Sebuah rahasia besar terungkap ketika keluarga itu kembali ke kampung halaman setelah bertahun-tahun pergi.';
+    const video = buildVideo({ caption: longCaption });
+    const { getByText, queryByText } = await render(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
+
+    expect(getByText('Lebih banyak')).toBeTruthy();
+
+    await fireEvent.press(getByText('Lebih banyak'));
+
+    expect(queryByText('Lebih banyak')).toBeNull();
+    expect(getByText('Lebih sedikit')).toBeTruthy();
   });
 
   it('calls the provided handlers when Like, Save, and Share are pressed', async () => {

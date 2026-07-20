@@ -18,6 +18,10 @@ import type { Video } from '@/types/video';
 // (tabs)/index.tsx's onLayout handler.
 const SUBTITLE_SAFE_ZONE_RATIO = 0.16;
 
+// Above this length, the 2-line-clamped caption is likely to actually
+// truncate, so it's worth offering a "Lebih banyak" expand affordance.
+const CAPTION_EXPAND_THRESHOLD = 60;
+
 type DramaFeedItemProps = {
   readonly video: Video;
   readonly height: number;
@@ -59,6 +63,7 @@ export function DramaFeedItem({
   const [isInFullscreen, setIsInFullscreen] = useState(false);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
   const [isIndicatorVisible, setIsIndicatorVisible] = useState(true);
+  const [isCaptionExpanded, setIsCaptionExpanded] = useState(false);
   const hasPlaybackUrl = video.playbackUrl.length > 0;
   const videoViewRef = useRef<VideoView>(null);
   const isInFullscreenRef = useRef(false);
@@ -282,8 +287,20 @@ export function DramaFeedItem({
           <Text numberOfLines={2} style={[styles.title, styles.textShadow]}>
             {video.title}
           </Text>
-          <Text numberOfLines={1} style={[styles.caption, styles.textShadow]}>
+          <Text
+            numberOfLines={isCaptionExpanded ? undefined : 2}
+            style={[styles.caption, styles.textShadow]}>
             {video.caption}
+            {video.caption.length > CAPTION_EXPAND_THRESHOLD ? (
+              <Text
+                onPress={(event) => {
+                  event.stopPropagation();
+                  setIsCaptionExpanded((current) => !current);
+                }}
+                style={[styles.captionExpandToggle, styles.textShadow]}>
+                {isCaptionExpanded ? '  Lebih sedikit' : '  Lebih banyak'}
+              </Text>
+            ) : null}
           </Text>
         </Pressable>
 
@@ -460,6 +477,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     color: '#d1d5db',
+  },
+  captionExpandToggle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#e5e7eb',
   },
   actions: {
     alignItems: 'center',

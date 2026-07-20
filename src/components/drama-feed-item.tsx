@@ -10,13 +10,11 @@ import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
 
-// Embedded (burned-in) Indonesian subtitles typically sit in the bottom
-// ~10-15% of the frame. Reserve a proportional safe zone (rather than a
-// fixed pixel value) so it scales across device heights. `height` here is
-// the feed item's own rendered height, which Home already measures as the
-// tab screen's content area (excluding the bottom tab bar) - see
-// (tabs)/index.tsx's onLayout handler.
-const SUBTITLE_SAFE_ZONE_RATIO = 0.18;
+// Small gap between the metadata block and the true bottom edge (the tab
+// bar itself is already excluded from the `height` prop - see
+// (tabs)/index.tsx's onLayout handler - so this is just breathing room,
+// not a subtitle safe zone).
+const METADATA_BOTTOM_OFFSET = 16;
 
 // Above this length, the 2-line-clamped caption is likely to actually
 // truncate, so it's worth offering a "Lebih banyak" expand affordance.
@@ -88,7 +86,6 @@ export function DramaFeedItem({
   const runtimeIsHorizontal =
     videoTrack?.size != null ? videoTrack.size.width > videoTrack.size.height : undefined;
   const isHorizontal = metadataIsHorizontal ?? runtimeIsHorizontal ?? false;
-  const subtitleSafeZoneHeight = Math.round(height * SUBTITLE_SAFE_ZONE_RATIO);
 
   useEffect(() => {
     isInFullscreenRef.current = isInFullscreen;
@@ -230,13 +227,6 @@ export function DramaFeedItem({
           />
         )}
       </View>
-      <View
-        pointerEvents="none"
-        style={[
-          styles.bottomScrim,
-          { bottom: subtitleSafeZoneHeight, height: subtitleSafeZoneHeight + 130 },
-        ]}
-      />
 
       {hasPlaybackError ? null : (
         <Pressable
@@ -271,7 +261,7 @@ export function DramaFeedItem({
         </Pressable>
       ) : null}
 
-      <View style={[styles.content, { bottom: subtitleSafeZoneHeight }]}>
+      <View style={styles.content}>
         <Pressable
           accessibilityRole="button"
           onPress={() =>
@@ -306,31 +296,48 @@ export function DramaFeedItem({
 
         <View style={styles.actions}>
           <Pressable
+            accessibilityLabel={isLiked ? 'Unlike' : 'Like'}
             accessibilityRole="button"
             onPress={onToggleLike}
-            style={({ pressed }) => [
-              styles.actionButton,
-              isLiked && styles.actionButtonActive,
-              pressed && styles.buttonPressed,
-            ]}>
-            <Text style={styles.actionLabel}>{isLiked ? 'Liked' : 'Like'}</Text>
-            <Text style={styles.actionValue}>{formatLikeCount(likeCount)}</Text>
+            style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
+            <SymbolView
+              name={{
+                ios: isLiked ? 'heart.fill' : 'heart',
+                android: isLiked ? 'favorite' : 'favorite_border',
+                web: isLiked ? 'favorite' : 'favorite_border',
+              }}
+              size={26}
+              tintColor={isLiked ? '#d11f3f' : '#fff'}
+            />
+            <Text style={[styles.actionValue, styles.textShadow]}>
+              {formatLikeCount(likeCount)}
+            </Text>
           </Pressable>
           <Pressable
+            accessibilityLabel={isSaved ? 'Unsave' : 'Save'}
             accessibilityRole="button"
             onPress={onToggleSave}
-            style={({ pressed }) => [
-              styles.actionButton,
-              isSaved && styles.actionButtonActive,
-              pressed && styles.buttonPressed,
-            ]}>
-            <Text style={styles.actionLabel}>{isSaved ? 'Saved' : 'Save'}</Text>
+            style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
+            <SymbolView
+              name={{
+                ios: isSaved ? 'bookmark.fill' : 'bookmark',
+                android: isSaved ? 'bookmark' : 'bookmark_border',
+                web: isSaved ? 'bookmark' : 'bookmark_border',
+              }}
+              size={26}
+              tintColor={isSaved ? '#fbbf24' : '#fff'}
+            />
           </Pressable>
           <Pressable
+            accessibilityLabel="Share"
             accessibilityRole="button"
             onPress={onShare}
             style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
-            <Text style={styles.actionLabel}>Share</Text>
+            <SymbolView
+              name={{ ios: 'square.and.arrow.up', android: 'share', web: 'share' }}
+              size={24}
+              tintColor="#fff"
+            />
           </Pressable>
         </View>
       </View>
@@ -381,12 +388,6 @@ const styles = StyleSheet.create({
     color: '#9ca3af',
     textAlign: 'center',
   },
-  bottomScrim: {
-    position: 'absolute',
-    right: 0,
-    left: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.22)',
-  },
   playPauseButton: {
     position: 'absolute',
     top: '50%',
@@ -433,6 +434,7 @@ const styles = StyleSheet.create({
   content: {
     position: 'absolute',
     right: 0,
+    bottom: METADATA_BOTTOM_OFFSET,
     left: 0,
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -488,27 +490,18 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   actionButton: {
-    minWidth: 52,
-    minHeight: 52,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderRadius: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.28)',
-  },
-  actionButtonActive: {
-    backgroundColor: 'rgba(209, 31, 63, 0.55)',
-  },
-  actionLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#fff',
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 0, 0, 0.18)',
   },
   actionValue: {
     marginTop: 2,
     fontSize: 11,
-    color: '#e5e7eb',
+    fontWeight: '700',
+    color: '#fff',
   },
   buttonPressed: {
     opacity: 0.7,

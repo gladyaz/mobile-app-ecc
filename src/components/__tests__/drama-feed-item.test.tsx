@@ -146,7 +146,7 @@ describe('DramaFeedItem', () => {
     const onToggleLike = jest.fn();
     const onToggleSave = jest.fn();
     const onShare = jest.fn();
-    const { getByText } = await render(
+    const { getByLabelText } = await render(
       <DramaFeedItem
         video={video}
         {...baseProps}
@@ -156,9 +156,9 @@ describe('DramaFeedItem', () => {
       />
     );
 
-    await fireEvent.press(getByText('Like'));
-    await fireEvent.press(getByText('Save'));
-    await fireEvent.press(getByText('Share'));
+    await fireEvent.press(getByLabelText('Like'));
+    await fireEvent.press(getByLabelText('Save'));
+    await fireEvent.press(getByLabelText('Share'));
 
     expect(onToggleLike).toHaveBeenCalledTimes(1);
     expect(onToggleSave).toHaveBeenCalledTimes(1);

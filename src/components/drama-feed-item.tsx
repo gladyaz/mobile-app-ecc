@@ -10,11 +10,14 @@ import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
 
-// Small gap between the metadata block and the true bottom edge (the tab
-// bar itself is already excluded from the `height` prop - see
-// (tabs)/index.tsx's onLayout handler - so this is just breathing room,
-// not a subtitle safe zone).
-const METADATA_BOTTOM_OFFSET = 16;
+// Measured live (web): the bottom tab bar renders as an overlay and is NOT
+// excluded from the feed item's own `height` - it sits in the last ~48px,
+// so the metadata block must clear that explicitly or it renders behind
+// the tab bar. TAB_BAR_CLEARANCE is a deliberately generous estimate since
+// native tab bar height varies by platform/safe-area and there is no
+// reliable cross-platform hook available here to measure it exactly.
+const TAB_BAR_CLEARANCE = 56;
+const METADATA_BOTTOM_OFFSET = TAB_BAR_CLEARANCE + 16;
 
 // Above this length, the 2-line-clamped caption is likely to actually
 // truncate, so it's worth offering a "Lebih banyak" expand affordance.

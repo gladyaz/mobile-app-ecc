@@ -23,6 +23,10 @@ const METADATA_BOTTOM_OFFSET = TAB_BAR_CLEARANCE + 16;
 // truncate, so it's worth offering a "Lebih banyak" expand affordance.
 const CAPTION_EXPAND_THRESHOLD = 60;
 
+// How often to persist playback progress while a video is actively
+// playing - a throttle, not a per-frame write.
+const PROGRESS_WRITE_INTERVAL_MS = 5000;
+
 type DramaFeedItemProps = {
   readonly video: Video;
   readonly height: number;
@@ -33,9 +37,11 @@ type DramaFeedItemProps = {
   readonly likeCount: number;
   readonly nextEpisode?: Episode;
   readonly firstFreeEpisodeInSeries?: Episode;
+  readonly resumePositionSeconds?: number;
   readonly onShare: () => void;
   readonly onToggleLike: () => void;
   readonly onToggleSave: () => void;
+  readonly onRecordProgress?: (positionSeconds: number, durationSeconds?: number) => void;
 };
 
 export function formatLikeCount(likeCount: number) {
@@ -56,9 +62,11 @@ export function DramaFeedItem({
   likeCount,
   nextEpisode,
   firstFreeEpisodeInSeries,
+  resumePositionSeconds,
   onShare,
   onToggleLike,
   onToggleSave,
+  onRecordProgress,
 }: DramaFeedItemProps) {
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const [isInFullscreen, setIsInFullscreen] = useState(false);
@@ -68,6 +76,7 @@ export function DramaFeedItem({
   const hasPlaybackUrl = video.playbackUrl.length > 0;
   const videoViewRef = useRef<VideoView>(null);
   const isInFullscreenRef = useRef(false);
+  const hasSeekedToResumeRef = useRef(false);
   const player = useVideoPlayer(hasPlaybackUrl ? video.playbackUrl : null, (nextPlayer) => {
     nextPlayer.loop = true;
     nextPlayer.muted = true;
@@ -89,6 +98,54 @@ export function DramaFeedItem({
   const runtimeIsHorizontal =
     videoTrack?.size != null ? videoTrack.size.width > videoTrack.size.height : undefined;
   const isHorizontal = metadataIsHorizontal ?? runtimeIsHorizontal ?? false;
+
+  const flushProgress = useCallback(() => {
+    if (!onRecordProgress || !hasPlaybackUrl) {
+      return;
+    }
+
+    onRecordProgress(player.currentTime, player.duration || undefined);
+  }, [onRecordProgress, hasPlaybackUrl, player]);
+
+  // Resume once per mount, as soon as the player has a real duration to seek
+  // within. Guarded by a ref so this never re-fires from later renders.
+  useEffect(() => {
+    if (
+      hasSeekedToResumeRef.current ||
+      !resumePositionSeconds ||
+      resumePositionSeconds <= 0 ||
+      status !== 'readyToPlay'
+    ) {
+      return;
+    }
+
+    hasSeekedToResumeRef.current = true;
+    // seekBy is relative; currentTime is ~0 right as the player becomes
+    // ready (before any playback has elapsed), so seeking forward by the
+    // resume position lands at the right absolute spot.
+    player.seekBy(resumePositionSeconds - player.currentTime);
+  }, [status, resumePositionSeconds, player]);
+
+  // Throttled progress write while this item is the one actually playing -
+  // not on every frame, and cleared whenever it stops being active/playing.
+  useEffect(() => {
+    if (!isActive || !isScreenFocused || !isPlaying) {
+      return;
+    }
+
+    const intervalId = setInterval(flushProgress, PROGRESS_WRITE_INTERVAL_MS);
+
+    return () => clearInterval(intervalId);
+  }, [isActive, isScreenFocused, isPlaying, flushProgress]);
+
+  // Flush immediately on unmount (e.g. scrolled far enough away to be
+  // recycled) so the last few seconds of watching aren't lost to the next
+  // throttled interval tick.
+  useEffect(() => {
+    return () => {
+      flushProgress();
+    };
+  }, [flushProgress]);
 
   useEffect(() => {
     isInFullscreenRef.current = isInFullscreen;
@@ -162,12 +219,13 @@ export function DramaFeedItem({
     if (isPlaying) {
       player.pause();
       setIsManuallyPaused(true);
+      flushProgress();
       return;
     }
 
     player.play();
     setIsManuallyPaused(false);
-  }, [isPlaying, player]);
+  }, [isPlaying, player, flushProgress]);
 
   const handleEnterFullscreen = useCallback(() => {
     void videoViewRef.current?.enterFullscreen();
@@ -202,7 +260,8 @@ export function DramaFeedItem({
   const handleFullscreenExit = useCallback(() => {
     setIsInFullscreen(false);
     void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-  }, []);
+    flushProgress();
+  }, [flushProgress]);
 
   return (
     <View style={[styles.container, { height }]}>

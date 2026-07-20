@@ -41,7 +41,7 @@ export default function HomeScreen() {
   const { videoId: requestedVideoId } = useLocalSearchParams<{ videoId?: string }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
-  const { recordProgress } = useSeriesProgress();
+  const { getProgress, recordProgress } = useSeriesProgress();
   const [feedHeight, setFeedHeight] = useState(height);
   const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
   const requestedVideoIsInCatalog =
@@ -137,6 +137,9 @@ export default function HomeScreen() {
       const firstFreeEpisodeInSeries = series?.episodes.find(
         (episode) => episode.accessType === 'free' && episode.isAvailable
       );
+      const progress = getProgress(item.seriesId);
+      const resumePositionSeconds =
+        progress?.lastWatchedVideoId === item.id ? progress.positionSeconds : 0;
 
       return (
         <DramaFeedItem
@@ -149,6 +152,7 @@ export default function HomeScreen() {
           likeCount={getLikeCount(item)}
           nextEpisode={nextEpisode}
           firstFreeEpisodeInSeries={firstFreeEpisodeInSeries}
+          resumePositionSeconds={resumePositionSeconds}
           onShare={() => {
             void handleShare(item);
           }}
@@ -157,6 +161,15 @@ export default function HomeScreen() {
           }}
           onToggleSave={() => {
             toggleSave(item.id);
+          }}
+          onRecordProgress={(positionSeconds, durationSeconds) => {
+            recordProgress(
+              item.seriesId,
+              item.id,
+              item.episodeNumber,
+              positionSeconds,
+              durationSeconds
+            );
           }}
         />
       );
@@ -168,6 +181,8 @@ export default function HomeScreen() {
       feedHeight,
       getInteraction,
       getLikeCount,
+      getProgress,
+      recordProgress,
       handleShare,
       toggleLike,
       toggleSave,

@@ -4,24 +4,30 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { SymbolView } from 'expo-symbols';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
 
 // Measured live (web): the bottom tab bar renders as an overlay and is NOT
-// excluded from the feed item's own `height` - it sits in the last ~48px,
-// so the metadata block must clear that explicitly or it renders behind
-// the tab bar. TAB_BAR_CLEARANCE is a deliberately generous estimate since
-// native tab bar height varies by platform/safe-area and there is no
-// reliable cross-platform hook available here to measure it exactly.
-const TAB_BAR_CLEARANCE = 56;
-const METADATA_BOTTOM_OFFSET = TAB_BAR_CLEARANCE + 16;
+// excluded from the feed item's own `height` - it sits in the last ~56px.
+// On native, Expo Router's Tabs navigator already excludes the tab bar from
+// the screen's content area, so only the bottom safe-area inset (home
+// indicator / gesture bar) needs to be cleared there, not the full tab bar
+// height - using the web-sized estimate on native would eat more video
+// space than necessary.
+const WEB_TAB_BAR_HEIGHT = 56;
+const BOTTOM_GAP = 12;
 
-// Above this length, the 2-line-clamped caption is likely to actually
+// Above this length, the 1-line-clamped caption is likely to actually
 // truncate, so it's worth offering a "Lebih banyak" expand affordance.
 const CAPTION_EXPAND_THRESHOLD = 60;
+
+// Caps how tall an expanded caption can grow, so an unusually long caption
+// can't cover most of the video or collide with the action rail.
+const CAPTION_EXPANDED_MAX_LINES = 6;
 
 // How often to persist playback progress while a video is actively
 // playing - a throttle, not a per-frame write.
@@ -68,6 +74,9 @@ export function DramaFeedItem({
   onToggleSave,
   onRecordProgress,
 }: DramaFeedItemProps) {
+  const insets = useSafeAreaInsets();
+  const tabBarClearance = Platform.OS === 'web' ? WEB_TAB_BAR_HEIGHT : insets.bottom;
+  const metadataBottomOffset = tabBarClearance + BOTTOM_GAP;
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const [isInFullscreen, setIsInFullscreen] = useState(false);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
@@ -346,7 +355,7 @@ export function DramaFeedItem({
         </Pressable>
       ) : null}
 
-      <View style={styles.content}>
+      <View style={[styles.content, { bottom: metadataBottomOffset }]}>
         <Pressable
           accessibilityRole="button"
           onPress={() =>
@@ -363,7 +372,7 @@ export function DramaFeedItem({
             {video.title}
           </Text>
           <Text
-            numberOfLines={isCaptionExpanded ? undefined : 1}
+            numberOfLines={isCaptionExpanded ? CAPTION_EXPANDED_MAX_LINES : 1}
             style={[styles.caption, styles.textShadow]}>
             {video.caption}
             {video.caption.length > CAPTION_EXPAND_THRESHOLD ? (
@@ -519,7 +528,6 @@ const styles = StyleSheet.create({
   content: {
     position: 'absolute',
     right: 0,
-    bottom: METADATA_BOTTOM_OFFSET,
     left: 0,
     flexDirection: 'row',
     alignItems: 'flex-end',

@@ -1,9 +1,27 @@
 import { render, fireEvent } from '@testing-library/react-native';
 import { router } from 'expo-router';
+import type { ReactElement } from 'react';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { DramaFeedItem } from '@/components/drama-feed-item';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
+
+// DramaFeedItem reads useSafeAreaInsets for its bottom-overlay offset, which
+// throws without a SafeAreaProvider ancestor. initialMetrics makes the
+// provider synchronously ready instead of waiting on a real native
+// measurement that never arrives in this test environment.
+function renderFeedItem(ui: ReactElement) {
+  return render(
+    <SafeAreaProvider
+      initialMetrics={{
+        insets: { top: 0, left: 0, right: 0, bottom: 0 },
+        frame: { x: 0, y: 0, width: 390, height: 844 },
+      }}>
+      {ui}
+    </SafeAreaProvider>
+  );
+}
 
 jest.mock('expo', () => ({
   useEvent: jest.fn((_player: unknown, _eventName: string, defaultValue: unknown) => defaultValue),
@@ -119,7 +137,7 @@ const baseProps = {
 describe('DramaFeedItem', () => {
   it('clamps title to 2 lines and caption to 1 line by default', async () => {
     const video = buildVideo();
-    const { getByText } = await render(<DramaFeedItem video={video} {...baseProps} />);
+    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
     expect(getByText(video.title).props.numberOfLines).toBe(2);
     expect(getByText(video.caption).props.numberOfLines).toBe(1);
@@ -129,7 +147,7 @@ describe('DramaFeedItem', () => {
     const longCaption =
       'Sebuah rahasia besar terungkap ketika keluarga itu kembali ke kampung halaman setelah bertahun-tahun pergi.';
     const video = buildVideo({ caption: longCaption });
-    const { getByText, queryByText } = await render(
+    const { getByText, queryByText } = await renderFeedItem(
       <DramaFeedItem video={video} {...baseProps} />
     );
 
@@ -141,12 +159,23 @@ describe('DramaFeedItem', () => {
     expect(getByText('Lebih sedikit')).toBeTruthy();
   });
 
+  it('caps an expanded caption to a maximum number of lines', async () => {
+    const longCaption =
+      'Sebuah rahasia besar terungkap ketika keluarga itu kembali ke kampung halaman setelah bertahun-tahun pergi.';
+    const video = buildVideo({ caption: longCaption });
+    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    await fireEvent.press(getByText('Lebih banyak'));
+
+    expect(getByText(longCaption, { exact: false }).props.numberOfLines).toBe(6);
+  });
+
   it('calls the provided handlers when Like, Save, and Share are pressed', async () => {
     const video = buildVideo();
     const onToggleLike = jest.fn();
     const onToggleSave = jest.fn();
     const onShare = jest.fn();
-    const { getByLabelText } = await render(
+    const { getByLabelText } = await renderFeedItem(
       <DramaFeedItem
         video={video}
         {...baseProps}
@@ -168,7 +197,7 @@ describe('DramaFeedItem', () => {
   it('navigates to the free next episode when Episode Berikutnya is pressed', async () => {
     const video = buildVideo();
     const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
-    const { getByText } = await render(
+    const { getByText } = await renderFeedItem(
       <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
     );
 
@@ -183,7 +212,7 @@ describe('DramaFeedItem', () => {
   it('opens the premium modal instead of navigating for a premium next episode', async () => {
     const video = buildVideo();
     const nextEpisode = buildEpisode({ accessType: 'premium', videoId: 'video-6' });
-    const { getByText } = await render(
+    const { getByText } = await renderFeedItem(
       <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
     );
 
@@ -195,14 +224,14 @@ describe('DramaFeedItem', () => {
 
   it('shows the Fullscreen button for a horizontal video', async () => {
     const video = buildVideo({ width: 1280, height: 720 });
-    const { getByText } = await render(<DramaFeedItem video={video} {...baseProps} />);
+    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
     expect(getByText('Fullscreen')).toBeTruthy();
   });
 
   it('does not show the Fullscreen button for a vertical video', async () => {
     const video = buildVideo({ width: 720, height: 1280 });
-    const { queryByText } = await render(<DramaFeedItem video={video} {...baseProps} />);
+    const { queryByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
     expect(queryByText('Fullscreen')).toBeNull();
   });

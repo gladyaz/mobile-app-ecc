@@ -44,6 +44,7 @@ type DramaFeedItemProps = {
   readonly isScreenFocused: boolean;
   readonly isLiked: boolean;
   readonly isSaved: boolean;
+  readonly isMuted: boolean;
   readonly likeCount: number;
   readonly nextEpisode?: Episode;
   readonly firstFreeEpisodeInSeries?: Episode;
@@ -51,6 +52,7 @@ type DramaFeedItemProps = {
   readonly onShare: () => void;
   readonly onToggleLike: () => void;
   readonly onToggleSave: () => void;
+  readonly onToggleMute: () => void;
   readonly onRecordProgress?: (positionSeconds: number, durationSeconds?: number) => void;
 };
 
@@ -69,6 +71,7 @@ export function DramaFeedItem({
   isScreenFocused,
   isLiked,
   isSaved,
+  isMuted,
   likeCount,
   nextEpisode,
   firstFreeEpisodeInSeries,
@@ -76,6 +79,7 @@ export function DramaFeedItem({
   onShare,
   onToggleLike,
   onToggleSave,
+  onToggleMute,
   onRecordProgress,
 }: DramaFeedItemProps) {
   const tabBarHeight = useBottomTabBarHeight();
@@ -91,9 +95,17 @@ export function DramaFeedItem({
   const hasSeekedToResumeRef = useRef(false);
   const player = useVideoPlayer(hasPlaybackUrl ? video.playbackUrl : null, (nextPlayer) => {
     nextPlayer.loop = true;
-    nextPlayer.muted = true;
     nextPlayer.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_SECONDS;
   });
+
+  // The setup callback above only runs once at player creation, so it can't
+  // react to the isMuted preference changing (e.g. the user tapping the
+  // sound toggle, or scrolling to a new active item) - that has to be a
+  // separate effect kept in sync with the prop.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/immutability
+    player.muted = isMuted;
+  }, [isMuted, player]);
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
   const { status, error } = useEvent(player, 'statusChange', {
     status: player.status,
@@ -236,12 +248,19 @@ export function DramaFeedItem({
       return;
     }
 
+    // Skip redundant play()/pause() calls when already in the desired
+    // state - repeated calls during fast swiping are a likely source of
+    // the player's "play() request was interrupted" console errors.
     if (isActive && isScreenFocused && !isManuallyPaused) {
-      player.play();
+      if (!player.playing) {
+        player.play();
+      }
       return;
     }
 
-    player.pause();
+    if (player.playing) {
+      player.pause();
+    }
   }, [hasPlaybackUrl, isActive, isScreenFocused, isManuallyPaused, isInFullscreen, player]);
 
   useEffect(() => {
@@ -420,6 +439,23 @@ export function DramaFeedItem({
         </Pressable>
 
         <View style={styles.actions}>
+          {hasPlaybackError ? null : (
+            <Pressable
+              accessibilityLabel={isMuted ? 'Unmute' : 'Mute'}
+              accessibilityRole="button"
+              onPress={onToggleMute}
+              style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
+              <SymbolView
+                name={{
+                  ios: isMuted ? 'speaker.slash.fill' : 'speaker.wave.2.fill',
+                  android: isMuted ? 'volume_off' : 'volume_up',
+                  web: isMuted ? 'volume_off' : 'volume_up',
+                }}
+                size={22}
+                tintColor="#fff"
+              />
+            </Pressable>
+          )}
           <Pressable
             accessibilityLabel={isLiked ? 'Unlike' : 'Like'}
             accessibilityRole="button"

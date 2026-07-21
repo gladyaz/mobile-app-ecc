@@ -47,6 +47,13 @@ export default function HomeScreen() {
   const { showToast } = useToast();
   const [feedHeight, setFeedHeight] = useState(height);
   const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
+  // Web browsers block audible autoplay without a prior user gesture, so
+  // the feed has to start muted there and let the sound toggle be the
+  // gesture that turns audio on; native platforms aren't subject to that
+  // restriction, so they can start audible. Lifted here (not local state
+  // inside DramaFeedItem) so the preference survives each item unmounting
+  // as it scrolls out of the FlatList's render window.
+  const [isMuted, setIsMuted] = useState(Platform.OS === 'web');
   const requestedVideoIsInCatalog =
     requestedVideoId != null && videos.some((video) => video.id === requestedVideoId);
   const resolvedActiveVideoId =
@@ -180,6 +187,7 @@ export default function HomeScreen() {
           isScreenFocused={isScreenFocused}
           isLiked={interaction.isLiked}
           isSaved={interaction.isSaved}
+          isMuted={isMuted}
           likeCount={getLikeCount(item)}
           nextEpisode={nextEpisode}
           firstFreeEpisodeInSeries={firstFreeEpisodeInSeries}
@@ -193,6 +201,9 @@ export default function HomeScreen() {
           onToggleSave={() => {
             toggleSave(item.id);
             showToast(interaction.isSaved ? 'Dihapus dari Saved' : 'Disimpan ke Saved');
+          }}
+          onToggleMute={() => {
+            setIsMuted((current) => !current);
           }}
           onRecordProgress={(positionSeconds, durationSeconds) => {
             recordProgress(
@@ -219,6 +230,7 @@ export default function HomeScreen() {
       toggleLike,
       toggleSave,
       showToast,
+      isMuted,
     ]
   );
 

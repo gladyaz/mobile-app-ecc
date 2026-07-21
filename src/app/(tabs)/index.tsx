@@ -70,14 +70,42 @@ export default function HomeScreen() {
     flatListRef.current?.scrollToIndex({ index: targetIndex, animated: true });
   }, [requestedVideoId, requestedVideoIsInCatalog, videos]);
 
+  // FlatList throws if onViewableItemsChanged's identity ever changes after
+  // mount ("Changing onViewableItemsChanged on the fly is not supported"),
+  // so this callback's own deps must stay stable - getProgress can't be a
+  // dependency since its identity changes with every progress update.
+  // Reading it through a ref keeps the callback stable while still seeing
+  // fresh progress.
+  const getProgressRef = useRef(getProgress);
+
+  useEffect(() => {
+    getProgressRef.current = getProgress;
+  }, [getProgress]);
+
   const handleViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken<Video>[] }) => {
       const activeItem = viewableItems.find((viewableItem) => viewableItem.isViewable);
 
-      if (activeItem?.item) {
-        setActiveVideoId(activeItem.item.id);
-        recordProgress(activeItem.item.seriesId, activeItem.item.id, activeItem.item.episodeNumber);
+      if (!activeItem?.item) {
+        return;
       }
+
+      setActiveVideoId(activeItem.item.id);
+
+      // A video becoming viewable (e.g. on mount, or a scroll past it) only
+      // confirms it as the last-watched item - it must not reset an
+      // already-tracked playback position back to 0, or a resumed position
+      // would be clobbered moments after being restored from storage.
+      const existingProgress = getProgressRef.current(activeItem.item.seriesId);
+      const isSameVideo = existingProgress?.lastWatchedVideoId === activeItem.item.id;
+
+      recordProgress(
+        activeItem.item.seriesId,
+        activeItem.item.id,
+        activeItem.item.episodeNumber,
+        isSameVideo ? existingProgress.positionSeconds : 0,
+        isSameVideo ? existingProgress.durationSeconds : undefined
+      );
     },
     [recordProgress]
   );

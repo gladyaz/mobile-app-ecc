@@ -1,42 +1,50 @@
+import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
 import { useAuth } from '@/stores/auth';
+import { useToast } from '@/stores/toast';
+
+const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
 
 export default function LoginScreen() {
   const { loginDummy } = useAuth();
+  const { showToast } = useToast();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [validationError, setValidationError] = useState('');
+  const [isSubmitted, setIsSubmitted] = useState(false);
+
+  const trimmedEmail = email.trim();
+  const emailError = isSubmitted
+    ? !trimmedEmail
+      ? 'Email wajib diisi'
+      : !EMAIL_PATTERN.test(trimmedEmail)
+        ? 'Format email tidak valid'
+        : null
+    : null;
+  const passwordError = isSubmitted && !password.trim() ? 'Password wajib diisi' : null;
 
   const handleLogin = () => {
-    const nextEmail = email.trim();
-    const nextPassword = password.trim();
+    setIsSubmitted(true);
 
-    if (!nextEmail && !nextPassword) {
-      setValidationError('Email and password are required.');
+    if (!trimmedEmail || !EMAIL_PATTERN.test(trimmedEmail) || !password.trim()) {
       return;
     }
 
-    if (!nextEmail) {
-      setValidationError('Email is required.');
-      return;
-    }
-
-    if (!nextPassword) {
-      setValidationError('Password is required.');
-      return;
-    }
-
-    setValidationError('');
     loginDummy();
     router.replace('/profile');
+    // The dummy auth session is a fixed placeholder user (see stores/auth.tsx)
+    // since there is no real backend auth yet, so the welcome name is fixed too.
+    showToast('Selamat datang, Gladyaz');
   };
 
   return (
     <View style={styles.container}>
       <Pressable
+        accessibilityLabel="Kembali"
         accessibilityRole="button"
         onPress={() => {
           if (router.canGoBack()) {
@@ -47,35 +55,59 @@ export default function LoginScreen() {
           router.replace('/');
         }}
         style={({ pressed }) => [styles.backButton, pressed && styles.buttonPressed]}>
-        <Text style={styles.backButtonText}>Back</Text>
+        <SymbolView
+          name={{ ios: 'chevron.left', android: 'chevron_left', web: 'chevron_left' }}
+          size={18}
+          tintColor={Palette.text}
+        />
       </Pressable>
 
-      <Text style={styles.title}>Login</Text>
+      <Text style={styles.title}>Masuk</Text>
+      <Text style={styles.subtitle}>Gunakan akun Red Panda kamu.</Text>
 
-      <TextInput
-        autoCapitalize="none"
-        keyboardType="email-address"
-        onChangeText={setEmail}
-        placeholder="Email"
-        style={styles.input}
-        value={email}
-      />
-      <TextInput
-        onChangeText={setPassword}
-        placeholder="Password"
-        secureTextEntry
-        style={styles.input}
-        value={password}
-      />
+      <View style={styles.form}>
+        <View style={styles.field}>
+          <Text style={styles.label}>Email</Text>
+          <TextInput
+            autoCapitalize="none"
+            keyboardType="email-address"
+            onChangeText={setEmail}
+            placeholder="nama@email.com"
+            placeholderTextColor={Palette.textMuted}
+            style={[styles.input, emailError && styles.inputError]}
+            value={email}
+          />
+          {emailError ? <Text style={styles.errorText}>{emailError}</Text> : null}
+        </View>
 
-      {validationError ? <Text style={styles.errorText}>{validationError}</Text> : null}
+        <View style={styles.field}>
+          <Text style={styles.label}>Password</Text>
+          <TextInput
+            onChangeText={setPassword}
+            placeholder="••••••••"
+            placeholderTextColor={Palette.textMuted}
+            secureTextEntry
+            style={[styles.input, passwordError && styles.inputError]}
+            value={password}
+          />
+          {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
+        </View>
 
-      <Pressable
-        accessibilityRole="button"
-        onPress={handleLogin}
-        style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}>
-        <Text style={styles.primaryButtonText}>Login Dummy</Text>
-      </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          onPress={handleLogin}
+          style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}>
+          <LinearGradient
+            colors={Gradients.primary}
+            end={{ x: 1, y: 1 }}
+            start={{ x: 0, y: 0 }}
+            style={styles.primaryButtonGradient}>
+            <Text style={styles.primaryButtonText}>Login</Text>
+          </LinearGradient>
+        </Pressable>
+
+        <Text style={styles.hint}>Login dummy untuk MVP — isi email valid &amp; password apa pun.</Text>
+      </View>
     </View>
   );
 }
@@ -83,53 +115,87 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    padding: 24,
-    backgroundColor: '#fff',
+    paddingHorizontal: 20,
+    paddingTop: 64,
+    paddingBottom: 40,
+    backgroundColor: Palette.background,
   },
   backButton: {
+    width: 44,
+    height: 44,
     alignSelf: 'flex-start',
-    marginBottom: 24,
-    paddingVertical: 8,
-  },
-  backButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#d11f3f',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Palette.border,
+    backgroundColor: Palette.surface,
   },
   title: {
-    marginBottom: 24,
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#111827',
+    marginTop: 28,
+    fontSize: 26,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
+  },
+  subtitle: {
+    marginTop: 6,
+    fontSize: 13,
+    fontFamily: FontFamily.regular,
+    color: Palette.textSecondary,
+  },
+  form: {
+    marginTop: 28,
+    gap: 16,
+  },
+  field: {
+    gap: 7,
+  },
+  label: {
+    fontSize: 12,
+    fontFamily: FontFamily.bold,
+    letterSpacing: 0.3,
+    color: Palette.textSecondary,
   },
   input: {
-    marginBottom: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    height: 52,
+    paddingHorizontal: 16,
+    borderRadius: Radius.lg,
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 8,
-    fontSize: 16,
-    color: '#111827',
+    borderColor: Palette.border,
+    backgroundColor: Palette.surface,
+    fontSize: 14.5,
+    fontFamily: FontFamily.regular,
+    color: Palette.text,
+  },
+  inputError: {
+    borderColor: Palette.error,
   },
   errorText: {
-    marginBottom: 12,
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#b91c1c',
+    fontSize: 12,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.error,
   },
   primaryButton: {
-    alignItems: 'center',
     marginTop: 8,
-    paddingVertical: 14,
-    borderRadius: 8,
-    backgroundColor: '#d11f3f',
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+  },
+  primaryButtonGradient: {
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   primaryButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
+    fontSize: 15,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
+  },
+  hint: {
+    fontSize: 11.5,
+    lineHeight: 17,
+    fontFamily: FontFamily.regular,
+    color: Palette.textMuted,
+    textAlign: 'center',
   },
   buttonPressed: {
     opacity: 0.75,

@@ -27,6 +27,7 @@ type VideoInteractionsContextValue = {
   readonly getInteraction: (videoId: string) => VideoInteraction;
   readonly getLikeCount: (video: Video) => number;
   readonly savedVideoIds: readonly string[];
+  readonly likedVideoIds: readonly string[];
   readonly toggleLike: (videoId: string) => void;
   readonly toggleSave: (videoId: string) => void;
 };
@@ -89,6 +90,14 @@ export function VideoInteractionsProvider({ children }: PropsWithChildren) {
     [interactions]
   );
 
+  const likedVideoIds = useMemo(
+    () =>
+      Object.entries(interactions)
+        .filter(([, interaction]) => interaction.isLiked)
+        .map(([videoId]) => videoId),
+    [interactions]
+  );
+
   const toggleLike = useCallback((videoId: string) => {
     setInteractions((currentInteractions) => {
       const currentInteraction = currentInteractions[videoId] ?? defaultInteraction;
@@ -123,10 +132,19 @@ export function VideoInteractionsProvider({ children }: PropsWithChildren) {
       getInteraction,
       getLikeCount,
       savedVideoIds,
+      likedVideoIds,
       toggleLike,
       toggleSave,
     }),
-    [isHydrated, getInteraction, getLikeCount, savedVideoIds, toggleLike, toggleSave]
+    [
+      isHydrated,
+      getInteraction,
+      getLikeCount,
+      savedVideoIds,
+      likedVideoIds,
+      toggleLike,
+      toggleSave,
+    ]
   );
 
   return (

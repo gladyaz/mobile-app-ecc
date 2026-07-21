@@ -1,8 +1,12 @@
+import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
 import { resetAllPersistedState } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
+import { useToast } from '@/stores/toast';
 import { useVideoInteractions } from '@/stores/video-interactions';
 
 // Development-only escape hatch to clear persisted auth/likes/saved/watch
@@ -30,22 +34,39 @@ function DevResetButton() {
 
 export default function ProfileScreen() {
   const { isAuthenticated, logout, user } = useAuth();
-  const { savedVideoIds } = useVideoInteractions();
+  const { savedVideoIds, likedVideoIds } = useVideoInteractions();
+  const { showToast } = useToast();
 
   if (isAuthenticated && user) {
     return (
       <View style={styles.container}>
-        <View style={styles.profilePanel}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{user.name.charAt(0)}</Text>
-          </View>
-          <Text style={styles.title}>{user.name}</Text>
-          <Text style={styles.username}>@{user.username}</Text>
-          <Text style={styles.email}>{user.email}</Text>
+        <Text style={styles.title}>Profile</Text>
 
+        <View style={styles.identityRow}>
+          <LinearGradient
+            colors={Gradients.primary}
+            end={{ x: 1, y: 1 }}
+            start={{ x: 0, y: 0 }}
+            style={styles.avatar}>
+            <Text style={styles.avatarText}>{user.name.charAt(0)}</Text>
+          </LinearGradient>
+          <View style={styles.identityText}>
+            <Text style={styles.name}>{user.name}</Text>
+            <Text style={styles.username}>@{user.username}</Text>
+            <Text style={styles.email}>{user.email}</Text>
+          </View>
+        </View>
+
+        <View style={styles.statsRow}>
           <View style={styles.statsBox}>
-            <Text style={styles.statsValue}>{savedVideoIds.length}</Text>
-            <Text style={styles.statsLabel}>Saved videos</Text>
+            <Text style={[styles.statsValue, styles.statsValuePrimary]}>
+              {savedVideoIds.length}
+            </Text>
+            <Text style={styles.statsLabel}>Video tersimpan</Text>
+          </View>
+          <View style={styles.statsBox}>
+            <Text style={styles.statsValue}>{likedVideoIds.length}</Text>
+            <Text style={styles.statsLabel}>Video disukai</Text>
           </View>
         </View>
 
@@ -54,15 +75,29 @@ export default function ProfileScreen() {
           onPress={() => {
             router.push('../processing');
           }}
-          style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
-          <Text style={styles.buttonText}>Processing History</Text>
+          style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
+          <SymbolView
+            name={{ ios: 'clock', android: 'schedule', web: 'schedule' }}
+            size={20}
+            tintColor={Palette.textSecondary}
+          />
+          <Text style={styles.processingButtonText}>Processing History</Text>
+          <Text style={styles.internalBadge}>INTERNAL</Text>
+          <SymbolView
+            name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+            size={16}
+            tintColor={Palette.textDisabled}
+          />
         </Pressable>
 
         <Pressable
           accessibilityRole="button"
-          onPress={logout}
-          style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.secondaryButtonText}>Logout</Text>
+          onPress={() => {
+            logout();
+            showToast('Kamu telah logout');
+          }}
+          style={({ pressed }) => [styles.logoutButton, pressed && styles.buttonPressed]}>
+          <Text style={styles.logoutButtonText}>Logout</Text>
         </Pressable>
 
         <DevResetButton />
@@ -72,19 +107,32 @@ export default function ProfileScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.profilePanel}>
+      <Text style={styles.title}>Profile</Text>
+      <View style={styles.guestState}>
         <View style={styles.guestAvatar}>
-          <Text style={styles.guestAvatarText}>G</Text>
+          <SymbolView
+            name={{ ios: 'person', android: 'person_outline', web: 'person_outline' }}
+            size={36}
+            tintColor={Palette.textMuted}
+          />
         </View>
-        <Text style={styles.title}>Guest User</Text>
-        <Text style={styles.description}>Login to view your profile and saved drama activity.</Text>
+        <Text style={styles.guestTitle}>Guest User</Text>
+        <Text style={styles.description}>
+          Masuk untuk menyimpan drama favoritmu dan melanjutkan tontonan di semua perangkat.
+        </Text>
         <Pressable
           accessibilityRole="button"
           onPress={() => {
             router.push('/login');
           }}
-          style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
-          <Text style={styles.buttonText}>Login</Text>
+          style={({ pressed }) => [styles.loginButton, pressed && styles.buttonPressed]}>
+          <LinearGradient
+            colors={Gradients.primary}
+            end={{ x: 1, y: 1 }}
+            start={{ x: 0, y: 0 }}
+            style={styles.loginButtonGradient}>
+            <Text style={styles.loginButtonText}>Login</Text>
+          </LinearGradient>
         </Pressable>
 
         <DevResetButton />
@@ -96,120 +144,174 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    padding: 20,
-    backgroundColor: '#fff',
-  },
-  profilePanel: {
-    alignItems: 'flex-start',
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 8,
-    backgroundColor: '#f9fafb',
+    paddingHorizontal: 16,
+    paddingTop: 70,
+    backgroundColor: Palette.background,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#111827',
+    fontSize: 26,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
   },
-  description: {
-    marginTop: 8,
-    fontSize: 16,
-    lineHeight: 24,
-    color: '#4b5563',
+  guestState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingBottom: 96,
   },
   guestAvatar: {
-    width: 72,
-    height: 72,
+    width: 96,
+    height: 96,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 18,
-    borderRadius: 36,
-    backgroundColor: '#111827',
+    borderRadius: Radius.pill,
+    backgroundColor: Palette.surface,
+    borderWidth: 1.5,
+    borderColor: Palette.textDisabled,
+    borderStyle: 'dashed',
   },
-  guestAvatarText: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#fff',
+  guestTitle: {
+    marginTop: 6,
+    fontSize: 19,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
+  },
+  description: {
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: FontFamily.regular,
+    color: Palette.textSecondary,
+    textAlign: 'center',
+    maxWidth: 260,
+  },
+  loginButton: {
+    marginTop: 10,
+    width: '100%',
+    maxWidth: 280,
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+  },
+  loginButtonGradient: {
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loginButtonText: {
+    fontSize: 15,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
+  },
+  identityRow: {
+    marginTop: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
   },
   avatar: {
-    width: 84,
-    height: 84,
+    width: 68,
+    height: 68,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 18,
-    borderRadius: 42,
-    backgroundColor: '#d11f3f',
+    borderRadius: Radius.pill,
   },
   avatarText: {
-    fontSize: 34,
-    fontWeight: '800',
-    color: '#fff',
+    fontSize: 26,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
+  },
+  identityText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  name: {
+    fontSize: 19,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
   },
   username: {
-    marginTop: 6,
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#d11f3f',
+    marginTop: 2,
+    fontSize: 12.5,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.primaryHover,
   },
   email: {
-    marginTop: 6,
-    fontSize: 16,
-    color: '#4b5563',
+    marginTop: 2,
+    fontSize: 12,
+    fontFamily: FontFamily.regular,
+    color: Palette.textMuted,
+  },
+  statsRow: {
+    marginTop: 16,
+    flexDirection: 'row',
+    gap: 12,
   },
   statsBox: {
-    alignSelf: 'flex-start',
-    marginTop: 24,
-    paddingHorizontal: 18,
+    flex: 1,
+    paddingHorizontal: 16,
     paddingVertical: 14,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 8,
-    backgroundColor: '#f9fafb',
+    borderColor: Palette.border,
+    borderRadius: Radius.xl,
+    backgroundColor: Palette.surface,
   },
   statsValue: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#111827',
+    fontSize: 22,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
+  },
+  statsValuePrimary: {
+    color: Palette.primary,
   },
   statsLabel: {
     marginTop: 2,
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#6b7280',
+    fontSize: 11.5,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.textSecondary,
   },
-  button: {
-    alignItems: 'center',
+  processingButton: {
     marginTop: 16,
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#d11f3f',
-  },
-  buttonPressed: {
-    opacity: 0.75,
-  },
-  buttonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  secondaryButton: {
+    height: 56,
+    flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
-    marginTop: 20,
-    paddingHorizontal: 18,
-    paddingVertical: 12,
+    gap: 12,
+    paddingHorizontal: 16,
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 8,
-    backgroundColor: '#fff',
+    borderColor: Palette.border,
+    borderRadius: Radius.xl,
+    backgroundColor: Palette.surface,
   },
-  secondaryButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#111827',
+  processingButtonText: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
+  },
+  internalBadge: {
+    fontSize: 9,
+    letterSpacing: 1,
+    fontFamily: FontFamily.bold,
+    color: Palette.primaryHover,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 122, 26, 0.4)',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    overflow: 'hidden',
+  },
+  logoutButton: {
+    marginTop: 16,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Palette.textDisabled,
+  },
+  logoutButtonText: {
+    fontSize: 14.5,
+    fontFamily: FontFamily.bold,
+    color: Palette.error,
   },
   devResetButton: {
     alignItems: 'center',
@@ -217,12 +319,15 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: Radius.md,
     backgroundColor: '#fef3c7',
   },
   devResetButtonText: {
     fontSize: 13,
-    fontWeight: '700',
+    fontFamily: FontFamily.bold,
     color: '#92400e',
+  },
+  buttonPressed: {
+    opacity: 0.75,
   },
 });

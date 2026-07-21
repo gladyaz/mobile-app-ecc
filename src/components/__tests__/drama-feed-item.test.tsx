@@ -123,10 +123,12 @@ const baseProps = {
   isScreenFocused: true,
   isLiked: false,
   isSaved: false,
+  isMuted: false,
   likeCount: 12800,
   onShare: jest.fn(),
   onToggleLike: jest.fn(),
   onToggleSave: jest.fn(),
+  onToggleMute: jest.fn(),
 };
 
 describe('DramaFeedItem', () => {
@@ -187,6 +189,62 @@ describe('DramaFeedItem', () => {
     expect(onToggleLike).toHaveBeenCalledTimes(1);
     expect(onToggleSave).toHaveBeenCalledTimes(1);
     expect(onShare).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels the sound control "Mute" when audible and calls onToggleMute when pressed', async () => {
+    const video = buildVideo();
+    const onToggleMute = jest.fn();
+    const { getByLabelText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} isMuted={false} onToggleMute={onToggleMute} />
+    );
+
+    const muteButton = getByLabelText('Mute');
+
+    await fireEvent.press(muteButton);
+
+    expect(onToggleMute).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels the sound control "Unmute" when muted', async () => {
+    const video = buildVideo();
+    const { getByLabelText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} isMuted={true} />
+    );
+
+    expect(getByLabelText('Unmute')).toBeTruthy();
+  });
+
+  it('syncs the player mute state to the isMuted prop', async () => {
+    const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+    const video = buildVideo();
+
+    await renderFeedItem(<DramaFeedItem video={video} {...baseProps} isMuted={true} />);
+
+    const createdPlayer = (useVideoPlayer as jest.Mock).mock.results.at(-1)?.value as {
+      muted: boolean;
+    };
+
+    expect(createdPlayer.muted).toBe(true);
+  });
+
+  it('pressing the sound control does not trigger Like, Save, or navigation', async () => {
+    const video = buildVideo();
+    const onToggleLike = jest.fn();
+    const onToggleSave = jest.fn();
+    const { getByLabelText } = await renderFeedItem(
+      <DramaFeedItem
+        video={video}
+        {...baseProps}
+        onToggleLike={onToggleLike}
+        onToggleSave={onToggleSave}
+      />
+    );
+
+    await fireEvent.press(getByLabelText('Mute'));
+
+    expect(onToggleLike).not.toHaveBeenCalled();
+    expect(onToggleSave).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
   });
 
   it('navigates to the free next episode when Episode Berikutnya is pressed', async () => {

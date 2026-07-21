@@ -25,7 +25,11 @@ const TIME_UPDATE_INTERVAL_SECONDS = 0.25;
 // height - using the web-sized estimate on native would eat more video
 // space than necessary.
 const WEB_TAB_BAR_HEIGHT = 56;
-const BOTTOM_GAP = 12;
+// insets.bottom is 0 on many native devices (no home indicator / gesture
+// bar), so BOTTOM_GAP alone has to provide real visual breathing room -
+// a small value like 12 reads as flush against the tab bar on those
+// devices since the content area itself already stops right above it.
+const BOTTOM_GAP = 20;
 
 // Above this length, the 1-line-clamped caption is likely to actually
 // truncate, so it's worth offering a "Lebih banyak" expand affordance.
@@ -140,7 +144,14 @@ export function DramaFeedItem({
       return;
     }
 
-    onRecordProgressRef.current(player.currentTime, player.duration || undefined);
+    try {
+      onRecordProgressRef.current(player.currentTime, player.duration || undefined);
+    } catch {
+      // On native, the underlying player's shared object can already be
+      // released by the time this runs on final unmount teardown, throwing
+      // "Unable to find the native shared object". Nothing left to flush
+      // to in that case, so skip rather than crash.
+    }
   }, [hasPlaybackUrl, player]);
 
   // Resume once per mount, as soon as the player has a real duration to seek

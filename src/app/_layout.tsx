@@ -3,6 +3,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import { useColorScheme } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { VideoCatalogProvider } from '@/features/videos/video-catalog-provider';
@@ -48,16 +49,18 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AuthProvider>
-        <VideoCatalogProvider>
-          <VideoInteractionsProvider>
-            <SeriesProgressProvider>
-              <AppContent />
-            </SeriesProgressProvider>
-          </VideoInteractionsProvider>
-        </VideoCatalogProvider>
-      </AuthProvider>
-    </ThemeProvider>
+    <SafeAreaProvider>
+      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+        <AuthProvider>
+          <VideoCatalogProvider>
+            <VideoInteractionsProvider>
+              <SeriesProgressProvider>
+                <AppContent />
+              </SeriesProgressProvider>
+            </VideoInteractionsProvider>
+          </VideoCatalogProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </SafeAreaProvider>
   );
 }

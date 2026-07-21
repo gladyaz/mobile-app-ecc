@@ -1,26 +1,13 @@
 import { render, fireEvent } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import type { ReactElement } from 'react';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { DramaFeedItem } from '@/components/drama-feed-item';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
 
-// DramaFeedItem reads useSafeAreaInsets for its bottom-overlay offset, which
-// throws without a SafeAreaProvider ancestor. initialMetrics makes the
-// provider synchronously ready instead of waiting on a real native
-// measurement that never arrives in this test environment.
 function renderFeedItem(ui: ReactElement) {
-  return render(
-    <SafeAreaProvider
-      initialMetrics={{
-        insets: { top: 0, left: 0, right: 0, bottom: 0 },
-        frame: { x: 0, y: 0, width: 390, height: 844 },
-      }}>
-      {ui}
-    </SafeAreaProvider>
-  );
+  return render(ui);
 }
 
 jest.mock('expo', () => ({
@@ -29,6 +16,14 @@ jest.mock('expo', () => ({
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
+}));
+
+// expo-router/js-tabs pulls in expo-router's full Tabs implementation
+// (native-tabs, splash, router-store, ...) which needs native modules
+// unavailable under Jest. DramaFeedItem only needs the one hook it
+// exports, so stub that directly with a fixed value.
+jest.mock('expo-router/js-tabs', () => ({
+  useBottomTabBarHeight: jest.fn(() => 56),
 }));
 
 jest.mock('expo-screen-orientation', () => ({

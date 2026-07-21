@@ -1,11 +1,11 @@
 import { useEvent } from 'expo';
 import { router } from 'expo-router';
+import { useBottomTabBarHeight } from 'expo-router/js-tabs';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { SymbolView } from 'expo-symbols';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { BrandMark } from '@/components/brand-mark';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
@@ -17,19 +17,13 @@ import type { Video } from '@/types/video';
 // bottom playback-progress bar - a throttle, not per-frame.
 const TIME_UPDATE_INTERVAL_SECONDS = 0.25;
 
-// Measured live (web): the bottom tab bar renders as an overlay and is NOT
-// excluded from the feed item's own `height` - it sits in the last ~56px.
-// On native, Expo Router's Tabs navigator already excludes the tab bar from
-// the screen's content area, so only the bottom safe-area inset (home
-// indicator / gesture bar) needs to be cleared there, not the full tab bar
-// height - using the web-sized estimate on native would eat more video
-// space than necessary.
-const WEB_TAB_BAR_HEIGHT = 56;
-// insets.bottom is 0 on many native devices (no home indicator / gesture
-// bar), so BOTTOM_GAP alone has to provide real visual breathing room -
-// a small value like 12 reads as flush against the tab bar on those
-// devices since the content area itself already stops right above it.
-const BOTTOM_GAP = 20;
+// useBottomTabBarHeight() (re-exported from expo-router's own vendored
+// react-navigation/bottom-tabs) returns the tab bar's actual rendered
+// height, safe-area inset already included, correct on both web and
+// native - replaces the previous Platform.OS branch that guessed a fixed
+// 56px on web and assumed native excludes the tab bar entirely from the
+// content area (neither guess held up across real devices).
+const BOTTOM_GAP = 12;
 
 // Above this length, the 1-line-clamped caption is likely to actually
 // truncate, so it's worth offering a "Lebih banyak" expand affordance.
@@ -84,9 +78,8 @@ export function DramaFeedItem({
   onToggleSave,
   onRecordProgress,
 }: DramaFeedItemProps) {
-  const insets = useSafeAreaInsets();
-  const tabBarClearance = Platform.OS === 'web' ? WEB_TAB_BAR_HEIGHT : insets.bottom;
-  const metadataBottomOffset = tabBarClearance + BOTTOM_GAP;
+  const tabBarHeight = useBottomTabBarHeight();
+  const metadataBottomOffset = tabBarHeight + BOTTOM_GAP;
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const [isInFullscreen, setIsInFullscreen] = useState(false);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);

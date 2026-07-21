@@ -1,10 +1,3 @@
-/**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
- */
-
-import '@/global.css';
-
 import { Platform } from 'react-native';
 
 export const Colors = {
@@ -63,3 +56,58 @@ export const Spacing = {
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 800;
+
+/**
+ * "Red Panda" design tokens, sourced from the Claude Design project
+ * "C-Verse Mobile App Design" (C-Verse App.dc.html). The app is dark-only
+ * by design intent - there is no light-theme variant in the source design.
+ * Named distinctly from the unused light/dark scaffold above (Colors,
+ * Fonts, Spacing) so both can coexist without a breaking rename.
+ */
+export const Palette = {
+  background: '#0D0D0F',
+  backgroundElevated: '#101013',
+  surface: '#18181B',
+  surfaceMuted: '#1c1c1f',
+  border: '#2A2A2E',
+  primary: '#FF7A1A',
+  primaryHover: '#FF9A4D',
+  brandRed: '#E23B3B',
+  text: '#FFFFFF',
+  textSecondary: '#A1A1AA',
+  textMuted: '#71717A',
+  textDisabled: '#52525B',
+  error: '#EF4444',
+  success: '#22C55E',
+  warning: '#EAB308',
+} as const;
+
+export const Gradients = {
+  primary: ['#FF7A1A', '#E23B3B'] as const,
+};
+
+export const Radius = {
+  sm: 8,
+  md: 10,
+  lg: 14,
+  xl: 16,
+  xxl: 20,
+  pill: 999,
+} as const;
+
+export const Space = (multiplier: number) => multiplier * 4;
+
+export const FontFamily = {
+  regular: 'PlusJakartaSans_400Regular',
+  medium: 'PlusJakartaSans_500Medium',
+  semiBold: 'PlusJakartaSans_600SemiBold',
+  bold: 'PlusJakartaSans_700Bold',
+  extraBold: 'PlusJakartaSans_800ExtraBold',
+} as const;
+
+export const Typography = {
+  display: { fontFamily: FontFamily.extraBold, fontSize: 26 },
+  title: { fontFamily: FontFamily.extraBold, fontSize: 18 },
+  body: { fontFamily: FontFamily.regular, fontSize: 14 },
+  caption: { fontFamily: FontFamily.semiBold, fontSize: 12 },
+} as const;

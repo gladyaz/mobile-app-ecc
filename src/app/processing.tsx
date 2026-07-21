@@ -1,6 +1,9 @@
 import { router } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
+import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { FontFamily, Palette, Radius } from '@/constants/theme';
 import {
   getProcessingJobs,
   getProcessingSummary,
@@ -17,74 +20,131 @@ const statusLabels: Record<ProcessingStatus, string> = {
 };
 
 const statusColors: Record<ProcessingStatus, string> = {
-  pending: '#6b7280',
-  processing: '#2563eb',
-  completed: '#15803d',
-  failed: '#b91c1c',
-  needs_review: '#b45309',
+  pending: Palette.textSecondary,
+  processing: Palette.primary,
+  completed: Palette.success,
+  failed: Palette.error,
+  needs_review: Palette.warning,
 };
 
+type StatusFilter = 'all' | ProcessingStatus;
+
+const filterOptions: readonly { readonly key: StatusFilter; readonly label: string }[] = [
+  { key: 'all', label: 'Semua' },
+  { key: 'completed', label: 'Completed' },
+  { key: 'processing', label: 'Processing' },
+  { key: 'pending', label: 'Pending' },
+  { key: 'failed', label: 'Failed' },
+  { key: 'needs_review', label: 'Needs Review' },
+];
+
 export default function ProcessingHistoryScreen() {
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const summary = getProcessingSummary();
   const processingJobs = getProcessingJobs();
   const uploadedVideos = getUploadedVideos();
+  const pendingCount =
+    summary.total - summary.completed - summary.processing - summary.failed - summary.needsReview;
+  const filteredJobs = useMemo(
+    () =>
+      statusFilter === 'all'
+        ? processingJobs
+        : processingJobs.filter((job) => job.status === statusFilter),
+    [processingJobs, statusFilter]
+  );
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => {
-          if (router.canGoBack()) {
-            router.back();
-            return;
-          }
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Pressable
+          accessibilityLabel="Kembali"
+          accessibilityRole="button"
+          onPress={() => {
+            if (router.canGoBack()) {
+              router.back();
+              return;
+            }
 
-          router.replace('/profile');
-        }}
-        style={({ pressed }) => [styles.backButton, pressed && styles.buttonPressed]}>
-        <Text style={styles.backButtonText}>Back</Text>
-      </Pressable>
-
-      <Text style={styles.title}>Processing History</Text>
-      <Text style={styles.description}>
-        Track uploaded dramas as Indonesian subtitles are embedded into the final video for
-        review.
-      </Text>
-
-      <View style={styles.summaryGrid}>
-        <SummaryCard label="Total" value={summary.total} />
-        <SummaryCard label="Completed" value={summary.completed} />
-        <SummaryCard label="Processing" value={summary.processing} />
-        <SummaryCard label="Failed" value={summary.failed} />
-        <SummaryCard label="Needs Review" value={summary.needsReview} />
+            router.replace('/profile');
+          }}
+          style={({ pressed }) => [styles.backButton, pressed && styles.buttonPressed]}>
+          <SymbolView
+            name={{ ios: 'chevron.left', android: 'chevron_left', web: 'chevron_left' }}
+            size={18}
+            tintColor={Palette.text}
+          />
+        </Pressable>
+        <View>
+          <Text style={styles.title}>Processing History</Text>
+          <Text style={styles.internalLabel}>INTERNAL · STAFF ONLY</Text>
+        </View>
       </View>
 
-      <Text style={styles.sectionTitle}>Processing Jobs</Text>
-      <View style={styles.list}>
-        {processingJobs.map((job) => (
-          <ProcessingJobCard key={job.id} job={job} />
-        ))}
-      </View>
+      <ScrollView contentContainerStyle={styles.content}>
+        <ScrollView
+          horizontal
+          contentContainerStyle={styles.statRow}
+          showsHorizontalScrollIndicator={false}>
+          <SummaryCard label="Total" value={summary.total} valueColor={Palette.text} />
+          <SummaryCard label="Completed" value={summary.completed} valueColor={Palette.success} />
+          <SummaryCard label="Processing" value={summary.processing} valueColor={Palette.primary} />
+          <SummaryCard label="Pending" value={pendingCount} valueColor={Palette.textSecondary} />
+          <SummaryCard label="Failed" value={summary.failed} valueColor={Palette.error} />
+          <SummaryCard label="Needs Review" value={summary.needsReview} valueColor={Palette.warning} />
+        </ScrollView>
 
-      <Text style={styles.sectionTitle}>Uploaded Videos</Text>
-      <View style={styles.list}>
-        {uploadedVideos.map((video) => (
-          <UploadedVideoCard key={video.id} video={video} />
-        ))}
-      </View>
-    </ScrollView>
+        <ScrollView
+          horizontal
+          contentContainerStyle={styles.filterRow}
+          showsHorizontalScrollIndicator={false}>
+          {filterOptions.map((option) => {
+            const isSelected = statusFilter === option.key;
+
+            return (
+              <Pressable
+                accessibilityRole="button"
+                key={option.key}
+                onPress={() => setStatusFilter(option.key)}
+                style={({ pressed }) => [
+                  styles.filterChip,
+                  isSelected && styles.filterChipSelected,
+                  pressed && styles.buttonPressed,
+                ]}>
+                <Text style={[styles.filterChipText, isSelected && styles.filterChipTextSelected]}>
+                  {option.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        <View style={styles.list}>
+          {filteredJobs.map((job) => (
+            <ProcessingJobCard job={job} key={job.id} />
+          ))}
+        </View>
+
+        <Text style={styles.sectionTitle}>Uploaded Videos</Text>
+        <View style={styles.list}>
+          {uploadedVideos.map((video) => (
+            <UploadedVideoCard key={video.id} video={video} />
+          ))}
+        </View>
+      </ScrollView>
+    </View>
   );
 }
 
 type SummaryCardProps = {
   readonly label: string;
   readonly value: number;
+  readonly valueColor: string;
 };
 
-function SummaryCard({ label, value }: SummaryCardProps) {
+function SummaryCard({ label, value, valueColor }: SummaryCardProps) {
   return (
     <View style={styles.summaryCard}>
-      <Text style={styles.summaryValue}>{value}</Text>
+      <Text style={[styles.summaryValue, { color: valueColor }]}>{value}</Text>
       <Text style={styles.summaryLabel}>{label}</Text>
     </View>
   );
@@ -100,32 +160,33 @@ function ProcessingJobCard({ job }: ProcessingJobCardProps) {
   return (
     <View style={styles.card}>
       <View style={styles.cardHeader}>
-        <View style={styles.cardTitleGroup}>
-          <Text style={styles.episode}>Episode {job.episodeNumber}</Text>
-          <Text style={styles.cardTitle}>{job.title}</Text>
-        </View>
-        <View style={[styles.statusBadge, { backgroundColor: statusColor }]}>
-          <Text style={styles.statusText}>{statusLabels[job.status]}</Text>
+        <Text style={styles.cardTitle}>{job.title}</Text>
+        <View style={[styles.statusBadge, { backgroundColor: `${statusColor}1f` }]}>
+          <Text style={[styles.statusText, { color: statusColor }]}>{statusLabels[job.status]}</Text>
         </View>
       </View>
 
-      <Text style={styles.fileName}>{job.fileName}</Text>
+      <Text style={styles.metaText}>
+        EP {job.episodeNumber} · {job.fileName}
+      </Text>
 
       <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${job.progress}%` }]} />
+        <View style={[styles.progressFill, { width: `${job.progress}%`, backgroundColor: statusColor }]} />
       </View>
-      <Text style={styles.metaText}>{job.progress}% complete</Text>
+      <Text style={styles.progressLabel}>
+        {job.status === 'pending' ? 'Dalam antrian' : `${job.progress}%`}
+      </Text>
 
-      <View style={styles.metaGrid}>
-        <Text style={styles.metaText}>Source: {job.sourceLanguage}</Text>
-        <Text style={styles.metaText}>Subtitle: {job.subtitleLanguage}</Text>
-        <Text style={styles.metaText}>ETA: {job.estimatedTime}</Text>
-        <Text style={styles.metaText}>
-          Processed: {job.processedAt ? new Date(job.processedAt).toLocaleDateString() : 'Not yet'}
-        </Text>
-      </View>
-
-      {job.errorMessage ? <Text style={styles.errorText}>{job.errorMessage}</Text> : null}
+      {job.errorMessage ? (
+        <View style={styles.errorBox}>
+          <SymbolView
+            name={{ ios: 'exclamationmark.circle', android: 'error_outline', web: 'error_outline' }}
+            size={14}
+            tintColor={Palette.error}
+          />
+          <Text style={styles.errorText}>{job.errorMessage}</Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -137,14 +198,17 @@ type UploadedVideoCardProps = {
 function UploadedVideoCard({ video }: UploadedVideoCardProps) {
   return (
     <View style={styles.uploadCard}>
-      <View>
-        <Text style={styles.episode}>Episode {video.episodeNumber}</Text>
+      <View style={styles.uploadInfo}>
         <Text style={styles.uploadTitle}>{video.title}</Text>
-        <Text style={styles.fileName}>{video.fileName}</Text>
+        <Text style={styles.metaText}>
+          EP {video.episodeNumber} · {video.fileName}
+        </Text>
       </View>
-      <Text style={[styles.uploadStatus, { color: statusColors[video.status] }]}>
-        {statusLabels[video.status]}
-      </Text>
+      <View style={[styles.statusBadge, { backgroundColor: `${statusColors[video.status]}1f` }]}>
+        <Text style={[styles.statusText, { color: statusColors[video.status] }]}>
+          {statusLabels[video.status]}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -152,163 +216,189 @@ function UploadedVideoCard({ video }: UploadedVideoCardProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: Palette.background,
   },
-  content: {
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 48,
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 60,
+    paddingBottom: 10,
   },
   backButton: {
-    alignSelf: 'flex-start',
-    marginBottom: 18,
-    paddingVertical: 8,
-  },
-  backButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#d11f3f',
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Palette.border,
+    backgroundColor: Palette.surface,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#111827',
+    fontSize: 18,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
   },
-  description: {
-    marginTop: 8,
-    fontSize: 16,
-    lineHeight: 24,
-    color: '#4b5563',
+  internalLabel: {
+    fontSize: 9,
+    letterSpacing: 1,
+    fontFamily: FontFamily.bold,
+    color: Palette.primaryHover,
   },
-  summaryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  content: {
+    paddingHorizontal: 16,
+    paddingBottom: 40,
+  },
+  statRow: {
     gap: 10,
-    marginTop: 22,
+    paddingVertical: 8,
   },
   summaryCard: {
-    minWidth: 104,
-    flexGrow: 1,
-    padding: 14,
+    minWidth: 92,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 8,
-    backgroundColor: '#f9fafb',
+    borderColor: Palette.border,
+    borderRadius: Radius.lg,
+    backgroundColor: Palette.surface,
   },
   summaryValue: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#111827',
+    fontSize: 21,
+    fontFamily: FontFamily.extraBold,
   },
   summaryLabel: {
     marginTop: 2,
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#6b7280',
+    fontSize: 10.5,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.textSecondary,
+  },
+  filterRow: {
+    gap: 8,
+    paddingVertical: 12,
+  },
+  filterChip: {
+    height: 34,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Palette.border,
+    backgroundColor: Palette.surface,
+  },
+  filterChipSelected: {
+    borderColor: Palette.primary,
+    backgroundColor: Palette.primary,
+  },
+  filterChipText: {
+    fontSize: 12,
+    fontFamily: FontFamily.bold,
+    color: Palette.textSecondary,
+  },
+  filterChipTextSelected: {
+    color: Palette.text,
   },
   sectionTitle: {
-    marginTop: 28,
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#111827',
+    marginTop: 8,
+    marginBottom: 4,
+    fontSize: 16,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
   },
   list: {
     gap: 12,
-    marginTop: 12,
   },
   card: {
-    padding: 16,
+    padding: 14,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 8,
-    backgroundColor: '#f9fafb',
+    borderColor: Palette.border,
+    borderRadius: Radius.xl,
+    backgroundColor: Palette.surface,
   },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 12,
-  },
-  cardTitleGroup: {
-    flex: 1,
-  },
-  episode: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#d11f3f',
+    gap: 10,
   },
   cardTitle: {
-    marginTop: 4,
-    fontSize: 17,
-    lineHeight: 24,
-    fontWeight: '800',
-    color: '#111827',
+    flex: 1,
+    fontSize: 13.5,
+    lineHeight: 18,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
   },
   statusBadge: {
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
   },
   statusText: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#fff',
+    fontSize: 10.5,
+    fontFamily: FontFamily.bold,
   },
-  fileName: {
-    marginTop: 8,
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#4b5563',
+  metaText: {
+    marginTop: 4,
+    fontSize: 11.5,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.textMuted,
   },
   progressTrack: {
-    height: 8,
-    marginTop: 14,
+    height: 6,
+    marginTop: 12,
     overflow: 'hidden',
-    borderRadius: 8,
-    backgroundColor: '#e5e7eb',
+    borderRadius: Radius.pill,
+    backgroundColor: Palette.border,
   },
   progressFill: {
     height: '100%',
-    borderRadius: 8,
-    backgroundColor: '#d11f3f',
+    borderRadius: Radius.pill,
   },
-  metaGrid: {
-    gap: 4,
-    marginTop: 10,
-  },
-  metaText: {
+  progressLabel: {
     marginTop: 6,
-    fontSize: 13,
-    lineHeight: 19,
-    color: '#4b5563',
+    fontSize: 10.5,
+    fontFamily: FontFamily.bold,
+    color: Palette.textSecondary,
+    textAlign: 'right',
+  },
+  errorBox: {
+    marginTop: 8,
+    flexDirection: 'row',
+    gap: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.35)',
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(239, 68, 68, 0.09)',
   },
   errorText: {
-    marginTop: 12,
-    padding: 10,
-    borderRadius: 8,
-    fontSize: 13,
-    lineHeight: 19,
-    color: '#991b1b',
-    backgroundColor: '#fee2e2',
+    flex: 1,
+    fontSize: 11.5,
+    lineHeight: 17,
+    fontFamily: FontFamily.regular,
+    color: '#F87171',
   },
   uploadCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
-    padding: 16,
+    padding: 14,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 8,
-    backgroundColor: '#fff',
+    borderColor: Palette.border,
+    borderRadius: Radius.xl,
+    backgroundColor: Palette.surface,
+  },
+  uploadInfo: {
+    flex: 1,
+    minWidth: 0,
   },
   uploadTitle: {
-    marginTop: 4,
-    fontSize: 16,
-    lineHeight: 23,
-    fontWeight: '800',
-    color: '#111827',
-  },
-  uploadStatus: {
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 13.5,
+    lineHeight: 18,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
   },
   buttonPressed: {
     opacity: 0.7,

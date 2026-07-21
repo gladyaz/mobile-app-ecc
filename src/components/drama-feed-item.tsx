@@ -7,9 +7,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BrandMark } from '@/components/brand-mark';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
+import { FontFamily, Palette, Radius } from '@/constants/theme';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
+
+// How often the player emits a timeUpdate event, used to drive the
+// bottom playback-progress bar - a throttle, not per-frame.
+const TIME_UPDATE_INTERVAL_SECONDS = 0.25;
 
 // Measured live (web): the bottom tab bar renders as an overlay and is NOT
 // excluded from the feed item's own `height` - it sits in the last ~56px.
@@ -89,6 +95,7 @@ export function DramaFeedItem({
   const player = useVideoPlayer(hasPlaybackUrl ? video.playbackUrl : null, (nextPlayer) => {
     nextPlayer.loop = true;
     nextPlayer.muted = true;
+    nextPlayer.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_SECONDS;
   });
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
   const { status, error } = useEvent(player, 'statusChange', {
@@ -96,6 +103,14 @@ export function DramaFeedItem({
     error: undefined,
   });
   const { videoTrack } = useEvent(player, 'videoTrackChange', { videoTrack: null });
+  const { currentTime: playbackPositionSeconds } = useEvent(player, 'timeUpdate', {
+    currentTime: player.currentTime,
+    currentLiveTimestamp: null,
+    currentOffsetFromLive: null,
+    bufferedPosition: 0,
+  });
+  const playbackProgressRatio =
+    player.duration > 0 ? Math.min(1, Math.max(0, playbackPositionSeconds / player.duration)) : 0;
   const hasPlaybackError = !hasPlaybackUrl || status === 'error';
   const hasLoggedErrorRef = useRef(false);
 
@@ -328,11 +343,13 @@ export function DramaFeedItem({
           onPress={handlePlayPause}
           style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
           {isIndicatorVisible ? (
-            <SymbolView
-              name={{ ios: isPlaying ? 'pause.fill' : 'play.fill', android: isPlaying ? 'pause' : 'play_arrow', web: isPlaying ? 'pause' : 'play_arrow' }}
-              size={28}
-              tintColor="#fff"
-            />
+            <View style={styles.playPauseCircle}>
+              <SymbolView
+                name={{ ios: isPlaying ? 'pause.fill' : 'play.fill', android: isPlaying ? 'pause' : 'play_arrow', web: isPlaying ? 'pause' : 'play_arrow' }}
+                size={30}
+                tintColor="#fff"
+              />
+            </View>
           ) : null}
         </Pressable>
       )}
@@ -355,6 +372,12 @@ export function DramaFeedItem({
         </Pressable>
       ) : null}
 
+      {hasPlaybackError ? null : (
+        <View style={[styles.progressTrack, { bottom: metadataBottomOffset - BOTTOM_GAP }]}>
+          <View style={[styles.progressFill, { width: `${playbackProgressRatio * 100}%` }]} />
+        </View>
+      )}
+
       <View style={[styles.content, { bottom: metadataBottomOffset }]}>
         <Pressable
           accessibilityRole="button"
@@ -362,15 +385,19 @@ export function DramaFeedItem({
             router.push({ pathname: '/series/[id]', params: { id: video.seriesId } })
           }
           style={({ pressed }) => [styles.details, pressed && styles.buttonPressed]}>
-          <View style={styles.metaRow}>
-            <Text style={[styles.episode, styles.textShadow]}>
-              Episode {video.episodeNumber}
-            </Text>
+          <View style={styles.channelRow}>
+            <BrandMark size={26} />
             <Text style={[styles.channel, styles.textShadow]}>{video.channelName}</Text>
           </View>
           <Text numberOfLines={2} style={[styles.title, styles.textShadow]}>
             {video.title}
           </Text>
+          <View style={styles.metaRow}>
+            <Text style={[styles.episodeBadge, styles.textShadow]}>
+              EP {video.episodeNumber}
+            </Text>
+            <Text style={[styles.categoryChip, styles.textShadow]}>{video.category}</Text>
+          </View>
           <Text
             numberOfLines={isCaptionExpanded ? CAPTION_EXPANDED_MAX_LINES : 1}
             style={[styles.caption, styles.textShadow]}>
@@ -400,8 +427,8 @@ export function DramaFeedItem({
                 android: isLiked ? 'favorite' : 'favorite_border',
                 web: isLiked ? 'favorite' : 'favorite_border',
               }}
-              size={26}
-              tintColor={isLiked ? '#d11f3f' : '#fff'}
+              size={24}
+              tintColor={isLiked ? Palette.primary : '#fff'}
             />
             <Text style={[styles.actionValue, styles.textShadow]}>
               {formatLikeCount(likeCount)}
@@ -418,8 +445,8 @@ export function DramaFeedItem({
                 android: isSaved ? 'bookmark' : 'bookmark_border',
                 web: isSaved ? 'bookmark' : 'bookmark_border',
               }}
-              size={26}
-              tintColor={isSaved ? '#fbbf24' : '#fff'}
+              size={22}
+              tintColor={isSaved ? Palette.primary : '#fff'}
             />
           </Pressable>
           <Pressable
@@ -429,7 +456,7 @@ export function DramaFeedItem({
             style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
             <SymbolView
               name={{ ios: 'square.and.arrow.up', android: 'share', web: 'share' }}
-              size={24}
+              size={22}
               tintColor="#fff"
             />
           </Pressable>
@@ -448,7 +475,7 @@ export function DramaFeedItem({
 const styles = StyleSheet.create({
   container: {
     position: 'relative',
-    backgroundColor: '#111827',
+    backgroundColor: Palette.background,
   },
   videoLayer: {
     flex: 1,
@@ -473,23 +500,34 @@ const styles = StyleSheet.create({
   },
   errorTitle: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   errorHint: {
     fontSize: 13,
     lineHeight: 18,
-    color: '#9ca3af',
+    fontFamily: FontFamily.regular,
+    color: Palette.textSecondary,
     textAlign: 'center',
   },
   playPauseButton: {
     position: 'absolute',
     top: '50%',
     left: '50%',
-    marginTop: -32,
-    marginLeft: -32,
-    width: 64,
-    height: 64,
+    marginTop: -38,
+    marginLeft: -38,
+    width: 76,
+    height: 76,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playPauseCircle: {
+    width: 76,
+    height: 76,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(13, 13, 15, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -501,13 +539,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: Radius.sm,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
   },
   fullscreenText: {
     fontSize: 13,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   nextEpisodeButton: {
     position: 'absolute',
@@ -517,13 +555,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: Radius.sm,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
   },
   nextEpisodeText: {
     fontSize: 12,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
+  },
+  progressTrack: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 2.5,
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: Palette.primary,
   },
   content: {
     position: 'absolute',
@@ -539,62 +588,88 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingRight: 4,
   },
+  channelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  },
   metaRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8,
+    marginTop: 7,
   },
   textShadow: {
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
-  episode: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#fecdd3',
+  episodeBadge: {
+    fontSize: 10.5,
+    fontFamily: FontFamily.bold,
+    letterSpacing: 0.5,
+    color: Palette.text,
+    backgroundColor: 'rgba(255, 122, 26, 0.92)',
+    borderRadius: Radius.sm - 2,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    overflow: 'hidden',
+  },
+  categoryChip: {
+    fontSize: 11,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.textSecondary,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    borderRadius: Radius.sm - 2,
+    paddingHorizontal: 8,
+    paddingVertical: 2.5,
+    overflow: 'hidden',
   },
   title: {
     marginTop: 8,
-    fontSize: 19,
-    lineHeight: 24,
-    fontWeight: '800',
-    color: '#fff',
+    fontSize: 18,
+    lineHeight: 23,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
   },
   channel: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#f3f4f6',
+    fontSize: 13,
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   caption: {
     marginTop: 6,
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#d1d5db',
+    fontSize: 12.5,
+    lineHeight: 18,
+    fontFamily: FontFamily.regular,
+    color: Palette.textSecondary,
   },
   captionExpandToggle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#e5e7eb',
+    fontSize: 12.5,
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   actions: {
     alignItems: 'center',
-    gap: 10,
+    gap: 14,
   },
   actionButton: {
-    width: 44,
-    height: 44,
+    width: 48,
+    height: 48,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 22,
-    backgroundColor: 'rgba(0, 0, 0, 0.18)',
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(24, 24, 27, 0.9)',
+    borderWidth: 1,
+    borderColor: Palette.border,
   },
   actionValue: {
-    marginTop: 2,
+    marginTop: 4,
     fontSize: 11,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   buttonPressed: {
     opacity: 0.7,

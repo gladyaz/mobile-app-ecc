@@ -18,9 +18,11 @@ import {
 } from 'react-native';
 
 import { DramaFeedItem } from '@/components/drama-feed-item';
+import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { getNextEpisode, getSeriesById } from '@/services/videos/series-service';
 import { useSeriesProgress } from '@/stores/series-progress';
+import { useToast } from '@/stores/toast';
 import { useVideoInteractions } from '@/stores/video-interactions';
 import type { Video } from '@/types/video';
 
@@ -42,6 +44,7 @@ export default function HomeScreen() {
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
   const { getProgress, recordProgress } = useSeriesProgress();
+  const { showToast } = useToast();
   const [feedHeight, setFeedHeight] = useState(height);
   const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
   const requestedVideoIsInCatalog =
@@ -134,7 +137,7 @@ export default function HomeScreen() {
 
         if (webNavigator?.clipboard?.writeText) {
           await webNavigator.clipboard.writeText(message);
-          Alert.alert('Share ready', 'Drama link copied to clipboard.');
+          showToast('Link video disalin');
           return;
         }
 
@@ -155,7 +158,7 @@ export default function HomeScreen() {
     } catch {
       Alert.alert('Share unavailable', 'Please try again later.');
     }
-  }, []);
+  }, [showToast]);
 
   const renderItem: ListRenderItem<Video> = useCallback(
     ({ item }) => {
@@ -189,6 +192,7 @@ export default function HomeScreen() {
           }}
           onToggleSave={() => {
             toggleSave(item.id);
+            showToast(interaction.isSaved ? 'Dihapus dari Saved' : 'Disimpan ke Saved');
           }}
           onRecordProgress={(positionSeconds, durationSeconds) => {
             recordProgress(
@@ -214,13 +218,14 @@ export default function HomeScreen() {
       handleShare,
       toggleLike,
       toggleSave,
+      showToast,
     ]
   );
 
   if (isLoading && videos.length === 0) {
     return (
       <View style={[styles.container, styles.centerState]}>
-        <ActivityIndicator color="#fff" size="large" />
+        <ActivityIndicator color={Palette.primary} size="large" />
       </View>
     );
   }
@@ -272,6 +277,10 @@ export default function HomeScreen() {
           index,
         })}
       />
+      <View pointerEvents="none" style={styles.brandOverlay}>
+        <Text style={styles.brandOverlayText}>Red Panda</Text>
+        <View style={styles.brandOverlayDot} />
+      </View>
     </View>
   );
 }
@@ -279,7 +288,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#111827',
+    backgroundColor: Palette.background,
   },
   centerState: {
     alignItems: 'center',
@@ -289,29 +298,52 @@ const styles = StyleSheet.create({
   },
   stateTitle: {
     fontSize: 17,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
     textAlign: 'center',
   },
   stateDetail: {
     fontSize: 13,
     lineHeight: 18,
-    color: '#9ca3af',
+    fontFamily: FontFamily.regular,
+    color: Palette.textSecondary,
     textAlign: 'center',
   },
   retryButton: {
     marginTop: 8,
     paddingHorizontal: 20,
     paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#d11f3f',
+    borderRadius: Radius.md,
+    backgroundColor: Palette.primary,
   },
   retryButtonText: {
     fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   buttonPressed: {
     opacity: 0.7,
+  },
+  brandOverlay: {
+    position: 'absolute',
+    top: 64,
+    left: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  brandOverlayText: {
+    fontSize: 16,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
+    textShadowColor: 'rgba(0, 0, 0, 0.7)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  brandOverlayDot: {
+    width: 6,
+    height: 6,
+    borderRadius: Radius.pill,
+    backgroundColor: Palette.brandRed,
   },
 });

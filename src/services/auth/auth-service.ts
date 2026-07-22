@@ -1,5 +1,5 @@
 import { request } from '@/services/api/client';
-import type { AuthResponse, AuthTokens, AuthUser } from '@/types/auth';
+import type { AuthResponse, AuthUser } from '@/types/auth';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
 
@@ -38,12 +38,13 @@ export async function login(email: string, password: string): Promise<AuthRespon
 }
 
 /**
- * Rotates the refresh token, returning a new access/refresh token pair. The
+ * Rotates the refresh token, returning the full auth response: a new
+ * access/refresh token pair plus the (possibly updated) current user. The
  * previous refresh token becomes invalid once this call succeeds. Throws
  * ApiError with code "INVALID_REFRESH_TOKEN" (status 401) on any failure.
  */
-export async function refresh(refreshToken: string): Promise<AuthTokens> {
-  return request<AuthTokens>('auth/refresh', {
+export async function refresh(refreshToken: string): Promise<AuthResponse> {
+  return request<AuthResponse>('auth/refresh', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ refreshToken }),

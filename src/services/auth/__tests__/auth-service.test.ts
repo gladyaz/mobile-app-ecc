@@ -6,7 +6,7 @@ import {
   refresh,
   register,
 } from '@/services/auth/auth-service';
-import type { AuthResponse, AuthTokens, AuthUser } from '@/types/auth';
+import type { AuthResponse, AuthUser } from '@/types/auth';
 
 jest.mock('@/services/api/client', () => {
   const actual = jest.requireActual('@/services/api/client');
@@ -91,13 +91,16 @@ describe('login', () => {
 });
 
 describe('refresh', () => {
-  it('resolves with a rotated token pair on success', async () => {
-    const tokens: AuthTokens = { accessToken: 'access-token-2', refreshToken: 'refresh-token-2' };
-    mockedRequest.mockResolvedValueOnce(tokens);
+  it('resolves with the full auth response (user plus rotated token pair) on success', async () => {
+    const authResponse = buildAuthResponse({
+      accessToken: 'access-token-2',
+      refreshToken: 'refresh-token-2',
+    });
+    mockedRequest.mockResolvedValueOnce(authResponse);
 
     const result = await refresh('refresh-token-1');
 
-    expect(result).toEqual(tokens);
+    expect(result).toEqual(authResponse);
     expect(mockedRequest).toHaveBeenCalledWith(
       'auth/refresh',
       expect.objectContaining({

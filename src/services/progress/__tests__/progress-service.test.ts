@@ -21,8 +21,8 @@ describe('upsertProgress', () => {
   it('resolves with the upserted progress on success', async () => {
     const progress: UserSeriesProgress = {
       seriesId: 'series_1',
-      lastWatchedVideoId: 'video_3',
-      lastWatchedEpisodeNumber: 3,
+      videoId: 'video_3',
+      episodeNumber: 3,
       positionSeconds: 45,
       durationSeconds: 120,
     };
@@ -49,8 +49,8 @@ describe('upsertProgress', () => {
   it('omits durationSeconds from the body when not provided', async () => {
     const progress: UserSeriesProgress = {
       seriesId: 'series_1',
-      lastWatchedVideoId: 'video_1',
-      lastWatchedEpisodeNumber: 1,
+      videoId: 'video_1',
+      episodeNumber: 1,
       positionSeconds: 10,
     };
     mockedRequest.mockResolvedValueOnce(progress);
@@ -97,8 +97,8 @@ describe('getProgress', () => {
     const progressList: UserSeriesProgress[] = [
       {
         seriesId: 'series_1',
-        lastWatchedVideoId: 'video_2',
-        lastWatchedEpisodeNumber: 2,
+        videoId: 'video_2',
+        episodeNumber: 2,
         positionSeconds: 30,
       },
     ];

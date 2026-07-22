@@ -7,8 +7,8 @@
  */
 export type UserSeriesProgress = {
   readonly seriesId: string;
-  readonly lastWatchedVideoId: string;
-  readonly lastWatchedEpisodeNumber: number;
+  readonly videoId: string;
+  readonly episodeNumber: number;
   readonly positionSeconds: number;
   readonly durationSeconds?: number;
 };

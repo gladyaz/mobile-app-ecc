@@ -1,6 +1,6 @@
 # Mobile API Contract
 
-This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. Every other endpoint documented below is not connected yet — auth, like/save, view tracking, search, category browsing, saved videos, the user profile, and analytics are all currently implemented client-side only (local React Context stores backed by AsyncStorage via `src/services/storage/local-storage.ts`, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
+This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. Every other endpoint documented below is still not connected — like/save, view tracking, search, category browsing, saved videos, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
 
 Base path assumption: `/api/v1`
 
@@ -124,12 +124,50 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 
 ## Endpoints
 
+### POST /auth/register
+
+- Purpose: Create a new account and return session tokens plus the current user.
+- Method and path: `POST /auth/register`
+- Auth required: No
+- Request body (from `register()` in `src/services/auth/auth-service.ts`):
+
+```json
+{
+  "email": "gladyaz@example.com",
+  "password": "password",
+  "displayName": "Gladyaz"
+}
+```
+
+`displayName` is omitted from the body entirely when not provided (not sent as `null`/empty string).
+
+- Example response (`AuthResponse`, `src/types/auth.ts`):
+
+```json
+{
+  "accessToken": "jwt_access_token",
+  "refreshToken": "jwt_refresh_token",
+  "user": {
+    "id": "user_001",
+    "email": "gladyaz@example.com",
+    "displayName": "Gladyaz"
+  }
+}
+```
+
+`user.displayName` is optional; the mobile app falls back to the email's local-part for its own `name`/`username` display fields when absent (`deriveAuthUser()` in `src/stores/auth.tsx`).
+
+- Mobile screen: Login (fallback path only — see the `/auth/login` Connected note below; there is no dedicated registration screen)
+- MVP priority: P0
+- Backend notes: Throws `ApiError` with code `EMAIL_ALREADY_REGISTERED` (status 409) if the email is already taken.
+- Connected: Yes. `register()` in `src/services/auth/auth-service.ts` calls `request('auth/register', ...)`. It is invoked from `src/stores/auth.tsx`'s `login()` only as a fallback (see the login-or-register behavior documented under `/auth/login` below) — there is no standalone "create account" screen or button.
+
 ### POST /auth/login
 
 - Purpose: Authenticate a user and return session tokens plus the current user.
 - Method and path: `POST /auth/login`
 - Auth required: No
-- Request body:
+- Request body (from `login()` in `src/services/auth/auth-service.ts`):
 
 ```json
 {
@@ -138,37 +176,31 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 }
 ```
 
-- Example response:
+- Example response (`AuthResponse`, `src/types/auth.ts`):
 
 ```json
 {
-  "success": true,
-  "data": {
-    "accessToken": "jwt_access_token",
-    "refreshToken": "jwt_refresh_token",
-    "user": {
-      "id": "user_001",
-      "name": "Gladyaz",
-      "username": "gladyaz",
-      "email": "gladyaz@example.com"
-    }
-  },
-  "error": null,
-  "meta": null
+  "accessToken": "jwt_access_token",
+  "refreshToken": "jwt_refresh_token",
+  "user": {
+    "id": "user_001",
+    "email": "gladyaz@example.com",
+    "displayName": "Gladyaz"
+  }
 }
 ```
 
 - Mobile screen: Login, Profile
 - MVP priority: P0
-- Backend notes: Use password hashing, rate limiting, and generic invalid-credential messages.
-- Connected: No. `src/stores/auth.tsx` implements a dummy `loginDummy()` that sets a hardcoded local user and persists it to `AsyncStorage`; no HTTP request is made and there is no password field anywhere in the flow.
+- Backend notes: Use password hashing, rate limiting, and generic invalid-credential messages. `login()` throws `ApiError` with code `INVALID_CREDENTIALS` (status 401) for either a wrong password or a nonexistent email — the backend intentionally does not distinguish the two.
+- Connected: Yes. `src/app/login.tsx` calls `useAuth().login(email, password)`, which is implemented in `src/stores/auth.tsx`. **Login-or-register fallback behavior:** `login()` first calls `loginRequest()` (`POST /auth/login`); if that throws an `ApiError` with code `INVALID_CREDENTIALS`, it calls `registerRequest()` (`POST /auth/register`) instead, so a not-yet-registered email transparently creates an account rather than failing. Any other error (network failure, a different error code, etc.) propagates without attempting registration. On success from either path, the store derives its own `AuthUser` shape (`{ id, name, username, email }`) from the backend's `{ id, email, displayName? }` via `deriveAuthUser()`, stores the returned tokens in `token-store.ts`, and persists both to `AsyncStorage`.
 
-### POST /auth/logout
+### POST /auth/refresh
 
-- Purpose: Invalidate the current session or refresh token.
-- Method and path: `POST /auth/logout`
-- Auth required: Yes
-- Request body:
+- Purpose: Rotate an access/refresh token pair using a still-valid refresh token.
+- Method and path: `POST /auth/refresh`
+- Auth required: No (the refresh token itself is the credential)
+- Request body (from `refresh()` in `src/services/auth/auth-service.ts`):
 
 ```json
 {
@@ -176,52 +208,65 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 }
 ```
 
-- Example response:
+- Example response (`AuthResponse`, `src/types/auth.ts`):
 
 ```json
 {
-  "success": true,
-  "data": {
-    "loggedOut": true
-  },
-  "error": null,
-  "meta": null
+  "accessToken": "new_jwt_access_token",
+  "refreshToken": "new_jwt_refresh_token",
+  "user": {
+    "id": "user_001",
+    "email": "gladyaz@example.com",
+    "displayName": "Gladyaz"
+  }
 }
 ```
 
+- Mobile screen: None directly — this is infrastructure invoked automatically by the HTTP client, not by any screen.
+- MVP priority: P0
+- Backend notes: Throws `ApiError` with code `INVALID_REFRESH_TOKEN` (status 401) on any failure; the previous refresh token becomes invalid once a call succeeds.
+- Connected: Yes, as an interceptor rather than a direct per-screen call. `src/services/api/client.ts`'s `request()` accepts a `{ requiresAuth: true }` config that attaches `Authorization: Bearer <accessToken>` (read from `src/services/auth/token-store.ts`) to the request. On a `401` response with code `INVALID_ACCESS_TOKEN`, the client calls `POST /auth/refresh` exactly once (via its own internal `attemptTokenRefresh()`, not by importing `auth-service.ts`, to avoid a circular import) and, if that succeeds, retries the original request exactly once with the new access token. If the refresh itself fails, tokens are cleared, which forces a client-side logout through `token-store.ts`'s subscription (consumed by `src/stores/auth.tsx`), and the original `401` propagates. **As of this writing, no request in the codebase is made with `requiresAuth: true`** — `/videos/feed`, `/videos/:id`, and all `/auth/*` calls are unauthenticated or send their own explicit `Authorization` header (see `/auth/me` below) — so this interceptor is currently dormant infrastructure for future authenticated endpoints, not something that fires in normal use today. `auth-service.ts`'s own `refresh()` function (same request shape) is separate, unused code kept for parity/testability; the client's internal refresh path does not call it.
+
+### POST /auth/logout
+
+- Purpose: Invalidate the current session or refresh token.
+- Method and path: `POST /auth/logout`
+- Auth required: Yes
+- Request body (from `logout()` in `src/services/auth/auth-service.ts`):
+
+```json
+{
+  "refreshToken": "jwt_refresh_token"
+}
+```
+
+- Example response: The mobile client discards the response body (`logout()` returns `void`); the backend's actual envelope is expected to follow the standard shape but is not asserted on.
+
 - Mobile screen: Profile
 - MVP priority: P0
-- Backend notes: Support idempotent logout so repeated requests are safe.
-- Connected: No. `src/stores/auth.tsx` `logout()` clears local state and removes the persisted `AsyncStorage` entry; no HTTP request is made.
+- Backend notes: Support idempotent logout so repeated requests are safe — the backend is expected to always succeed, even for an unknown/already-revoked token.
+- Connected: Yes. `src/stores/auth.tsx`'s `logout()` calls `logoutRequest(refreshToken)` (`POST /auth/logout`) when a refresh token is present, then unconditionally clears local state (`token-store.ts`, `AsyncStorage`) regardless of whether the request succeeds — a failed network logout is treated as best-effort and does not block the client-side logout.
 
 ### GET /auth/me
 
 - Purpose: Return the authenticated session user.
 - Method and path: `GET /auth/me`
 - Auth required: Yes
-- Request params/body: None
-- Example response:
+- Request params/body: None; sends `Authorization: Bearer <accessToken>` explicitly (from `getCurrentUser()` in `src/services/auth/auth-service.ts`) rather than via the client's `requiresAuth` config.
+- Example response (`AuthUser`, `src/types/auth.ts`):
 
 ```json
 {
-  "success": true,
-  "data": {
-    "user": {
-      "id": "user_001",
-      "name": "Gladyaz",
-      "username": "gladyaz",
-      "email": "gladyaz@example.com"
-    }
-  },
-  "error": null,
-  "meta": null
+  "id": "user_001",
+  "email": "gladyaz@example.com",
+  "displayName": "Gladyaz"
 }
 ```
 
-- Mobile screen: Profile, app bootstrap
+- Mobile screen: None currently.
 - MVP priority: P0
-- Backend notes: Use this endpoint to restore auth state after app launch.
-- Connected: No. App bootstrap instead rehydrates the dummy user from `AsyncStorage` via `src/stores/auth.tsx`; no HTTP request is made.
+- Backend notes: Throws `ApiError` with code `INVALID_ACCESS_TOKEN` (status 401) on any failure (expired, revoked, or malformed token).
+- Connected: Implemented but unused, similar to `getVideoById` (see the `/videos/:id` Connected note below). `getCurrentUser(accessToken)` in `src/services/auth/auth-service.ts` calls `request('auth/me', ...)` and is unit-tested, but nothing in the app currently calls it — app bootstrap instead rehydrates the persisted user/tokens directly from `AsyncStorage` in `src/stores/auth.tsx`'s hydration effect, without a round trip to the backend.
 
 ### GET /videos/feed
 

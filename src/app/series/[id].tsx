@@ -5,6 +5,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { SeriesEpisodeRow } from '@/components/series-episode-row';
+import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { getSeriesById } from '@/services/videos/series-service';
 import { useSeriesProgress } from '@/stores/series-progress';
@@ -38,7 +39,7 @@ export default function SeriesDetailScreen() {
   if (isLoading && videos.length === 0) {
     return (
       <View style={[styles.container, styles.centerState]}>
-        <ActivityIndicator color="#d11f3f" size="large" />
+        <ActivityIndicator color={Palette.primary} size="large" />
       </View>
     );
   }
@@ -145,7 +146,7 @@ export default function SeriesDetailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: Palette.background,
   },
   content: {
     paddingBottom: 48,
@@ -159,39 +160,39 @@ const styles = StyleSheet.create({
   },
   stateTitle: {
     fontSize: 17,
-    fontWeight: '700',
-    color: '#111827',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
     textAlign: 'center',
   },
   retryButton: {
     marginTop: 8,
     paddingHorizontal: 20,
     paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#d11f3f',
+    borderRadius: Radius.sm,
+    backgroundColor: Palette.primary,
   },
   retryButtonText: {
     fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   backButton: {
     alignSelf: 'flex-start',
     margin: 16,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: '#111827',
+    borderRadius: Radius.sm,
+    backgroundColor: Palette.surface,
   },
   backButtonText: {
     fontSize: 14,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   cover: {
     width: '100%',
     height: 220,
-    backgroundColor: '#111827',
+    backgroundColor: Palette.backgroundElevated,
   },
   metaRow: {
     flexDirection: 'row',
@@ -202,54 +203,56 @@ const styles = StyleSheet.create({
   },
   category: {
     fontSize: 13,
-    fontWeight: '700',
-    color: '#d11f3f',
+    fontFamily: FontFamily.bold,
+    color: Palette.primaryHover,
   },
   channel: {
     fontSize: 13,
-    color: '#4b5563',
+    fontFamily: FontFamily.regular,
+    color: Palette.textSecondary,
   },
   title: {
     marginTop: 8,
     paddingHorizontal: 20,
     fontSize: 24,
     lineHeight: 30,
-    fontWeight: '800',
-    color: '#111827',
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
   },
   episodeCount: {
     marginTop: 6,
     paddingHorizontal: 20,
     fontSize: 14,
-    fontWeight: '700',
-    color: '#6b7280',
+    fontFamily: FontFamily.bold,
+    color: Palette.textMuted,
   },
   description: {
     marginTop: 10,
     paddingHorizontal: 20,
     fontSize: 15,
     lineHeight: 22,
-    color: '#374151',
+    fontFamily: FontFamily.regular,
+    color: Palette.textSecondary,
   },
   playButton: {
     marginTop: 16,
     marginHorizontal: 20,
     paddingVertical: 14,
-    borderRadius: 8,
+    borderRadius: Radius.sm,
     alignItems: 'center',
-    backgroundColor: '#d11f3f',
+    backgroundColor: Palette.primary,
   },
   playButtonText: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   sectionTitle: {
     marginTop: 24,
     paddingHorizontal: 20,
     fontSize: 18,
-    fontWeight: '800',
-    color: '#111827',
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
   },
   episodeList: {
     marginTop: 12,
@@ -258,7 +261,8 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 15,
-    color: '#6b7280',
+    fontFamily: FontFamily.regular,
+    color: Palette.textMuted,
   },
   buttonPressed: {
     opacity: 0.7,

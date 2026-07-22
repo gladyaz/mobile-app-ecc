@@ -1,6 +1,7 @@
 import { Image } from 'expo-image';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { FontFamily, Palette, Radius } from '@/constants/theme';
 import type { Episode } from '@/types/series';
 
 type SeriesEpisodeRowProps = {
@@ -54,11 +55,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     padding: 12,
-    borderRadius: 8,
-    backgroundColor: '#f9fafb',
+    borderRadius: Radius.sm,
+    backgroundColor: Palette.surface,
+    borderWidth: 1,
+    borderColor: Palette.border,
   },
   rowCurrentlyPlaying: {
-    backgroundColor: '#ffe4e6',
+    backgroundColor: Palette.surfaceMuted,
+    borderColor: Palette.primary,
   },
   rowPressed: {
     opacity: 0.7,
@@ -66,8 +70,8 @@ const styles = StyleSheet.create({
   thumbnail: {
     width: 84,
     height: 56,
-    borderRadius: 6,
-    backgroundColor: '#111827',
+    borderRadius: Radius.sm - 2,
+    backgroundColor: Palette.backgroundElevated,
   },
   details: {
     flex: 1,
@@ -80,32 +84,33 @@ const styles = StyleSheet.create({
   },
   episodeNumber: {
     fontSize: 14,
-    fontWeight: '700',
-    color: '#111827',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   accessBadge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 6,
+    borderRadius: Radius.sm - 2,
   },
   freeBadge: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: 'rgba(34, 197, 94, 0.16)',
   },
   premiumBadge: {
-    backgroundColor: '#fef3c7',
+    backgroundColor: 'rgba(234, 179, 8, 0.18)',
   },
   accessBadgeText: {
     fontSize: 11,
-    fontWeight: '700',
-    color: '#111827',
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   unavailableText: {
     fontSize: 13,
-    color: '#b91c1c',
+    fontFamily: FontFamily.regular,
+    color: Palette.error,
   },
   playingText: {
     fontSize: 13,
-    fontWeight: '700',
-    color: '#d11f3f',
+    fontFamily: FontFamily.bold,
+    color: Palette.primary,
   },
 });

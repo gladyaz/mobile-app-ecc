@@ -10,6 +10,7 @@ import {
 
 import { ApiError } from '@/services/api/client';
 import { login as loginRequest, logout as logoutRequest, register as registerRequest } from '@/services/auth/auth-service';
+import * as tokenStore from '@/services/auth/token-store';
 import { getItem, removeItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
 import type { AuthResponse, AuthTokens, AuthUser as BackendAuthUser } from '@/types/auth';
 
@@ -79,11 +80,55 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
         if (persisted?.tokens) {
           setTokens(persisted.tokens);
+          tokenStore.setTokens(persisted.tokens);
         }
       })
       .finally(() => {
         setIsHydrated(true);
       });
+  }, []);
+
+  /**
+   * Reacts to token changes that originate outside React: the HTTP client's
+   * refresh-on-401 interceptor (`services/api/client.ts`) calls
+   * `token-store.ts`'s notifying setters after a background refresh
+   * succeeds or fails. This keeps `stores/auth.tsx` as the single source of
+   * truth for React-visible auth state and AsyncStorage persistence, while
+   * `token-store.ts` itself stays a plain, storage-free holder (see
+   * token-store.ts's module doc comment for the full responsibility split).
+   *
+   * Uses the functional form of `setUser` purely to read the latest user
+   * without adding `user` as an effect dependency (which would otherwise
+   * force an unsubscribe/resubscribe on every login/logout).
+   */
+  useEffect(() => {
+    const unsubscribe = tokenStore.onTokensChanged((nextTokens) => {
+      if (nextTokens) {
+        setTokens(nextTokens);
+        setUser((currentUser) => {
+          if (currentUser) {
+            setItem<PersistedAuth>(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION, {
+              user: currentUser,
+              tokens: nextTokens,
+            }).catch(() => {
+              // Best-effort persistence, matching setItem's own swallow-and-log-nothing contract.
+            });
+          }
+
+          return currentUser;
+        });
+
+        return;
+      }
+
+      setUser(null);
+      setTokens(null);
+      removeItem(STORAGE_KEYS.auth).catch(() => {
+        // Best-effort cleanup, matching removeItem's own swallow-and-log-nothing contract.
+      });
+    });
+
+    return unsubscribe;
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
@@ -107,6 +152,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
     setUser(derivedUser);
     setTokens(nextTokens);
+    tokenStore.setTokens(nextTokens);
     await setItem<PersistedAuth>(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION, {
       user: derivedUser,
       tokens: nextTokens,
@@ -127,6 +173,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
     setUser(null);
     setTokens(null);
+    tokenStore.setTokens(null);
     await removeItem(STORAGE_KEYS.auth);
   }, [tokens]);
 

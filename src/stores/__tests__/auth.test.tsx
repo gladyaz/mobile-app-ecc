@@ -1,12 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
 import { getItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
+import {
+  __resetTokenStoreForTests,
+  clearTokensAndNotify,
+  getTokens,
+} from '@/services/auth/token-store';
 import { AuthProvider, useAuth } from '@/stores/auth';
 
 afterEach(async () => {
   await AsyncStorage.clear();
+  __resetTokenStoreForTests();
 });
 
 function AuthProbe() {
@@ -73,5 +79,33 @@ describe('AuthProvider', () => {
     await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('false'));
 
     expect(await getItem(STORAGE_KEYS.auth, 1)).toBeUndefined();
+  });
+
+  it('forces a logout when token-store reports a cleared token (interceptor-driven)', async () => {
+    const persisted = {
+      user: { id: 'user_001', name: 'Gladyaz', username: 'gladyaz', email: 'gladyaz@example.com' },
+      tokens: { accessToken: 'access-1', refreshToken: 'refresh-1' },
+    };
+    await setItem(STORAGE_KEYS.auth, 2, persisted);
+
+    const { getByTestId } = await render(
+      <AuthProvider>
+        <AuthProbe />
+      </AuthProvider>
+    );
+
+    await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+    expect(getByTestId('authenticated').props.children).toBe('true');
+    expect(getTokens()).toEqual(persisted.tokens);
+
+    // Simulate the HTTP client's refresh-on-401 interceptor giving up after a
+    // failed refresh - this is exactly what services/api/client.ts calls.
+    await act(async () => {
+      clearTokensAndNotify();
+    });
+
+    await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('false'));
+    expect(getByTestId('username').props.children).toBe('');
+    expect(await getItem(STORAGE_KEYS.auth, 2)).toBeUndefined();
   });
 });

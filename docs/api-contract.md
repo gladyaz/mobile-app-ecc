@@ -1,6 +1,6 @@
 # Mobile API Contract
 
-This contract describes the future backend API for the AI Short Drama Mobile App. The current app uses mock data through `src/services/videos/video-service.ts`; these endpoints are not connected yet.
+This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. Every other endpoint documented below is not connected yet — auth, like/save, view tracking, search, category browsing, saved videos, the user profile, and analytics are all currently implemented client-side only (local React Context stores backed by AsyncStorage via `src/services/storage/local-storage.ts`, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
 
 Base path assumption: `/api/v1`
 
@@ -161,6 +161,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Login, Profile
 - MVP priority: P0
 - Backend notes: Use password hashing, rate limiting, and generic invalid-credential messages.
+- Connected: No. `src/stores/auth.tsx` implements a dummy `loginDummy()` that sets a hardcoded local user and persists it to `AsyncStorage`; no HTTP request is made and there is no password field anywhere in the flow.
 
 ### POST /auth/logout
 
@@ -191,6 +192,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Profile
 - MVP priority: P0
 - Backend notes: Support idempotent logout so repeated requests are safe.
+- Connected: No. `src/stores/auth.tsx` `logout()` clears local state and removes the persisted `AsyncStorage` entry; no HTTP request is made.
 
 ### GET /auth/me
 
@@ -219,12 +221,13 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Profile, app bootstrap
 - MVP priority: P0
 - Backend notes: Use this endpoint to restore auth state after app launch.
+- Connected: No. App bootstrap instead rehydrates the dummy user from `AsyncStorage` via `src/stores/auth.tsx`; no HTTP request is made.
 
 ### GET /videos/feed
 
 - Purpose: Return the vertical short-drama feed.
 - Method and path: `GET /videos/feed`
-- Auth required: Optional for MVP; authenticated users get `isLiked` and `isSaved`.
+- Auth required: Optional for MVP. Note: even when a `Bearer` token is eventually sent, the mobile app currently ignores any `isLiked`/`isSaved` fields on the response — like/save state is tracked entirely client-side (see Connected note below), so this contract's `isLiked`/`isSaved` fields are aspirational until the mobile mapper is updated to read them.
 - Request query params:
 
 ```json
@@ -243,6 +246,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
     "videos": [
       {
         "id": "video_001",
+        "seriesId": "series_ceo_dingin",
         "title": "Kontrak Cinta CEO Dingin",
         "episodeNumber": 1,
         "channelName": "Mandarin Drama ID",
@@ -269,6 +273,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Home
 - MVP priority: P0
 - Backend notes: Optimize for paginated mobile playback. Backend can serve processed videos through a media/static endpoint first, then later return CDN or signed URLs in `playbackUrl`.
+- Connected: Yes. `getVideoFeed()` in `src/services/videos/video-service.ts` calls `request('videos/feed')` (the typed client in `src/services/api/client.ts`), and `VideoCatalogProvider` (`src/features/videos/video-catalog-provider.tsx`) fetches it on mount for the Home feed. `id`, `seriesId`, `title`, `episodeNumber`, `channelName`, `caption`, `category`, `storageKey`, `playbackUrl`, `sourceLanguage`, and `hasEmbeddedIndonesianSubtitle`, and `likeCount` are all validated as required by `mapBackendVideoToVideo` (`src/services/videos/video-mapper.ts`) and will throw if missing; `thumbnailUrl`, `width`, `height`, and `durationSeconds` are optional. The mapper always sets `isSaved: false` and drops any `isLiked` field entirely — save/like state comes only from the local `VideoInteractionsProvider` (`src/stores/video-interactions.tsx`), not this response. When `EXPO_PUBLIC_USE_MOCK_DATA=true`, this call is bypassed and bundled mock data is returned instead.
 
 ### GET /videos/:id
 
@@ -291,6 +296,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
   "data": {
     "video": {
       "id": "video_001",
+      "seriesId": "series_ceo_dingin",
       "title": "Kontrak Cinta CEO Dingin",
       "episodeNumber": 1,
       "channelName": "Mandarin Drama ID",
@@ -315,6 +321,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Future video detail, Home
 - MVP priority: P1
 - Backend notes: Return 404 with the standard error envelope when the video does not exist. `storageKey` should identify internal storage records, while `playbackUrl` should be the only field used for mobile playback.
+- Connected: Yes, at the service layer. `getVideoById(id)` in `src/services/videos/video-service.ts` calls `request('videos/${id}')` and maps a `404` `ApiError` to `undefined` for callers. As of this writing there is no mobile screen that calls `getVideoById`; it exists and is unit-tested but is not yet wired into a route/component (Home and other screens currently read videos out of the already-fetched `/videos/feed` list). Like `/videos/feed`, `isLiked`/`isSaved` on the response are currently ignored by the mapper.
 
 ### POST /videos/:id/view
 
@@ -347,6 +354,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Home
 - MVP priority: P1
 - Backend notes: Deduplicate noisy events and avoid blocking playback on failures.
+- Connected: No. No view-tracking call exists anywhere in the mobile codebase today.
 
 ### POST /videos/:id/like
 
@@ -379,6 +387,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Home, Discover
 - MVP priority: P0
 - Backend notes: Make this idempotent if the video is already liked.
+- Connected: No. `toggleLike()` in `src/stores/video-interactions.tsx` flips like state in a local `AsyncStorage`-backed React Context; no HTTP request is made and there is no server-side like count.
 
 ### DELETE /videos/:id/like
 
@@ -411,6 +420,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Home, Discover
 - MVP priority: P0
 - Backend notes: Make this idempotent if the video is not liked.
+- Connected: No. The same local `toggleLike()` in `src/stores/video-interactions.tsx` handles both liking and unliking; no HTTP request is made.
 
 ### POST /videos/:id/save
 
@@ -442,6 +452,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Home, Saved
 - MVP priority: P0
 - Backend notes: Store saves by user id and video id with a unique constraint.
+- Connected: No. `toggleSave()` in `src/stores/video-interactions.tsx` flips save state in a local `AsyncStorage`-backed React Context; no HTTP request is made.
 
 ### DELETE /videos/:id/save
 
@@ -473,6 +484,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Home, Saved
 - MVP priority: P0
 - Backend notes: Make unsave idempotent.
+- Connected: No. The same local `toggleSave()` in `src/stores/video-interactions.tsx` handles both saving and unsaving; no HTTP request is made.
 
 ### GET /users/me/saved-videos
 
@@ -522,6 +534,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Saved, Profile
 - MVP priority: P0
 - Backend notes: Sort by save time descending.
+- Connected: No. The Saved screen (`src/app/(tabs)/saved.tsx`) derives this list locally with `getSavedVideos(videos, savedVideoIds)` (`src/services/videos/video-service.ts`), which filters the already-fetched `/videos/feed` result against the locally persisted `savedVideoIds` from `src/stores/video-interactions.tsx`. No dedicated saved-videos request is made, and there is no server-side save-time ordering — order simply follows the feed.
 
 ### GET /videos/search
 
@@ -571,6 +584,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Discover
 - MVP priority: P0
 - Backend notes: Search title, caption, channel, and category.
+- Connected: No. The Discover screen (`src/app/(tabs)/discover.tsx`) calls `searchVideos(videos, searchQuery, selectedCategory)` (`src/services/videos/video-service.ts`), which filters the already-fetched `/videos/feed` result in memory by title/caption/channel/category. No dedicated search request is made.
 
 ### GET /videos/categories
 
@@ -594,6 +608,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Discover
 - MVP priority: P0
 - Backend notes: Keep category labels stable for analytics and search indexing.
+- Connected: No. `getCategories()` in `src/services/videos/video-service.ts` returns a hardcoded local constant array (`categoryFilters`); no HTTP request is made.
 
 ### GET /videos?category=
 
@@ -641,6 +656,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Discover
 - MVP priority: P1
 - Backend notes: This may share implementation with `/videos/search`. Mobile should use `playbackUrl`; internal storage paths remain backend-only.
+- Connected: No. The same `searchVideos(videos, searchQuery, selectedCategory)` used for text search (`src/services/videos/video-service.ts`) also handles category-only filtering client-side; there is no dedicated category-browse request.
 
 ### GET /users/me
 
@@ -670,6 +686,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Profile
 - MVP priority: P0
 - Backend notes: Can mirror `/auth/me` or return richer profile fields.
+- Connected: No. The Profile screen (`src/app/(tabs)/profile.tsx`) reads the dummy user from `src/stores/auth.tsx` and derives `savedVideoCount`/liked count locally from `useVideoInteractions()`; no HTTP request is made.
 
 ### PATCH /users/me
 
@@ -706,6 +723,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Future profile edit
 - MVP priority: P2
 - Backend notes: Validate username uniqueness and reserved words.
+- Connected: No. There is no profile-edit screen or mutation function in the mobile codebase yet.
 
 ### POST /analytics/events
 
@@ -743,6 +761,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Home, Discover, Saved, Profile
 - MVP priority: P1
 - Backend notes: Accept batched events later; do not block UI on analytics failures.
+- Connected: No. There is no analytics event emitter anywhere in the mobile codebase yet.
 
 ## Open Questions
 

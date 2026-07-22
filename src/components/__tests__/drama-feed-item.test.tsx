@@ -1,6 +1,7 @@
 import { render, fireEvent, act } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import type { ReactElement } from 'react';
+import { Platform } from 'react-native';
 
 import { DramaFeedItem } from '@/components/drama-feed-item';
 import type { Episode } from '@/types/series';
@@ -362,5 +363,57 @@ describe('DramaFeedItem', () => {
     unmount();
 
     expect(mockExitFullscreen).not.toHaveBeenCalled();
+  });
+
+  it('skips the orientation lock call on web without an unhandled rejection', async () => {
+    const originalOS = Platform.OS;
+    Platform.OS = 'web';
+
+    const { lockAsync } =
+      jest.requireMock<typeof import('expo-screen-orientation')>('expo-screen-orientation');
+    (lockAsync as jest.Mock).mockClear();
+
+    const unhandledRejectionSpy = jest.fn();
+    process.on('unhandledRejection', unhandledRejectionSpy);
+
+    try {
+      const video = buildVideo({ width: 1280, height: 720 });
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      mockLatestVideoViewProps.onFullscreenEnter?.();
+      mockLatestVideoViewProps.onFullscreenExit?.();
+
+      // Give any (incorrectly) unhandled promise rejection a microtask/tick
+      // to surface before asserting.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(lockAsync).not.toHaveBeenCalled();
+      expect(unhandledRejectionSpy).not.toHaveBeenCalled();
+    } finally {
+      process.removeListener('unhandledRejection', unhandledRejectionSpy);
+      Platform.OS = originalOS;
+    }
+  });
+
+  it('logs (without throwing) when the native orientation lock rejects for a real reason', async () => {
+    const { lockAsync, OrientationLock } =
+      jest.requireMock<typeof import('expo-screen-orientation')>('expo-screen-orientation');
+    (lockAsync as jest.Mock).mockImplementationOnce(() =>
+      Promise.reject(new Error('hardware unavailable'))
+    );
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const video = buildVideo({ width: 1280, height: 720 });
+    await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    await act(async () => {
+      mockLatestVideoViewProps.onFullscreenEnter?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(lockAsync).toHaveBeenCalledWith(OrientationLock.LANDSCAPE);
+    expect(warnSpy).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
   });
 });

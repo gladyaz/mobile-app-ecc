@@ -5,7 +5,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { SymbolView } from 'expo-symbols';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { BrandMark } from '@/components/brand-mark';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
@@ -36,6 +36,31 @@ const CAPTION_EXPANDED_MAX_LINES = 6;
 // How often to persist playback progress while a video is actively
 // playing - a throttle, not a per-frame write.
 const PROGRESS_WRITE_INTERVAL_MS = 5000;
+
+// screen-orientation lock is only meaningful where the OS actually exposes
+// it (iOS/Android) - on web, lockAsync always rejects with a
+// NotSupportedError, so it's skipped there entirely rather than caught
+// after the fact.
+function lockOrientation(orientation: ScreenOrientation.OrientationLock) {
+  if (Platform.OS === 'web') {
+    return;
+  }
+
+  ScreenOrientation.lockAsync(orientation).catch((lockError: unknown) => {
+    if (__DEV__) {
+      console.warn('[DramaFeedItem] Failed to lock screen orientation.', lockError);
+    }
+  });
+}
+
+// Above this viewport width (tablet-ish portrait), the metadata overlay's
+// details block otherwise stretches to fill the full row width, which lets
+// the title/caption text extend further down/across into the same lower
+// portion of frame where a video's burned-in subtitle typically sits. Capping
+// the block's width on wide screens keeps it compact without touching the
+// bottom anchor or phone-width layout.
+const WIDE_LAYOUT_BREAKPOINT = 700;
+const DETAILS_MAX_WIDTH_WIDE = 440;
 
 type DramaFeedItemProps = {
   readonly video: Video;
@@ -83,6 +108,8 @@ export function DramaFeedItem({
   onRecordProgress,
 }: DramaFeedItemProps) {
   const tabBarHeight = useBottomTabBarHeight();
+  const { width: windowWidth } = useWindowDimensions();
+  const isWideLayout = windowWidth >= WIDE_LAYOUT_BREAKPOINT;
   const metadataBottomOffset = tabBarHeight + BOTTOM_GAP;
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const [isInFullscreen, setIsInFullscreen] = useState(false);
@@ -220,7 +247,7 @@ export function DramaFeedItem({
     return () => {
       if (isInFullscreenRef.current) {
         void videoView?.exitFullscreen();
-        void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+        lockOrientation(ScreenOrientation.OrientationLock.PORTRAIT_UP);
       }
     };
   }, []);
@@ -324,12 +351,12 @@ export function DramaFeedItem({
 
   const handleFullscreenEnter = useCallback(() => {
     setIsInFullscreen(true);
-    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    lockOrientation(ScreenOrientation.OrientationLock.LANDSCAPE);
   }, []);
 
   const handleFullscreenExit = useCallback(() => {
     setIsInFullscreen(false);
-    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    lockOrientation(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     flushProgress();
   }, [flushProgress]);
 
@@ -407,7 +434,11 @@ export function DramaFeedItem({
           onPress={() =>
             router.push({ pathname: '/series/[id]', params: { id: video.seriesId } })
           }
-          style={({ pressed }) => [styles.details, pressed && styles.buttonPressed]}>
+          style={({ pressed }) => [
+            styles.details,
+            isWideLayout && styles.detailsWide,
+            pressed && styles.buttonPressed,
+          ]}>
           <View style={styles.channelRow}>
             <BrandMark size={26} />
             <Text style={[styles.channel, styles.textShadow]}>{video.channelName}</Text>
@@ -627,6 +658,10 @@ const styles = StyleSheet.create({
   details: {
     flex: 1,
     paddingRight: 4,
+  },
+  detailsWide: {
+    flex: 0,
+    maxWidth: DETAILS_MAX_WIDTH_WIDE,
   },
   channelRow: {
     flexDirection: 'row',

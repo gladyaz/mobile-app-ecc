@@ -11,11 +11,12 @@ import { useToast } from '@/stores/toast';
 const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
 
 export default function LoginScreen() {
-  const { loginDummy } = useAuth();
+  const { login } = useAuth();
   const { showToast } = useToast();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const trimmedEmail = email.trim();
   const emailError = isSubmitted
@@ -27,18 +28,24 @@ export default function LoginScreen() {
     : null;
   const passwordError = isSubmitted && !password.trim() ? 'Password wajib diisi' : null;
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     setIsSubmitted(true);
 
     if (!trimmedEmail || !EMAIL_PATTERN.test(trimmedEmail) || !password.trim()) {
       return;
     }
 
-    loginDummy();
-    router.replace('/profile');
-    // The dummy auth session is a fixed placeholder user (see stores/auth.tsx)
-    // since there is no real backend auth yet, so the welcome name is fixed too.
-    showToast('Selamat datang, Gladyaz');
+    setIsSubmitting(true);
+
+    try {
+      await login(trimmedEmail, password);
+      router.replace('/profile');
+      showToast('Selamat datang!');
+    } catch {
+      showToast('Login gagal. Periksa koneksi kamu dan coba lagi.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -95,18 +102,24 @@ export default function LoginScreen() {
 
         <Pressable
           accessibilityRole="button"
-          onPress={handleLogin}
-          style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}>
+          disabled={isSubmitting}
+          onPress={() => {
+            void handleLogin();
+          }}
+          style={({ pressed }) => [
+            styles.primaryButton,
+            (pressed || isSubmitting) && styles.buttonPressed,
+          ]}>
           <LinearGradient
             colors={Gradients.primary}
             end={{ x: 1, y: 1 }}
             start={{ x: 0, y: 0 }}
             style={styles.primaryButtonGradient}>
-            <Text style={styles.primaryButtonText}>Login</Text>
+            <Text style={styles.primaryButtonText}>{isSubmitting ? 'Memproses...' : 'Login'}</Text>
           </LinearGradient>
         </Pressable>
 
-        <Text style={styles.hint}>Login dummy untuk MVP — isi email valid &amp; password apa pun.</Text>
+        <Text style={styles.hint}>Isi email valid &amp; password apa pun — akun dibuat otomatis jika belum ada.</Text>
       </View>
     </View>
   );

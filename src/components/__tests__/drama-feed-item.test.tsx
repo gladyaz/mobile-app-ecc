@@ -1,4 +1,4 @@
-import { render, fireEvent } from '@testing-library/react-native';
+import { render, fireEvent, act } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import type { ReactElement } from 'react';
 
@@ -35,14 +35,40 @@ jest.mock('expo-symbols', () => ({
   SymbolView: 'SymbolView',
 }));
 
-jest.mock('expo-video', () => ({
-  useVideoPlayer: jest.fn((_source: unknown, configure?: (player: unknown) => void) => {
-    const player = { loop: false, muted: false, playing: false, play: jest.fn(), pause: jest.fn() };
-    configure?.(player);
-    return player;
-  }),
-  VideoView: 'VideoView',
-}));
+// Captured by the VideoView mock below so tests can trigger
+// onFullscreenEnter/onFullscreenExit directly, and assert on the imperative
+// exitFullscreen() call the component's unmount cleanup makes.
+let mockLatestVideoViewProps: {
+  onFullscreenEnter?: () => void;
+  onFullscreenExit?: () => void;
+} = {};
+const mockExitFullscreen = jest.fn(() => Promise.resolve());
+
+jest.mock('expo-video', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ReactModule = require('react');
+
+  return {
+    useVideoPlayer: jest.fn((_source: unknown, configure?: (player: unknown) => void) => {
+      const player = { loop: false, muted: false, playing: false, play: jest.fn(), pause: jest.fn() };
+      configure?.(player);
+      return player;
+    }),
+    VideoView: ReactModule.forwardRef(
+      (
+        props: { onFullscreenEnter?: () => void; onFullscreenExit?: () => void },
+        ref: unknown
+      ) => {
+        mockLatestVideoViewProps = props;
+        ReactModule.useImperativeHandle(ref, () => ({
+          enterFullscreen: jest.fn(() => Promise.resolve()),
+          exitFullscreen: mockExitFullscreen,
+        }));
+        return null;
+      }
+    ),
+  };
+});
 
 // PremiumPreviewModal is already covered by its own unit tests; the real
 // react-native Modal it renders is unnecessary noise here.
@@ -287,5 +313,54 @@ describe('DramaFeedItem', () => {
     const { queryByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
     expect(queryByText('Fullscreen')).toBeNull();
+  });
+
+  it('locks landscape orientation when entering native fullscreen', async () => {
+    const { lockAsync, OrientationLock } =
+      jest.requireMock<typeof import('expo-screen-orientation')>('expo-screen-orientation');
+    const video = buildVideo({ width: 1280, height: 720 });
+    await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    mockLatestVideoViewProps.onFullscreenEnter?.();
+
+    expect(lockAsync).toHaveBeenCalledWith(OrientationLock.LANDSCAPE);
+  });
+
+  it('restores portrait orientation when exiting native fullscreen', async () => {
+    const { lockAsync, OrientationLock } =
+      jest.requireMock<typeof import('expo-screen-orientation')>('expo-screen-orientation');
+    const video = buildVideo({ width: 1280, height: 720 });
+    await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    mockLatestVideoViewProps.onFullscreenEnter?.();
+    mockLatestVideoViewProps.onFullscreenExit?.();
+
+    expect(lockAsync).toHaveBeenLastCalledWith(OrientationLock.PORTRAIT_UP);
+  });
+
+  it('exits fullscreen and restores portrait orientation on unmount while still fullscreen', async () => {
+    const { lockAsync, OrientationLock } =
+      jest.requireMock<typeof import('expo-screen-orientation')>('expo-screen-orientation');
+    const video = buildVideo({ width: 1280, height: 720 });
+    const { unmount } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    await act(async () => {
+      mockLatestVideoViewProps.onFullscreenEnter?.();
+    });
+    await act(async () => {
+      unmount();
+    });
+
+    expect(mockExitFullscreen).toHaveBeenCalledTimes(1);
+    expect(lockAsync).toHaveBeenLastCalledWith(OrientationLock.PORTRAIT_UP);
+  });
+
+  it('does not touch fullscreen or orientation on unmount when never entered fullscreen', async () => {
+    const video = buildVideo({ width: 1280, height: 720 });
+    const { unmount } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    unmount();
+
+    expect(mockExitFullscreen).not.toHaveBeenCalled();
   });
 });

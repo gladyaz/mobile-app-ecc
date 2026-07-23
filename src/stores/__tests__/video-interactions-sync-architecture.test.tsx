@@ -201,4 +201,114 @@ describe('video-interactions sync architecture', () => {
     expect(mockedUnsaveVideo).not.toHaveBeenCalled();
     expect(getByTestId('sync-failures').props.children).toBe('false');
   });
+
+  it('(e) exhausting retry attempts surfaces hasSyncFailures via the public interface', async () => {
+    jest.useFakeTimers();
+
+    try {
+      mockAuthenticated();
+      mockedLikeVideo.mockRejectedValue(new Error('network error'));
+
+      const { getByTestId, unmount } = await render(
+        <VideoInteractionsProvider>
+          <InteractionsProbe />
+        </VideoInteractionsProvider>
+      );
+
+      await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+
+      await act(async () => {
+        fireEvent.press(getByTestId('toggle-like'));
+      });
+
+      // Drain through every retry backoff (1s, 2s, 3s, 4s) until the
+      // MAX_SYNC_ATTEMPTS-th failure drops the command.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(20000);
+      });
+
+      expect(mockedLikeVideo).toHaveBeenCalledTimes(5);
+      expect(getByTestId('sync-failures').props.children).toBe('true');
+
+      unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('(f) logout discards the pending queue so a retrying command never fires under a different user', async () => {
+    jest.useFakeTimers();
+
+    try {
+      mockedLikeVideo.mockRejectedValue(new Error('network error'));
+      mockAuthenticated();
+
+      const { getByTestId, rerender } = await render(
+        <VideoInteractionsProvider>
+          <InteractionsProbe />
+        </VideoInteractionsProvider>
+      );
+
+      await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+
+      await act(async () => {
+        fireEvent.press(getByTestId('toggle-like'));
+        await jest.advanceTimersByTimeAsync(0);
+      });
+
+      // The first push attempt failed and a retry is scheduled - the command
+      // is still sitting in user-1's queue, awaiting its backoff.
+      expect(mockedLikeVideo).toHaveBeenCalledTimes(1);
+
+      // Logout before the scheduled retry fires - the pending queue must be
+      // discarded, per DECISIONS.md requirement #3 ("an account change must
+      // never send one user's queued data under a different user's identity").
+      mockedUseAuth.mockReturnValue({
+        isAuthenticated: false,
+        isHydrated: true,
+        user: null,
+        login: jest.fn(),
+        logout: jest.fn(),
+      });
+
+      await act(async () => {
+        rerender(
+          <VideoInteractionsProvider>
+            <InteractionsProbe />
+          </VideoInteractionsProvider>
+        );
+      });
+
+      // Log in as a different user.
+      mockedGetInteractions.mockResolvedValue([]);
+      mockedUseAuth.mockReturnValue({
+        isAuthenticated: true,
+        isHydrated: true,
+        user: { id: 'user-2', name: 'User Two', username: 'user2', email: 'user2@example.com' },
+        login: jest.fn(),
+        logout: jest.fn(),
+      });
+
+      await act(async () => {
+        rerender(
+          <VideoInteractionsProvider>
+            <InteractionsProbe />
+          </VideoInteractionsProvider>
+        );
+      });
+
+      // Advance well past when the discarded retry would otherwise have
+      // fired, under user-2's now-active session.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(20000);
+      });
+
+      // User-1's queued/retrying command must never fire again under
+      // user-2's session - the queue was discarded on logout, not carried
+      // across accounts.
+      expect(mockedLikeVideo).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });

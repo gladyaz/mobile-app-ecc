@@ -3,7 +3,22 @@ import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
 import { setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
+import { useAuth } from '@/stores/auth';
 import { useVideoInteractions, VideoInteractionsProvider } from '@/stores/video-interactions';
+
+jest.mock('@/stores/auth');
+
+const mockedUseAuth = useAuth as jest.Mock;
+
+beforeEach(() => {
+  mockedUseAuth.mockReturnValue({
+    isAuthenticated: false,
+    isHydrated: true,
+    user: null,
+    login: jest.fn(),
+    logout: jest.fn(),
+  });
+});
 
 afterEach(async () => {
   await AsyncStorage.clear();

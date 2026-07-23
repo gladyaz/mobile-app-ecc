@@ -46,7 +46,7 @@ afterEach(async () => {
 });
 
 function ProgressProbe() {
-  const { isHydrated, getProgress, recordProgress } = useSeriesProgress();
+  const { isHydrated, getProgress, recordProgress, hasSyncFailures } = useSeriesProgress();
   const progress = getProgress('series-1');
 
   return (
@@ -54,6 +54,7 @@ function ProgressProbe() {
       <Text testID="hydrated">{String(isHydrated)}</Text>
       <Text testID="video-id">{progress?.lastWatchedVideoId ?? ''}</Text>
       <Text testID="position">{String(progress?.positionSeconds ?? -1)}</Text>
+      <Text testID="sync-failures">{String(hasSyncFailures)}</Text>
       <Text
         testID="record-30"
         onPress={() => recordProgress('series-1', 'video-2', 2, 30, 120)}>
@@ -178,5 +179,113 @@ describe('series-progress sync architecture', () => {
     });
 
     expect(mockedUpsertProgress).not.toHaveBeenCalled();
+  });
+
+  it('(e) exhausting retry attempts surfaces hasSyncFailures via the public interface', async () => {
+    jest.useFakeTimers();
+
+    try {
+      mockAuthenticated();
+      mockedUpsertProgress.mockRejectedValue(new Error('network error'));
+
+      const { getByTestId } = await render(
+        <SeriesProgressProvider>
+          <ProgressProbe />
+        </SeriesProgressProvider>
+      );
+
+      await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+
+      await act(async () => {
+        getByTestId('record-30').props.onPress();
+      });
+
+      // Drain through every retry backoff (1s, 2s, 3s, 4s) until the
+      // MAX_SYNC_ATTEMPTS-th failure drops the command.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(20000);
+      });
+
+      expect(mockedUpsertProgress).toHaveBeenCalledTimes(5);
+      expect(getByTestId('sync-failures').props.children).toBe('true');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('(f) logout discards the pending queue so a retrying command never fires under a different user', async () => {
+    jest.useFakeTimers();
+
+    try {
+      mockedUpsertProgress.mockRejectedValue(new Error('network error'));
+      mockAuthenticated();
+
+      const { getByTestId, rerender } = await render(
+        <SeriesProgressProvider>
+          <ProgressProbe />
+        </SeriesProgressProvider>
+      );
+
+      await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+
+      await act(async () => {
+        getByTestId('record-30').props.onPress();
+        await jest.advanceTimersByTimeAsync(0);
+      });
+
+      // The first push attempt failed and a retry is scheduled - the command
+      // is still sitting in user-1's queue, awaiting its backoff.
+      expect(mockedUpsertProgress).toHaveBeenCalledTimes(1);
+
+      // Logout before the scheduled retry fires - the pending queue must be
+      // discarded, per DECISIONS.md requirement #3 ("an account change must
+      // never send one user's queued data under a different user's identity").
+      mockedUseAuth.mockReturnValue({
+        isAuthenticated: false,
+        isHydrated: true,
+        user: null,
+        login: jest.fn(),
+        logout: jest.fn(),
+      });
+
+      await act(async () => {
+        rerender(
+          <SeriesProgressProvider>
+            <ProgressProbe />
+          </SeriesProgressProvider>
+        );
+      });
+
+      // Log in as a different user.
+      mockedFetchRemoteProgress.mockResolvedValue([]);
+      mockedUseAuth.mockReturnValue({
+        isAuthenticated: true,
+        isHydrated: true,
+        user: { id: 'user-2', name: 'User Two', username: 'user2', email: 'user2@example.com' },
+        login: jest.fn(),
+        logout: jest.fn(),
+      });
+
+      await act(async () => {
+        rerender(
+          <SeriesProgressProvider>
+            <ProgressProbe />
+          </SeriesProgressProvider>
+        );
+      });
+
+      // Advance well past when the discarded retry would otherwise have
+      // fired, under user-2's now-active session.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(20000);
+      });
+
+      // User-1's queued/retrying command must never fire again under
+      // user-2's session - the queue was discarded on logout, not carried
+      // across accounts.
+      expect(mockedUpsertProgress).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

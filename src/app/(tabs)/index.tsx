@@ -92,6 +92,21 @@ export default function HomeScreen() {
     getProgressRef.current = getProgress;
   }, [getProgress]);
 
+  // Same instability class as getProgress above, and for the same
+  // underlying reason: series-progress.tsx's recordProgress (transitively,
+  // via enqueueCommand/drainQueue) depends on the current identity key,
+  // which changes from the guest sentinel to the real user id at the exact
+  // moment a login completes - crashing this screen's mounted FlatList if
+  // a login happens while Home is on screen (found during Phase 10 manual
+  // QA; this identity-key dependency chain predates Phase 10 and is
+  // unrelated to it, just previously unobserved because no prior manual QA
+  // pass logged in from an already-mounted Home feed).
+  const recordProgressRef = useRef(recordProgress);
+
+  useEffect(() => {
+    recordProgressRef.current = recordProgress;
+  }, [recordProgress]);
+
   const handleViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken<Video>[] }) => {
       const activeItem = viewableItems.find((viewableItem) => viewableItem.isViewable);
@@ -109,7 +124,7 @@ export default function HomeScreen() {
       const existingProgress = getProgressRef.current(activeItem.item.seriesId);
       const isSameVideo = existingProgress?.lastWatchedVideoId === activeItem.item.id;
 
-      recordProgress(
+      recordProgressRef.current(
         activeItem.item.seriesId,
         activeItem.item.id,
         activeItem.item.episodeNumber,
@@ -117,7 +132,7 @@ export default function HomeScreen() {
         isSameVideo ? existingProgress.durationSeconds : undefined
       );
     },
-    [recordProgress]
+    []
   );
 
   const handleLayout = useCallback((event: LayoutChangeEvent) => {

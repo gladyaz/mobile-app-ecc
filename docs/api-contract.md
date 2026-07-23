@@ -1,6 +1,8 @@
 # Mobile API Contract
 
-This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. Every other endpoint documented below is still not connected — like/save, view tracking, search, category browsing, saved videos, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
+This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. As of Phase 9, like/save (`/videos/:id/like`, `/videos/:id/save`, `GET /users/me/interactions`) and watch progress (`PUT /series/:id/progress`, `GET /users/me/progress`) are also wired up for real, through an explicit sync-queue architecture described below the relevant endpoints. Every other endpoint documented below is still not connected — view tracking, search, category browsing, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
+
+**Sync-queue architecture (like/save/progress, Phase 9):** `src/stores/video-interactions.tsx` and `src/stores/series-progress.tsx` both follow the same pattern. `toggleLike`/`toggleSave`/`recordProgress` update local state immediately (optimistic UI) and enqueue an explicit, `AsyncStorage`-persisted sync command, ordered per-entity (per `videoId` for interactions, per `seriesId` for progress) so an older command can never race ahead of a newer one for the same entity. A background drain loop (module-level, not a hook, so a scheduled retry survives across renders) pushes queued commands to the backend once the user is authenticated and the auth store has hydrated; a failed push retries with exponential backoff (capped) and sets a recoverable `hasSyncFailures` flag that callers can surface in the UI rather than losing the local change. First-login merge (reconciling whatever was recorded locally before the user authenticated against what the backend already has for that user) is a separate, one-time bootstrap step that calls the backend directly to converge state — it does not go through the sync queue and is never observed by the queue-drain logic.
 
 Base path assumption: `/api/v1`
 
@@ -414,25 +416,20 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 }
 ```
 
-- Example response:
+- Example response (`LikeResponse`, `src/types/interaction.ts` — raw DTO, no `{success, data}` envelope, same pattern as `/auth/*`):
 
 ```json
 {
-  "success": true,
-  "data": {
-    "videoId": "video_001",
-    "isLiked": true,
-    "likeCount": 12801
-  },
-  "error": null,
-  "meta": null
+  "videoId": "video_001",
+  "isLiked": true,
+  "likeCount": 12801
 }
 ```
 
 - Mobile screen: Home, Discover
 - MVP priority: P0
-- Backend notes: Make this idempotent if the video is already liked.
-- Connected: No. `toggleLike()` in `src/stores/video-interactions.tsx` flips like state in a local `AsyncStorage`-backed React Context; no HTTP request is made and there is no server-side like count.
+- Backend notes: Make this idempotent if the video is already liked. Throws `ApiError` with code `VIDEO_NOT_FOUND` (status 404) if the video doesn't exist, or `INVALID_ACCESS_TOKEN` (status 401) if unauthenticated.
+- Connected: Yes. `likeVideo(videoId)` in `src/services/interactions/interactions-service.ts` calls `request('videos/${videoId}/like', { method: 'POST' }, { requiresAuth: true })`. It is not called directly by the UI — `toggleLike()` in `src/stores/video-interactions.tsx` updates local state optimistically and enqueues a persisted sync command instead of calling this service inline; see the sync-queue architecture note above.
 
 ### DELETE /videos/:id/like
 
@@ -447,25 +444,20 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 }
 ```
 
-- Example response:
+- Example response (`LikeResponse`, `src/types/interaction.ts` — raw DTO, no envelope):
 
 ```json
 {
-  "success": true,
-  "data": {
-    "videoId": "video_001",
-    "isLiked": false,
-    "likeCount": 12800
-  },
-  "error": null,
-  "meta": null
+  "videoId": "video_001",
+  "isLiked": false,
+  "likeCount": 12800
 }
 ```
 
 - Mobile screen: Home, Discover
 - MVP priority: P0
-- Backend notes: Make this idempotent if the video is not liked.
-- Connected: No. The same local `toggleLike()` in `src/stores/video-interactions.tsx` handles both liking and unliking; no HTTP request is made.
+- Backend notes: Make this idempotent if the video is not liked. Same error codes as `POST /videos/:id/like`.
+- Connected: Yes. `unlikeVideo(videoId)` in `src/services/interactions/interactions-service.ts` calls `request('videos/${videoId}/like', { method: 'DELETE' }, { requiresAuth: true })`. Same sync-queue indirection as `POST /videos/:id/like` above — `toggleLike()` in `src/stores/video-interactions.tsx` handles both liking and unliking via the queue, not a direct call.
 
 ### POST /videos/:id/save
 
@@ -480,24 +472,19 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 }
 ```
 
-- Example response:
+- Example response (`SaveResponse`, `src/types/interaction.ts` — raw DTO, no envelope):
 
 ```json
 {
-  "success": true,
-  "data": {
-    "videoId": "video_001",
-    "isSaved": true
-  },
-  "error": null,
-  "meta": null
+  "videoId": "video_001",
+  "isSaved": true
 }
 ```
 
 - Mobile screen: Home, Saved
 - MVP priority: P0
-- Backend notes: Store saves by user id and video id with a unique constraint.
-- Connected: No. `toggleSave()` in `src/stores/video-interactions.tsx` flips save state in a local `AsyncStorage`-backed React Context; no HTTP request is made.
+- Backend notes: Store saves by user id and video id with a unique constraint. Same error codes as `POST /videos/:id/like`.
+- Connected: Yes. `saveVideo(videoId)` in `src/services/interactions/interactions-service.ts` calls `request('videos/${videoId}/save', { method: 'POST' }, { requiresAuth: true })`. As with likes, `toggleSave()` in `src/stores/video-interactions.tsx` never calls this inline — it updates local state and enqueues a sync command; see the sync-queue architecture note above.
 
 ### DELETE /videos/:id/save
 
@@ -512,74 +499,103 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 }
 ```
 
-- Example response:
+- Example response (`SaveResponse`, `src/types/interaction.ts` — raw DTO, no envelope):
 
 ```json
 {
-  "success": true,
-  "data": {
-    "videoId": "video_001",
-    "isSaved": false
-  },
-  "error": null,
-  "meta": null
+  "videoId": "video_001",
+  "isSaved": false
 }
 ```
 
 - Mobile screen: Home, Saved
 - MVP priority: P0
-- Backend notes: Make unsave idempotent.
-- Connected: No. The same local `toggleSave()` in `src/stores/video-interactions.tsx` handles both saving and unsaving; no HTTP request is made.
+- Backend notes: Make unsave idempotent. Same error codes as `POST /videos/:id/like`.
+- Connected: Yes. `unsaveVideo(videoId)` in `src/services/interactions/interactions-service.ts` calls `request('videos/${videoId}/save', { method: 'DELETE' }, { requiresAuth: true })`. Same sync-queue indirection as `POST /videos/:id/save` above.
 
-### GET /users/me/saved-videos
+### GET /users/me/interactions
 
-- Purpose: Return the authenticated user's saved videos.
-- Method and path: `GET /users/me/saved-videos`
+- Purpose: Return every like/save interaction the authenticated user has recorded, as a flat list keyed by `videoId`.
+- Method and path: `GET /users/me/interactions`
 - Auth required: Yes
-- Request query params:
+- Request params/body: None.
+- Example response (`readonly UserInteraction[]`, `src/types/interaction.ts` — raw array, no envelope):
 
 ```json
-{
-  "cursor": "optional_cursor",
-  "limit": 20
-}
-```
-
-- Example response:
-
-```json
-{
-  "success": true,
-  "data": {
-    "videos": [
-      {
-        "id": "video_001",
-        "title": "Kontrak Cinta CEO Dingin",
-        "episodeNumber": 1,
-        "channelName": "Mandarin Drama ID",
-        "category": "CEO",
-        "storageKey": "processed-videos/drama-china/series-a/ep-01-id-sub.mp4",
-        "playbackUrl": "https://media.example.com/videos/video_001.mp4",
-        "thumbnailUrl": "https://media.example.com/thumbnails/video_001.jpg",
-        "sourceLanguage": "Mandarin",
-        "hasEmbeddedIndonesianSubtitle": true,
-        "processingStatus": "completed",
-        "likeCount": 12800,
-        "isSaved": true
-      }
-    ]
-  },
-  "error": null,
-  "meta": {
-    "nextCursor": null
+[
+  {
+    "videoId": "video_001",
+    "isLiked": true,
+    "isSaved": true
   }
+]
+```
+
+- Mobile screen: Saved, Profile, Home, Discover (indirectly — hydrates `src/stores/video-interactions.tsx`, which every like/save UI reads from)
+- MVP priority: P0
+- Backend notes: Throws `ApiError` with code `INVALID_ACCESS_TOKEN` (status 401) if unauthenticated. Note the path is `/users/me/interactions`, not `/users/me/saved-videos` — an earlier draft of this contract used the latter, speculative path before the real backend endpoint existed.
+- Connected: Yes. `getInteractions()` in `src/services/interactions/interactions-service.ts` calls `request('users/me/interactions', { method: 'GET' }, { requiresAuth: true })`. It is called once, directly (not through the sync queue), by the first-login merge bootstrap in `src/stores/video-interactions.tsx`, which reconciles this remote list against whatever was recorded locally before the user authenticated. The Saved screen (`src/app/(tabs)/saved.tsx`) itself still derives its displayed list locally with `getSavedVideos(videos, savedVideoIds)` (`src/services/videos/video-service.ts`), filtering the already-fetched `/videos/feed` result against the (now backend-synced) `savedVideoIds` in `src/stores/video-interactions.tsx` — there is no separate paginated saved-videos request or server-side save-time ordering; order follows the feed.
+
+### PUT /series/:id/progress
+
+- Purpose: Upsert the authenticated user's watch progress for one episode of a series.
+- Method and path: `PUT /series/:id/progress`
+- Auth required: Yes
+- Request path params: `{ "id": "series_ceo_dingin" }`
+- Request body (from `upsertProgress()` in `src/services/progress/progress-service.ts`):
+
+```json
+{
+  "videoId": "video_001",
+  "episodeNumber": 1,
+  "positionSeconds": 42,
+  "durationSeconds": 72
 }
 ```
 
-- Mobile screen: Saved, Profile
+`durationSeconds` is omitted from the body entirely when not provided (not sent as `null`).
+
+- Example response (`UserSeriesProgress`, `src/types/progress.ts` — raw DTO, no envelope):
+
+```json
+{
+  "seriesId": "series_ceo_dingin",
+  "videoId": "video_001",
+  "episodeNumber": 1,
+  "positionSeconds": 42,
+  "durationSeconds": 72
+}
+```
+
+- Mobile screen: Home, Series Detail (indirectly — driven by `src/stores/series-progress.tsx`, consumed by the video player and series progress UI)
 - MVP priority: P0
-- Backend notes: Sort by save time descending.
-- Connected: No. The Saved screen (`src/app/(tabs)/saved.tsx`) derives this list locally with `getSavedVideos(videos, savedVideoIds)` (`src/services/videos/video-service.ts`), which filters the already-fetched `/videos/feed` result against the locally persisted `savedVideoIds` from `src/stores/video-interactions.tsx`. No dedicated saved-videos request is made, and there is no server-side save-time ordering — order simply follows the feed.
+- Backend notes: Throws `ApiError` with code `VIDEO_NOT_FOUND` (status 404) if `videoId` doesn't exist, or `INVALID_ACCESS_TOKEN` (status 401) if unauthenticated.
+- Connected: Yes. `upsertProgress(seriesId, videoId, episodeNumber, positionSeconds, durationSeconds?)` in `src/services/progress/progress-service.ts` calls `request('series/${seriesId}/progress', { method: 'PUT' }, { requiresAuth: true })`. It is not called directly by the UI — `recordProgress()` in `src/stores/series-progress.tsx` updates local state optimistically and enqueues a persisted, per-`seriesId`-ordered sync command instead; see the sync-queue architecture note above.
+
+### GET /users/me/progress
+
+- Purpose: Return the authenticated user's watch progress across every series they've started, as a flat list keyed by `seriesId`.
+- Method and path: `GET /users/me/progress`
+- Auth required: Yes
+- Request params/body: None.
+- Example response (`readonly UserSeriesProgress[]`, `src/types/progress.ts` — raw array, no envelope):
+
+```json
+[
+  {
+    "seriesId": "series_ceo_dingin",
+    "videoId": "video_001",
+    "episodeNumber": 1,
+    "positionSeconds": 42,
+    "durationSeconds": 72
+  }
+]
+```
+
+- Mobile screen: Home, Series Detail (indirectly, via the first-login merge bootstrap)
+- MVP priority: P0
+- Backend notes: Throws `ApiError` with code `INVALID_ACCESS_TOKEN` (status 401) if unauthenticated.
+- Connected: Yes. `getProgress()` in `src/services/progress/progress-service.ts` calls `request('users/me/progress', { method: 'GET' }, { requiresAuth: true })`. It is called once, directly (not through the sync queue), by the first-login merge bootstrap in `src/stores/series-progress.tsx`, which reconciles this remote list against whatever progress was recorded locally before the user authenticated.
 
 ### GET /videos/search
 
@@ -816,6 +832,6 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Which source languages besides Mandarin should the subtitle pipeline support?
 - Should subtitles be generated on upload, on demand, or both?
 - What moderation workflow is required before publishing uploaded videos?
-- Should like/save require login immediately, or can anonymous local state sync after login?
+- ~~Should like/save require login immediately, or can anonymous local state sync after login?~~ Resolved as of Phase 9: anonymous local like/save/progress state is allowed and reconciled against the backend via a one-time first-login merge bootstrap (see the sync-queue architecture note above the like/save/progress endpoints).
 - What analytics events are required for product decisions in the first release?
 - What pagination style should the backend standardize on: cursor, offset, or time-based?

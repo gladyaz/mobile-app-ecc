@@ -54,7 +54,7 @@ function ProgressProbe({ seriesId }: { seriesId: string }) {
 
 describe('SeriesProgressProvider', () => {
   it('restores persisted progress on mount', async () => {
-    await setItem(STORAGE_KEYS.seriesProgress, 1, {
+    await setItem(`${STORAGE_KEYS.seriesProgress}:guest`, 1, {
       progressBySeriesId: {
         'series-1': {
           lastWatchedVideoId: 'video-1',

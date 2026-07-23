@@ -171,7 +171,7 @@ describe('video-interactions sync architecture', () => {
   it('(d) hydration alone does not enqueue anything and does not redundantly push already-converged data', async () => {
     // Local storage already has an interaction that exactly matches what the
     // "remote" reports - i.e. already converged, nothing to sync.
-    await setItem(STORAGE_KEYS.videoInteractions, 1, {
+    await setItem(`${STORAGE_KEYS.videoInteractions}:user-1`, 1, {
       interactions: { 'video-1': { isLiked: true, isSaved: false } },
     });
     mockedGetInteractions.mockResolvedValue([{ videoId: 'video-1', isLiked: true, isSaved: false }]);

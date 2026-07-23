@@ -51,6 +51,20 @@ function clampPositionSeconds(positionSeconds: number, durationSeconds?: number)
 }
 
 /**
+ * Sentinel identity namespace used while not authenticated. Every key this
+ * store touches is suffixed with the current identity (`user.id` once
+ * authenticated, or this sentinel otherwise) - see `withIdentitySuffix` and
+ * `loadIdentityScopedItem` below for the full rationale (fix for the
+ * cross-account local-storage bleed defect found in Phase 9 QA). Mirrored
+ * from `src/stores/video-interactions.tsx`.
+ */
+const GUEST_IDENTITY_KEY = 'guest';
+
+function withIdentitySuffix(baseKey: string, identityKey: string): string {
+  return `${baseKey}:${identityKey}`;
+}
+
+/**
  * Explicit, typed sync command. Enqueued directly (and only) inside
  * `recordProgress`, using the exact arguments it already received (after
  * clamping) - never inferred from a state diff. See
@@ -68,7 +82,8 @@ type ProgressSyncCommand = {
 };
 
 // Persisted separately from the progress data itself, so pending sync
-// commands survive an app restart.
+// commands survive an app restart. Base key - always used with an identity
+// suffix, never directly.
 const SERIES_PROGRESS_QUEUE_STORAGE_KEY = '@mobile-app-ecc/series-progress-sync-queue';
 const SERIES_PROGRESS_QUEUE_STORAGE_VERSION = 1;
 
@@ -76,8 +91,9 @@ type PersistedProgressSyncQueue = {
   readonly queue: readonly ProgressSyncCommand[];
 };
 
-// Tracks (per authenticated session) whether the one-time "local wins"
-// first-login merge against the backend has already happened.
+// Tracks (per authenticated identity) whether the one-time "local wins"
+// first-login merge against the backend has already happened. Base key -
+// always used with an identity suffix.
 const SERIES_PROGRESS_SYNCED_STORAGE_KEY = '@mobile-app-ecc/series-progress-synced';
 const SERIES_PROGRESS_SYNCED_STORAGE_VERSION = 1;
 
@@ -107,12 +123,51 @@ type SeriesProgressContextValue = {
 
 const SeriesProgressContext = createContext<SeriesProgressContextValue | null>(null);
 
-function persistProgressQueue(queue: readonly ProgressSyncCommand[]): Promise<void> {
-  return setItem<PersistedProgressSyncQueue>(
-    SERIES_PROGRESS_QUEUE_STORAGE_KEY,
-    SERIES_PROGRESS_QUEUE_STORAGE_VERSION,
-    { queue }
-  );
+function persistProgressQueue(
+  queueKey: string,
+  queue: readonly ProgressSyncCommand[]
+): Promise<void> {
+  return setItem<PersistedProgressSyncQueue>(queueKey, SERIES_PROGRESS_QUEUE_STORAGE_VERSION, {
+    queue,
+  });
+}
+
+/**
+ * Loads a value for the given identity namespace, with one-time "guest data
+ * adoption": if this identity has no data of its own yet, but guest-scoped
+ * (logged-out) data exists, that guest data is adopted as this identity's
+ * starting point and the guest slot is then cleared so a LATER, different
+ * identity logging in on this device does not also inherit it. Mirrored from
+ * `src/stores/video-interactions.tsx`.
+ */
+async function loadIdentityScopedItem<T>(
+  baseKey: string,
+  version: number,
+  identityKey: string
+): Promise<T | undefined> {
+  const ownKey = withIdentitySuffix(baseKey, identityKey);
+
+  if (identityKey === GUEST_IDENTITY_KEY) {
+    return getItem<T>(ownKey, version);
+  }
+
+  const own = await getItem<T>(ownKey, version);
+
+  if (own !== undefined) {
+    return own;
+  }
+
+  const guestKey = withIdentitySuffix(baseKey, GUEST_IDENTITY_KEY);
+  const guestData = await getItem<T>(guestKey, version);
+
+  if (guestData === undefined) {
+    return undefined;
+  }
+
+  await setItem<T>(ownKey, version, guestData);
+  await removeItem(guestKey);
+
+  return guestData;
 }
 
 /** Executes a single queued command against the backend. Throws on failure
@@ -129,6 +184,7 @@ async function executeProgressSyncCommand(command: ProgressSyncCommand): Promise
 
 type DrainLoopParams = {
   readonly queueRef: MutableRefObject<ProgressSyncCommand[]>;
+  readonly queueKey: string;
   readonly authRef: MutableRefObject<{ isAuthenticated: boolean; isAuthHydrated: boolean }>;
   readonly sessionEpochRef: MutableRefObject<number>;
   readonly isDrainingRef: MutableRefObject<boolean>;
@@ -140,10 +196,13 @@ type DrainLoopParams = {
  * call itself by name without any "self-referencing hook" ordering issue.
  * Drains the queue strictly FIFO, one command at a time. `isDrainingRef`
  * stays true across a scheduled retry's backoff window too, so a concurrent
- * enqueue can't start a second, overlapping drain loop.
+ * enqueue can't start a second, overlapping drain loop. `queueKey` is
+ * captured once at drain-start time - the session-epoch check below already
+ * guarantees the drain loop stops as soon as the identity changes, so the
+ * key can never go stale mid-loop.
  */
 async function runProgressDrainLoop(params: DrainLoopParams, epochAtStart: number): Promise<void> {
-  const { queueRef, authRef, sessionEpochRef, isDrainingRef, onSyncFailure } = params;
+  const { queueRef, queueKey, authRef, sessionEpochRef, isDrainingRef, onSyncFailure } = params;
 
   while (queueRef.current.length > 0) {
     if (sessionEpochRef.current !== epochAtStart) {
@@ -161,7 +220,7 @@ async function runProgressDrainLoop(params: DrainLoopParams, epochAtStart: numbe
     try {
       await executeProgressSyncCommand(command);
       queueRef.current = queueRef.current.slice(1);
-      await persistProgressQueue(queueRef.current);
+      await persistProgressQueue(queueKey, queueRef.current);
     } catch {
       const attempts = command.attempts + 1;
 
@@ -174,13 +233,13 @@ async function runProgressDrainLoop(params: DrainLoopParams, epochAtStart: numbe
         }
 
         queueRef.current = queueRef.current.slice(1);
-        await persistProgressQueue(queueRef.current);
+        await persistProgressQueue(queueKey, queueRef.current);
         onSyncFailure();
         continue;
       }
 
       queueRef.current = [{ ...command, attempts }, ...queueRef.current.slice(1)];
-      await persistProgressQueue(queueRef.current);
+      await persistProgressQueue(queueKey, queueRef.current);
 
       const backoffMs = Math.min(RETRY_BACKOFF_BASE_MS * attempts, RETRY_BACKOFF_CAP_MS);
 
@@ -227,7 +286,7 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
   const [isHydrated, setIsHydrated] = useState(false);
   const [hasSynced, setHasSynced] = useState(false);
   const [hasSyncFailures, setHasSyncFailures] = useState(false);
-  const { isAuthenticated, isHydrated: isAuthHydrated } = useAuth();
+  const { isAuthenticated, isHydrated: isAuthHydrated, user } = useAuth();
 
   // The ref IS the synchronous source of truth for reads/writes. React
   // state (`progressBySeriesId`) exists purely to trigger re-renders and is
@@ -237,9 +296,18 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
   const queueRef = useRef<ProgressSyncCommand[]>([]);
   const isDrainingRef = useRef(false);
   const hasMergeStartedRef = useRef(false);
-  const wasAuthenticatedRef = useRef(false);
   const sessionEpochRef = useRef(0);
   const authRef = useRef({ isAuthenticated, isAuthHydrated });
+  // Distinct from `null` (no identity resolved yet, i.e. "before first
+  // effect run") so the first run always performs the initial hydration.
+  const identityKeyRef = useRef<string | null>(null);
+
+  // The namespace this store's storage keys are currently scoped to: the
+  // authenticated user's id, or the guest sentinel when logged out.
+  const identityKey = useMemo(
+    () => (isAuthenticated && user ? user.id : GUEST_IDENTITY_KEY),
+    [isAuthenticated, user]
+  );
 
   useEffect(() => {
     authRef.current = { isAuthenticated, isAuthHydrated };
@@ -250,43 +318,24 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
     setProgressState(next);
   }, []);
 
-  // Hydration: loads persisted local progress. Writes directly to the ref +
-  // state, exactly as before. Does NOT touch the sync queue at all.
-  useEffect(() => {
-    getItem<PersistedSeriesProgress>(STORAGE_KEYS.seriesProgress, SERIES_PROGRESS_STORAGE_VERSION)
-      .then((persisted) => {
-        if (persisted?.progressBySeriesId) {
-          commitProgress(persisted.progressBySeriesId);
-        }
-      })
-      .finally(() => {
-        setIsHydrated(true);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    getItem<PersistedSeriesProgressSyncFlag>(
-      SERIES_PROGRESS_SYNCED_STORAGE_KEY,
-      SERIES_PROGRESS_SYNCED_STORAGE_VERSION
-    ).then((persisted) => {
-      if (persisted?.hasSynced) {
-        setHasSynced(true);
-      }
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!isHydrated) {
-      return;
-    }
-
-    void setItem<PersistedSeriesProgress>(
-      STORAGE_KEYS.seriesProgress,
-      SERIES_PROGRESS_STORAGE_VERSION,
-      { progressBySeriesId }
-    );
-  }, [progressBySeriesId, isHydrated]);
+  // Persists a snapshot of `progressBySeriesId` under a specific,
+  // already-resolved identity key, passed in explicitly by the caller (never
+  // read from a ref or effect dependency at the time this function runs).
+  // Called inline, in the same synchronous function call as every
+  // `commitProgress` write below - never inferred later via a reactive
+  // `[progressBySeriesId, isHydrated]` effect. Mirrors the fix in
+  // `src/stores/video-interactions.tsx` for the same-commit
+  // identity/action collision defect.
+  const persistProgress = useCallback(
+    (persistIdentityKey: string, next: Record<string, SeriesProgress>) => {
+      void setItem<PersistedSeriesProgress>(
+        withIdentitySuffix(STORAGE_KEYS.seriesProgress, persistIdentityKey),
+        SERIES_PROGRESS_STORAGE_VERSION,
+        { progressBySeriesId: next }
+      );
+    },
+    []
+  );
 
   const drainQueue = useCallback(() => {
     if (isDrainingRef.current) {
@@ -307,6 +356,7 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
     void runProgressDrainLoop(
       {
         queueRef,
+        queueKey: withIdentitySuffix(SERIES_PROGRESS_QUEUE_STORAGE_KEY, identityKey),
         authRef,
         sessionEpochRef,
         isDrainingRef,
@@ -314,46 +364,95 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
       },
       sessionEpochRef.current
     );
-  }, []);
+  }, [identityKey]);
 
-  // Load any queue persisted from a prior session, then attempt to drain it
-  // once ready.
+  // Identity-scoped hydration: (re-)runs whenever the current identity
+  // (authenticated user id, or the guest sentinel) changes - not just once
+  // on mount. Replaces whatever was in memory/storage-loaded for the
+  // PREVIOUS identity with the new identity's own state (or empty, adopting
+  // guest data at most once - see `loadIdentityScopedItem`).
   useEffect(() => {
-    getItem<PersistedProgressSyncQueue>(
-      SERIES_PROGRESS_QUEUE_STORAGE_KEY,
-      SERIES_PROGRESS_QUEUE_STORAGE_VERSION
-    )
-      .then((persisted) => {
-        if (persisted?.queue?.length) {
-          queueRef.current = [...persisted.queue];
-        }
-      })
-      .finally(() => {
-        drainQueue();
-      });
+    const previousIdentityKey = identityKeyRef.current;
+
+    if (previousIdentityKey === identityKey) {
+      return;
+    }
+
+    // True only when this transition is leaving a real (non-guest) identity
+    // - i.e. a logout, or (never in practice, but handled safely regardless)
+    // a direct switch between two authenticated identities. Never true for
+    // the very first hydration on mount (`previousIdentityKey` is `null`).
+    const isLeavingAuthenticatedIdentity =
+      previousIdentityKey !== null && previousIdentityKey !== GUEST_IDENTITY_KEY;
+
+    identityKeyRef.current = identityKey;
+    sessionEpochRef.current += 1;
+    const epochAtStart = sessionEpochRef.current;
+    isDrainingRef.current = false;
+    hasMergeStartedRef.current = false;
+    setHasSyncFailures(false);
+    setIsHydrated(false);
+
+    (async () => {
+      // Logout (or any departure from an authenticated identity): pending
+      // user-scoped jobs are explicitly discarded (acceptable per the
+      // approved design - not required to preserve them across users/sessions).
+      if (isLeavingAuthenticatedIdentity) {
+        queueRef.current = [];
+        await removeItem(
+          withIdentitySuffix(SERIES_PROGRESS_QUEUE_STORAGE_KEY, previousIdentityKey)
+        );
+      }
+
+      const [persistedData, persistedSyncFlag, persistedQueue] = await Promise.all([
+        loadIdentityScopedItem<PersistedSeriesProgress>(
+          STORAGE_KEYS.seriesProgress,
+          SERIES_PROGRESS_STORAGE_VERSION,
+          identityKey
+        ),
+        loadIdentityScopedItem<PersistedSeriesProgressSyncFlag>(
+          SERIES_PROGRESS_SYNCED_STORAGE_KEY,
+          SERIES_PROGRESS_SYNCED_STORAGE_VERSION,
+          identityKey
+        ),
+        isLeavingAuthenticatedIdentity
+          ? Promise.resolve(undefined)
+          : loadIdentityScopedItem<PersistedProgressSyncQueue>(
+              SERIES_PROGRESS_QUEUE_STORAGE_KEY,
+              SERIES_PROGRESS_QUEUE_STORAGE_VERSION,
+              identityKey
+            ),
+      ]);
+
+      // A newer identity change superseded this one mid-flight - discard
+      // this now-stale result instead of clobbering the newer identity's state.
+      if (sessionEpochRef.current !== epochAtStart) {
+        return;
+      }
+
+      const hydratedProgress = persistedData?.progressBySeriesId ?? {};
+
+      commitProgress(hydratedProgress);
+      // `identityKey` here is the local closure captured at the START of
+      // this hydration run (this effect's own dependency-array value, fixed
+      // for the lifetime of this specific async invocation) - never re-read
+      // from `identityKeyRef` later, so a hydration run for one identity can
+      // never persist under a DIFFERENT identity's key even if the ref
+      // moves on while this run is still in flight.
+      persistProgress(identityKey, hydratedProgress);
+      setHasSynced(Boolean(persistedSyncFlag?.hasSynced));
+      queueRef.current = isLeavingAuthenticatedIdentity ? [] : [...(persistedQueue?.queue ?? [])];
+      setIsHydrated(true);
+      drainQueue();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [identityKey]);
 
   useEffect(() => {
     if (isAuthenticated && isAuthHydrated) {
       drainQueue();
     }
   }, [isAuthenticated, isAuthHydrated, drainQueue]);
-
-  // Logout: pending user-scoped jobs are explicitly discarded (acceptable
-  // per the approved design). Bumping the epoch neutralizes any in-flight
-  // retry `setTimeout` from this session.
-  useEffect(() => {
-    if (wasAuthenticatedRef.current && !isAuthenticated) {
-      queueRef.current = [];
-      void removeItem(SERIES_PROGRESS_QUEUE_STORAGE_KEY);
-      sessionEpochRef.current += 1;
-      isDrainingRef.current = false;
-      setHasSyncFailures(false);
-    }
-
-    wasAuthenticatedRef.current = isAuthenticated;
-  }, [isAuthenticated]);
 
   // First-login merge - completely separate from the queue. Adds
   // remote-only series directly to local state (never overwriting an
@@ -371,6 +470,7 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
     }
 
     hasMergeStartedRef.current = true;
+    const epochAtStart = sessionEpochRef.current;
 
     (async () => {
       let remoteProgressList: readonly UserSeriesProgress[] = [];
@@ -384,6 +484,13 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
             error
           );
         }
+      }
+
+      // A newer identity change superseded this one mid-flight - discard
+      // this now-stale merge result instead of clobbering the newer
+      // identity's live state (mirrors the hydration effect's guard above).
+      if (sessionEpochRef.current !== epochAtStart) {
+        return;
       }
 
       const remoteBySeriesId = new Map(
@@ -410,9 +517,20 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
 
       if (hasNewEntries) {
         commitProgress(merged);
+        // `identityKey` is this effect's own dependency-array value, closed
+        // over at the start of this merge run - stable for its lifetime.
+        persistProgress(identityKey, merged);
       }
 
       for (const [seriesId, localProgress] of Object.entries(localSnapshot)) {
+        // Re-checked on every iteration: an identity change mid-loop (not
+        // just before the loop started) must also stop further pushes -
+        // otherwise a partially-completed loop could keep pushing a stale
+        // identity's data under a since-changed (now-current) auth session.
+        if (sessionEpochRef.current !== epochAtStart) {
+          return;
+        }
+
         const remote = remoteBySeriesId.get(seriesId);
         const needsPush =
           !remote ||
@@ -426,14 +544,26 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
         }
       }
 
+      if (sessionEpochRef.current !== epochAtStart) {
+        return;
+      }
+
       setHasSynced(true);
       void setItem<PersistedSeriesProgressSyncFlag>(
-        SERIES_PROGRESS_SYNCED_STORAGE_KEY,
+        withIdentitySuffix(SERIES_PROGRESS_SYNCED_STORAGE_KEY, identityKey),
         SERIES_PROGRESS_SYNCED_STORAGE_VERSION,
         { hasSynced: true }
       );
     })();
-  }, [isHydrated, isAuthHydrated, isAuthenticated, hasSynced, commitProgress]);
+  }, [
+    isHydrated,
+    isAuthHydrated,
+    isAuthenticated,
+    hasSynced,
+    commitProgress,
+    persistProgress,
+    identityKey,
+  ]);
 
   const getProgress = useCallback(
     (seriesId: string) => progressRef.current[seriesId],
@@ -444,10 +574,13 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
   const enqueueCommand = useCallback(
     (command: ProgressSyncCommand) => {
       queueRef.current = [...queueRef.current, command];
-      void persistProgressQueue(queueRef.current);
+      void persistProgressQueue(
+        withIdentitySuffix(SERIES_PROGRESS_QUEUE_STORAGE_KEY, identityKey),
+        queueRef.current
+      );
       drainQueue();
     },
-    [drainQueue]
+    [drainQueue, identityKey]
   );
 
   // recordProgress already receives seriesId/videoId/episodeNumber/
@@ -472,7 +605,7 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
         return;
       }
 
-      commitProgress({
+      const nextProgress = {
         ...progressRef.current,
         [seriesId]: {
           lastWatchedVideoId: videoId,
@@ -481,7 +614,14 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
           durationSeconds,
           updatedAt: new Date().toISOString(),
         },
-      });
+      };
+      const persistIdentityKey = identityKeyRef.current ?? GUEST_IDENTITY_KEY;
+
+      commitProgress(nextProgress);
+      // Persisted inline, synchronously, using the identity key current AT
+      // THIS EXACT POINT (captured as a local constant above) - see
+      // `persistProgress` for the full rationale.
+      persistProgress(persistIdentityKey, nextProgress);
 
       enqueueCommand({
         seriesId,
@@ -493,7 +633,7 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
         enqueuedAt: Date.now(),
       });
     },
-    [commitProgress, enqueueCommand]
+    [commitProgress, enqueueCommand, persistProgress]
   );
 
   const contextValue = useMemo(

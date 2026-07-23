@@ -46,7 +46,7 @@ function InteractionsProbe() {
 
 describe('VideoInteractionsProvider', () => {
   it('restores persisted liked/saved video IDs on mount', async () => {
-    await setItem(STORAGE_KEYS.videoInteractions, 1, {
+    await setItem(`${STORAGE_KEYS.videoInteractions}:guest`, 1, {
       interactions: { 'video-1': { isLiked: true, isSaved: true } },
     });
 

@@ -147,7 +147,7 @@ describe('series-progress sync architecture', () => {
   });
 
   it('(d) hydration alone does not enqueue anything and does not redundantly push already-converged data', async () => {
-    await setItem(STORAGE_KEYS.seriesProgress, 1, {
+    await setItem(`${STORAGE_KEYS.seriesProgress}:user-1`, 1, {
       progressBySeriesId: {
         'series-1': {
           lastWatchedVideoId: 'video-2',

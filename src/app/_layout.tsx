@@ -16,6 +16,7 @@ import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { Palette } from '@/constants/theme';
 import { VideoCatalogProvider } from '@/features/videos/video-catalog-provider';
 import { AuthProvider, useAuth } from '@/stores/auth';
+import { EntitlementProvider } from '@/stores/entitlement';
 import { SeriesProgressProvider, useSeriesProgress } from '@/stores/series-progress';
 import { ToastProvider } from '@/stores/toast';
 import { useVideoInteractions, VideoInteractionsProvider } from '@/stores/video-interactions';
@@ -89,13 +90,15 @@ export default function RootLayout() {
       <ThemeProvider value={NavigationTheme}>
         <ToastProvider>
           <AuthProvider>
-            <VideoCatalogProvider>
-              <VideoInteractionsProvider>
-                <SeriesProgressProvider>
-                  <AppContent />
-                </SeriesProgressProvider>
-              </VideoInteractionsProvider>
-            </VideoCatalogProvider>
+            <EntitlementProvider>
+              <VideoCatalogProvider>
+                <VideoInteractionsProvider>
+                  <SeriesProgressProvider>
+                    <AppContent />
+                  </SeriesProgressProvider>
+                </VideoInteractionsProvider>
+              </VideoCatalogProvider>
+            </EntitlementProvider>
           </AuthProvider>
         </ToastProvider>
       </ThemeProvider>

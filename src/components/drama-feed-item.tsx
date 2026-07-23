@@ -10,6 +10,8 @@ import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from
 import { BrandMark } from '@/components/brand-mark';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { getTokens } from '@/services/auth/token-store';
+import { useEntitlement } from '@/stores/entitlement';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
 
@@ -111,16 +113,37 @@ export function DramaFeedItem({
   const { width: windowWidth } = useWindowDimensions();
   const isWideLayout = windowWidth >= WIDE_LAYOUT_BREAKPOINT;
   const metadataBottomOffset = tabBarHeight + BOTTOM_GAP;
+  const { isPremium } = useEntitlement();
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const [isInFullscreen, setIsInFullscreen] = useState(false);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
   const [isIndicatorVisible, setIsIndicatorVisible] = useState(true);
   const [isCaptionExpanded, setIsCaptionExpanded] = useState(false);
-  const hasPlaybackUrl = video.playbackUrl.length > 0;
+  // Phase 10, work unit 10-B3 (backend) / 10-M2 (mobile): `GET
+  // /videos/:id/stream` now requires `Authorization: Bearer <accessToken>`.
+  // `useVideoPlayer` doesn't go through `services/api/client.ts`'s
+  // `request()` helper (it's the native player, not a fetch call), so the
+  // token has to be attached directly via expo-video's own `headers`
+  // option. Reading `token-store.ts` directly (not `useAuth()`) matches
+  // that module's existing design: it's the shared, React-free source of
+  // truth for the current token pair specifically so non-React callers
+  // like this one don't need to thread the token through props.
+  //
+  // `hasPlaybackUrl` folds in "do we actually have a token to attach" too
+  // (not just "is the URL string non-empty") — every downstream usage of
+  // this flag (autoplay guard, progress-recording guard, the error-state
+  // UI) already means "is there a real playable source," so a logged-out
+  // guest correctly falls straight into the existing error-state UI
+  // instead of a silently-stuck idle player with no source and no message.
+  const accessToken = getTokens()?.accessToken;
+  const hasPlaybackUrl = video.playbackUrl.length > 0 && Boolean(accessToken);
   const videoViewRef = useRef<VideoView>(null);
   const isInFullscreenRef = useRef(false);
   const hasSeekedToResumeRef = useRef(false);
-  const player = useVideoPlayer(hasPlaybackUrl ? video.playbackUrl : null, (nextPlayer) => {
+  const playbackSource = hasPlaybackUrl
+    ? { uri: video.playbackUrl, headers: { Authorization: `Bearer ${accessToken}` } }
+    : null;
+  const player = useVideoPlayer(playbackSource, (nextPlayer) => {
     nextPlayer.loop = true;
     nextPlayer.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_SECONDS;
   });
@@ -333,13 +356,13 @@ export function DramaFeedItem({
       return;
     }
 
-    if (nextEpisode.accessType === 'premium') {
+    if (nextEpisode.accessType === 'premium' && !isPremium) {
       setIsPremiumModalVisible(true);
       return;
     }
 
     router.push({ pathname: '/', params: { videoId: nextEpisode.videoId } });
-  }, [nextEpisode]);
+  }, [nextEpisode, isPremium]);
 
   const handleGoToFreeEpisode = useCallback(() => {
     setIsPremiumModalVisible(false);

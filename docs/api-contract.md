@@ -79,7 +79,7 @@ Phase 6A does not add a `/series` backend endpoint. Instead, the mobile app grou
 }
 ```
 
-Access rule: episodes 1-5 are `"free"`, episode 6 onward is `"premium"` (`FREE_EPISODE_LIMIT = 5`). This is a display/UX rule only — **no payment, subscription, credit balance, or purchase flow is implemented**. Premium episodes are blocked client-side with a preview modal; there is nothing on the backend enforcing this yet.
+Access rule: episodes 1-5 are `"free"`, episode 6 onward is `"premium"` (`FREE_EPISODE_LIMIT = 5`). **No payment, subscription, credit balance, or purchase flow is implemented.** As of Phase 10, this is no longer a display/UX-only rule: the backend enforces it too — `GET /videos/:id/stream` rejects premium episodes for non-entitled users with `403 ENTITLEMENT_REQUIRED` (see the `playbackUrl` note above and `GET /users/me/entitlement` below). The client-side preview modal remains as the UX layer in front of that enforcement, not a substitute for it.
 
 ### Recommended Future: Series Endpoints (not implemented)
 
@@ -321,6 +321,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - MVP priority: P0
 - Backend notes: Optimize for paginated mobile playback. Backend can serve processed videos through a media/static endpoint first, then later return CDN or signed URLs in `playbackUrl`.
 - Connected: Yes. `getVideoFeed()` in `src/services/videos/video-service.ts` calls `request('videos/feed')` (the typed client in `src/services/api/client.ts`), and `VideoCatalogProvider` (`src/features/videos/video-catalog-provider.tsx`) fetches it on mount for the Home feed. `id`, `seriesId`, `title`, `episodeNumber`, `channelName`, `caption`, `category`, `storageKey`, `playbackUrl`, `sourceLanguage`, and `hasEmbeddedIndonesianSubtitle`, and `likeCount` are all validated as required by `mapBackendVideoToVideo` (`src/services/videos/video-mapper.ts`) and will throw if missing; `thumbnailUrl`, `width`, `height`, and `durationSeconds` are optional. The mapper always sets `isSaved: false` and drops any `isLiked` field entirely — save/like state comes only from the local `VideoInteractionsProvider` (`src/stores/video-interactions.tsx`), not this response. When `EXPO_PUBLIC_USE_MOCK_DATA=true`, this call is bypassed and bundled mock data is returned instead.
+- **`playbackUrl` (Phase 10, work unit 10-B3/10-M2):** the video stream endpoint (`GET {playbackUrl}`, i.e. `GET /videos/:id/stream` on the backend) now requires `Authorization: Bearer <accessToken>` — previously unauthenticated. `src/components/drama-feed-item.tsx` attaches the current access token (read from `src/services/auth/token-store.ts`) via `expo-video`'s `VideoSource.headers` option, since `useVideoPlayer` is a native player call, not a `request()`-mediated fetch. Episodes past `FREE_EPISODE_LIMIT` additionally require an active entitlement — see `GET /users/me/entitlement` below.
 
 ### GET /videos/:id
 
@@ -596,6 +597,25 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - MVP priority: P0
 - Backend notes: Throws `ApiError` with code `INVALID_ACCESS_TOKEN` (status 401) if unauthenticated.
 - Connected: Yes. `getProgress()` in `src/services/progress/progress-service.ts` calls `request('users/me/progress', { method: 'GET' }, { requiresAuth: true })`. It is called once, directly (not through the sync queue), by the first-login merge bootstrap in `src/stores/series-progress.tsx`, which reconciles this remote list against whatever progress was recorded locally before the user authenticated.
+
+### GET /users/me/entitlement
+
+- Purpose: Return the authenticated user's premium entitlement status, backing the `GET /videos/:id/stream` guard (see the `playbackUrl` note above). Account-wide, single tier — no per-series/per-episode entitlement.
+- Method and path: `GET /users/me/entitlement`
+- Auth required: Yes
+- Request params/body: None.
+- Example response (`EntitlementStatus`, `src/types/entitlement.ts` — raw DTO, no envelope):
+
+```json
+{ "isPremium": false, "expiresAt": null }
+```
+
+`isPremium` is `false` for "never entitled," "expired," and "revoked" alike — deliberately no distinction in this contract.
+
+- Mobile screen: Home (drives the premium gate in `drama-feed-item.tsx`), Series Detail
+- MVP priority: P0 (Phase 10)
+- Backend notes: Throws `ApiError` with code `INVALID_ACCESS_TOKEN` (status 401) if unauthenticated.
+- Connected: Yes. `getMyEntitlement()` in `src/services/entitlement/entitlement-service.ts` calls `request('users/me/entitlement', { method: 'GET' }, { requiresAuth: true })`. Fetched by `EntitlementProvider` (`src/stores/entitlement.tsx`) whenever the authenticated identity changes (login, logout, account switch), and exposed via `useEntitlement()`. `handleSelectEpisode`/`handleNextEpisode` in `src/app/series/[id].tsx`/`src/components/drama-feed-item.tsx` now gate premium playback on `episode.accessType === 'premium' && !isPremium`, instead of `accessType === 'premium'` alone. Fails safe to `isPremium: false` while logged out, while auth is still hydrating, and on any fetch error.
 
 ### GET /videos/search
 

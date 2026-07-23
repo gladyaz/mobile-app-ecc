@@ -36,6 +36,22 @@ jest.mock('expo-symbols', () => ({
   SymbolView: 'SymbolView',
 }));
 
+// Phase 10, work unit 10-M2: the player now attaches an access token to the
+// video source's headers (see drama-feed-item.tsx), and the "next episode"
+// premium gate now also consults `useEntitlement()`. Both are mocked here
+// rather than exercised for real, matching how this file already mocks
+// every other cross-cutting dependency (auth/store wiring is not this
+// component's own concern to re-test).
+jest.mock('@/services/auth/token-store', () => ({
+  getTokens: jest.fn(() => ({ accessToken: 'test-access-token', refreshToken: 'test-refresh' })),
+}));
+
+const mockUseEntitlement = jest.fn();
+
+jest.mock('@/stores/entitlement', () => ({
+  useEntitlement: () => mockUseEntitlement(),
+}));
+
 // Captured by the VideoView mock below so tests can trigger
 // onFullscreenEnter/onFullscreenExit directly, and assert on the imperative
 // exitFullscreen() call the component's unmount cleanup makes.
@@ -159,6 +175,10 @@ const baseProps = {
 };
 
 describe('DramaFeedItem', () => {
+  beforeEach(() => {
+    mockUseEntitlement.mockReturnValue({ isPremium: false, refresh: jest.fn() });
+  });
+
   it('clamps title to 2 lines and caption to 1 line by default', async () => {
     const video = buildVideo();
     const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
@@ -254,6 +274,39 @@ describe('DramaFeedItem', () => {
     expect(createdPlayer.muted).toBe(true);
   });
 
+  it('attaches the current access token as an Authorization header on the video source (Phase 10, work unit 10-M2)', async () => {
+    const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+    const video = buildVideo({ playbackUrl: 'https://media.example.com/video-1.mp4' });
+
+    await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    const lastSource = (useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0] as {
+      uri: string;
+      headers: Record<string, string>;
+    };
+
+    // Reverting drama-feed-item.tsx to pass a bare `video.playbackUrl`
+    // string here (dropping the auth header) would fail this assertion —
+    // the backend now requires Authorization on every stream request, so
+    // this is the regression test for "all playback silently breaks."
+    expect(lastSource).toEqual({
+      uri: 'https://media.example.com/video-1.mp4',
+      headers: { Authorization: 'Bearer test-access-token' },
+    });
+  });
+
+  it('shows the existing "Video unavailable" error state (not a crash or stuck player) when logged out with no access token', async () => {
+    const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
+      '@/services/auth/token-store'
+    );
+    (getTokens as jest.Mock).mockReturnValueOnce(null);
+
+    const video = buildVideo();
+    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    expect(getByText('Video unavailable')).toBeTruthy();
+  });
+
   it('pressing the sound control does not trigger Like, Save, or navigation', async () => {
     const video = buildVideo();
     const onToggleLike = jest.fn();
@@ -300,6 +353,23 @@ describe('DramaFeedItem', () => {
 
     expect(router.push).not.toHaveBeenCalled();
     expect(getByText('Episode ini termasuk konten premium.')).toBeTruthy();
+  });
+
+  it('navigates directly to a premium next episode for an entitled user, without the modal (Phase 10)', async () => {
+    mockUseEntitlement.mockReturnValue({ isPremium: true, refresh: jest.fn() });
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'premium', videoId: 'video-6' });
+    const { getByText, queryByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    await fireEvent.press(getByText('Episode Berikutnya'));
+
+    expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/',
+      params: { videoId: 'video-6' },
+    });
   });
 
   it('shows the Fullscreen button for a horizontal video', async () => {

@@ -23,6 +23,12 @@ jest.mock('@/stores/series-progress', () => ({
   useSeriesProgress: () => ({ getProgress: mockGetProgress, recordProgress: jest.fn() }),
 }));
 
+const mockUseEntitlement = jest.fn();
+
+jest.mock('@/stores/entitlement', () => ({
+  useEntitlement: () => mockUseEntitlement(),
+}));
+
 function buildEpisode(episodeNumber: number): Video {
   return {
     id: `series-x-ep-${episodeNumber}`,
@@ -54,6 +60,7 @@ beforeEach(() => {
     refresh: jest.fn(),
   });
   mockGetProgress.mockReturnValue(undefined);
+  mockUseEntitlement.mockReturnValue({ isPremium: false, refresh: jest.fn() });
 });
 
 describe('SeriesDetailScreen', () => {
@@ -77,6 +84,20 @@ describe('SeriesDetailScreen', () => {
 
     expect(router.push).not.toHaveBeenCalled();
     expect(getByText('Episode ini termasuk konten premium.')).toBeTruthy();
+  });
+
+  it('plays a premium episode directly, without the modal, for an entitled user (Phase 10)', async () => {
+    mockUseEntitlement.mockReturnValue({ isPremium: true, refresh: jest.fn() });
+
+    const { getByText, queryByText } = await render(<SeriesDetailScreen />);
+
+    await fireEvent.press(getByText('Episode 6'));
+
+    expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/',
+      params: { videoId: 'series-x-ep-6' },
+    });
   });
 
   it('shows Continue Watching and the currently-playing indicator when progress exists', async () => {

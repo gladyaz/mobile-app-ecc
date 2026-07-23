@@ -8,6 +8,7 @@ import { SeriesEpisodeRow } from '@/components/series-episode-row';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { getSeriesById } from '@/services/videos/series-service';
+import { useEntitlement } from '@/stores/entitlement';
 import { useSeriesProgress } from '@/stores/series-progress';
 import type { Episode } from '@/types/series';
 
@@ -15,11 +16,12 @@ export default function SeriesDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getProgress } = useSeriesProgress();
+  const { isPremium } = useEntitlement();
   const series = getSeriesById(videos, id);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
 
   const handleSelectEpisode = (episode: Episode) => {
-    if (episode.accessType === 'premium') {
+    if (episode.accessType === 'premium' && !isPremium) {
       setIsPremiumModalVisible(true);
       return;
     }
@@ -72,8 +74,11 @@ export default function SeriesDetailScreen() {
     );
   }
 
-  const firstPlayableEpisode = series.episodes.find(
+  const firstFreeEpisode = series.episodes.find(
     (episode) => episode.accessType === 'free' && episode.isAvailable
+  );
+  const firstPlayableEpisode = series.episodes.find(
+    (episode) => episode.isAvailable && (episode.accessType === 'free' || isPremium)
   );
   const progress = getProgress(series.id);
   const continueEpisode = progress
@@ -130,10 +135,10 @@ export default function SeriesDetailScreen() {
       <PremiumPreviewModal
         onDismiss={() => setIsPremiumModalVisible(false)}
         onGoToFreeEpisode={
-          firstPlayableEpisode
+          firstFreeEpisode
             ? () => {
                 setIsPremiumModalVisible(false);
-                handleSelectEpisode(firstPlayableEpisode);
+                handleSelectEpisode(firstFreeEpisode);
               }
             : undefined
         }

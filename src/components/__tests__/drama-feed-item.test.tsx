@@ -46,6 +46,13 @@ jest.mock('@/services/auth/token-store', () => ({
   getTokens: jest.fn(() => ({ accessToken: 'test-access-token', refreshToken: 'test-refresh' })),
 }));
 
+// Phase 11 (11-M3/11-M4): the component now emits analytics events; the
+// real queue schedules flush timers and hits the network, so it is mocked
+// like every other cross-cutting dependency in this file.
+jest.mock('@/services/analytics/analytics-queue', () => ({
+  trackEvent: jest.fn(),
+}));
+
 const mockUseEntitlement = jest.fn();
 
 jest.mock('@/stores/entitlement', () => ({
@@ -353,6 +360,46 @@ describe('DramaFeedItem', () => {
 
     expect(router.push).not.toHaveBeenCalled();
     expect(getByText('Episode ini termasuk konten premium.')).toBeTruthy();
+  });
+
+  it('emits a premium_gate_hit analytics event when the premium modal blocks navigation (Phase 11)', async () => {
+    const { trackEvent } = jest.requireMock<
+      typeof import('@/services/analytics/analytics-queue')
+    >('@/services/analytics/analytics-queue');
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'premium', videoId: 'video-6' });
+    const { getByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    await fireEvent.press(getByText('Episode Berikutnya'));
+
+    expect(trackEvent).toHaveBeenCalledWith('premium_gate_hit', {
+      videoId: 'video-6',
+      seriesId: nextEpisode.seriesId,
+      episodeNumber: nextEpisode.episodeNumber,
+      source: 'feed-next-episode',
+    });
+  });
+
+  it('emits an episode_navigate analytics event when navigating to a free next episode (Phase 11)', async () => {
+    const { trackEvent } = jest.requireMock<
+      typeof import('@/services/analytics/analytics-queue')
+    >('@/services/analytics/analytics-queue');
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
+    const { getByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    await fireEvent.press(getByText('Episode Berikutnya'));
+
+    expect(trackEvent).toHaveBeenCalledWith('episode_navigate', {
+      videoId: 'video-2',
+      seriesId: nextEpisode.seriesId,
+      episodeNumber: nextEpisode.episodeNumber,
+      source: 'feed-next-episode',
+    });
   });
 
   it('navigates directly to a premium next episode for an entitled user, without the modal (Phase 10)', async () => {

@@ -808,41 +808,50 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 
 ### POST /analytics/events
 
-- Purpose: Record mobile analytics events.
+- Purpose: Batch-ingest mobile analytics and JS-error events (Phase 11).
 - Method and path: `POST /analytics/events`
-- Auth required: Optional
-- Request body:
+- Auth required: Yes (JWT — the backend rejects anonymous ingestion by recorded decision; the mobile queue silently drops events while logged out for the same reason)
+- Request body (from `postAnalyticsEvents()` in `src/services/analytics/analytics-service.ts`; max 50 events per batch):
 
 ```json
 {
-  "eventName": "video_play",
-  "anonymousId": "device_or_install_id",
-  "userId": "user_001",
-  "properties": {
-    "videoId": "video_001",
-    "screen": "Home"
-  },
-  "occurredAt": "2026-07-10T00:00:00.000Z"
+  "events": [
+    {
+      "eventName": "video_play",
+      "properties": { "videoId": "video-104-01", "seriesId": "series-104", "episodeNumber": 1 },
+      "clientTimestamp": "2026-07-24T10:00:00.000Z",
+      "platform": "ios"
+    }
+  ]
 }
 ```
 
-- Example response:
+- Example response (raw DTO, no envelope):
 
 ```json
-{
-  "success": true,
-  "data": {
-    "accepted": true
-  },
-  "error": null,
-  "meta": null
-}
+{ "accepted": 1 }
 ```
 
-- Mobile screen: Home, Discover, Saved, Profile
+- Event names and their allowed properties are a server-enforced allowlist
+  (unknown event names → 400; unknown property keys are stripped
+  server-side): `feed_view`, `video_play`, `video_like`, `video_save`,
+  `episode_navigate`, `premium_gate_hit`, `app_error` — see the backend's
+  `src/analytics/analytics.types.ts` for the authoritative schema.
+- Mobile screen: Home (`feed_view`/`video_play`/`video_like`/`video_save`),
+  feed next-episode button and Series Detail (`episode_navigate`/
+  `premium_gate_hit`), global error handlers (`app_error`).
 - MVP priority: P1
-- Backend notes: Accept batched events later; do not block UI on analytics failures.
-- Connected: No. There is no analytics event emitter anywhere in the mobile codebase yet.
+- Backend notes: never blocks UI — the mobile side buffers in memory
+  (`src/services/analytics/analytics-queue.ts`), flushes every 10s or at 20
+  events, and drops batches silently on any failure. No persistence and no
+  retries, by recorded design (telemetry, not user data). `anonymousId` from
+  the old draft of this section does not exist — the server attaches the
+  authenticated `userId` itself and nulls it on account deletion.
+- Connected: Yes. `trackEvent()` (`src/services/analytics/analytics-queue.ts`)
+  is called from `src/app/(tabs)/index.tsx`, `src/components/drama-feed-item.tsx`,
+  and `src/app/series/[id].tsx`; fatal JS errors/unhandled rejections are
+  reported as `app_error` via `src/services/analytics/error-reporting.ts`,
+  installed once in `src/app/_layout.tsx`.
 
 ## Open Questions
 

@@ -20,6 +20,7 @@ import {
 import { DramaFeedItem } from '@/components/drama-feed-item';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
+import { trackEvent } from '@/services/analytics/analytics-queue';
 import { getNextEpisode, getSeriesById } from '@/services/videos/series-service';
 import { useSeriesProgress } from '@/stores/series-progress';
 import { useToast } from '@/stores/toast';
@@ -40,6 +41,15 @@ const VIEWABILITY_CONFIG: ViewabilityConfig = {
 export default function HomeScreen() {
   const { height } = useWindowDimensions();
   const isScreenFocused = useIsFocused();
+
+  // Phase 11 (11-M3): one feed_view event per time the Home feed gains
+  // focus (mount and tab-switch-back alike). trackEvent is a plain module
+  // function — silent no-op while logged out.
+  useEffect(() => {
+    if (isScreenFocused) {
+      trackEvent('feed_view');
+    }
+  }, [isScreenFocused]);
   const { videoId: requestedVideoId } = useLocalSearchParams<{ videoId?: string }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
@@ -116,6 +126,15 @@ export default function HomeScreen() {
       }
 
       setActiveVideoId(activeItem.item.id);
+
+      // Phase 11 (11-M3): the definition of video_play is "this video
+      // became the active feed item." Module-level import — adds no
+      // dependency to this deliberately-stable callback.
+      trackEvent('video_play', {
+        videoId: activeItem.item.id,
+        seriesId: activeItem.item.seriesId,
+        episodeNumber: activeItem.item.episodeNumber,
+      });
 
       // A video becoming viewable (e.g. on mount, or a scroll past it) only
       // confirms it as the last-watched item - it must not reset an
@@ -212,9 +231,11 @@ export default function HomeScreen() {
           }}
           onToggleLike={() => {
             toggleLike(item.id);
+            trackEvent('video_like', { videoId: item.id, value: !interaction.isLiked });
           }}
           onToggleSave={() => {
             toggleSave(item.id);
+            trackEvent('video_save', { videoId: item.id, value: !interaction.isSaved });
             showToast(interaction.isSaved ? 'Dihapus dari Saved' : 'Disimpan ke Saved');
           }}
           onToggleMute={() => {

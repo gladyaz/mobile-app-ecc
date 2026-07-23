@@ -7,6 +7,7 @@ import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { SeriesEpisodeRow } from '@/components/series-episode-row';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
+import { trackEvent } from '@/services/analytics/analytics-queue';
 import { getSeriesById } from '@/services/videos/series-service';
 import { useEntitlement } from '@/stores/entitlement';
 import { useSeriesProgress } from '@/stores/series-progress';
@@ -22,10 +23,22 @@ export default function SeriesDetailScreen() {
 
   const handleSelectEpisode = (episode: Episode) => {
     if (episode.accessType === 'premium' && !isPremium) {
+      trackEvent('premium_gate_hit', {
+        videoId: episode.videoId,
+        seriesId: episode.seriesId,
+        episodeNumber: episode.episodeNumber,
+        source: 'series-detail',
+      });
       setIsPremiumModalVisible(true);
       return;
     }
 
+    trackEvent('episode_navigate', {
+      videoId: episode.videoId,
+      seriesId: episode.seriesId,
+      episodeNumber: episode.episodeNumber,
+      source: 'series-detail',
+    });
     router.push({ pathname: '/', params: { videoId: episode.videoId } });
   };
 

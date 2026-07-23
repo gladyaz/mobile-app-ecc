@@ -10,6 +10,7 @@ import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from
 import { BrandMark } from '@/components/brand-mark';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { trackEvent } from '@/services/analytics/analytics-queue';
 import { getTokens } from '@/services/auth/token-store';
 import { useEntitlement } from '@/stores/entitlement';
 import type { Episode } from '@/types/series';
@@ -357,10 +358,22 @@ export function DramaFeedItem({
     }
 
     if (nextEpisode.accessType === 'premium' && !isPremium) {
+      trackEvent('premium_gate_hit', {
+        videoId: nextEpisode.videoId,
+        seriesId: nextEpisode.seriesId,
+        episodeNumber: nextEpisode.episodeNumber,
+        source: 'feed-next-episode',
+      });
       setIsPremiumModalVisible(true);
       return;
     }
 
+    trackEvent('episode_navigate', {
+      videoId: nextEpisode.videoId,
+      seriesId: nextEpisode.seriesId,
+      episodeNumber: nextEpisode.episodeNumber,
+      source: 'feed-next-episode',
+    });
     router.push({ pathname: '/', params: { videoId: nextEpisode.videoId } });
   }, [nextEpisode, isPremium]);
 

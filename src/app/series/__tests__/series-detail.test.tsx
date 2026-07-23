@@ -29,6 +29,14 @@ jest.mock('@/stores/entitlement', () => ({
   useEntitlement: () => mockUseEntitlement(),
 }));
 
+// Phase 11 (11-M3/11-M4): the screen now emits analytics events; the real
+// queue schedules flush timers and hits the network, so it is mocked.
+const mockTrackEvent = jest.fn();
+
+jest.mock('@/services/analytics/analytics-queue', () => ({
+  trackEvent: (...args: unknown[]) => mockTrackEvent(...args),
+}));
+
 function buildEpisode(episodeNumber: number): Video {
   return {
     id: `series-x-ep-${episodeNumber}`,
@@ -84,6 +92,32 @@ describe('SeriesDetailScreen', () => {
 
     expect(router.push).not.toHaveBeenCalled();
     expect(getByText('Episode ini termasuk konten premium.')).toBeTruthy();
+  });
+
+  it('emits an episode_navigate analytics event when a free episode is selected (Phase 11)', async () => {
+    const { getByText } = await render(<SeriesDetailScreen />);
+
+    await fireEvent.press(getByText('Episode 1'));
+
+    expect(mockTrackEvent).toHaveBeenCalledWith('episode_navigate', {
+      videoId: 'series-x-ep-1',
+      seriesId: 'series-x',
+      episodeNumber: 1,
+      source: 'series-detail',
+    });
+  });
+
+  it('emits a premium_gate_hit analytics event when a premium episode is blocked (Phase 11)', async () => {
+    const { getByText } = await render(<SeriesDetailScreen />);
+
+    await fireEvent.press(getByText('Episode 6'));
+
+    expect(mockTrackEvent).toHaveBeenCalledWith('premium_gate_hit', {
+      videoId: 'series-x-ep-6',
+      seriesId: 'series-x',
+      episodeNumber: 6,
+      source: 'series-detail',
+    });
   });
 
   it('plays a premium episode directly, without the modal, for an entitled user (Phase 10)', async () => {

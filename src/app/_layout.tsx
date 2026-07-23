@@ -15,6 +15,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { Palette } from '@/constants/theme';
 import { VideoCatalogProvider } from '@/features/videos/video-catalog-provider';
+import { installGlobalErrorReporting } from '@/services/analytics/error-reporting';
 import { AuthProvider, useAuth } from '@/stores/auth';
 import { EntitlementProvider } from '@/stores/entitlement';
 import { SeriesProgressProvider, useSeriesProgress } from '@/stores/series-progress';
@@ -79,6 +80,11 @@ export default function RootLayout() {
     // app.json allows any orientation so fullscreen video can go landscape;
     // lock portrait here so every other screen stays portrait by default.
     void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+
+    // Phase 11 (11-M1): capture fatal JS errors / unhandled rejections into
+    // the self-hosted analytics pipeline. Idempotent; chains RN's own
+    // handler, so dev redbox / release crash behavior is unchanged.
+    installGlobalErrorReporting();
   }, []);
 
   if (!fontsLoaded) {

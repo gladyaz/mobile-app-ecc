@@ -25,8 +25,11 @@ export async function upsertProgress(
       body: JSON.stringify({
         videoId,
         episodeNumber,
-        positionSeconds,
-        ...(durationSeconds != null ? { durationSeconds } : {}),
+        // Backend requires integer seconds (`@IsInt()` on both fields); the
+        // player reports fractional seconds, so round only the outbound wire
+        // value here — local/UI state elsewhere keeps full float precision.
+        positionSeconds: Math.round(positionSeconds),
+        ...(durationSeconds != null ? { durationSeconds: Math.round(durationSeconds) } : {}),
       }),
     },
     { requiresAuth: true }

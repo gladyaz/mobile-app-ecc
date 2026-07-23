@@ -71,6 +71,33 @@ describe('upsertProgress', () => {
     );
   });
 
+  it('rounds fractional positionSeconds/durationSeconds to integers in the request body', async () => {
+    const progress: UserSeriesProgress = {
+      seriesId: 'series_1',
+      videoId: 'video-104-01',
+      episodeNumber: 1,
+      positionSeconds: 39,
+      durationSeconds: 123,
+    };
+    mockedRequest.mockResolvedValueOnce(progress);
+
+    await upsertProgress('series_1', 'video-104-01', 1, 38.719252, 123.345011);
+
+    expect(mockedRequest).toHaveBeenCalledWith(
+      'series/series_1/progress',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          videoId: 'video-104-01',
+          episodeNumber: 1,
+          positionSeconds: 39,
+          durationSeconds: 123,
+        }),
+      }),
+      { requiresAuth: true }
+    );
+  });
+
   it('throws ApiError with VIDEO_NOT_FOUND for a nonexistent videoId', async () => {
     mockedRequest.mockRejectedValueOnce(new ApiError(404, 'VIDEO_NOT_FOUND', 'Video not found.'));
 

@@ -49,7 +49,8 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "test": "jest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:fresh-checkout": "bash ./scripts/check-fresh-checkout-typecheck.sh"
   },
   "private": true,
   "jest": {

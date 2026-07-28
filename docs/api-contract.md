@@ -1,6 +1,6 @@
 # Mobile API Contract
 
-This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. As of Phase 9, like/save (`/videos/:id/like`, `/videos/:id/save`, `GET /users/me/interactions`) and watch progress (`PUT /series/:id/progress`, `GET /users/me/progress`) are also wired up for real, through an explicit sync-queue architecture described below the relevant endpoints. Every other endpoint documented below is still not connected — view tracking, search, category browsing, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
+This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. As of Phase 9, like/save (`/videos/:id/like`, `/videos/:id/save`, `GET /users/me/interactions`) and watch progress (`PUT /series/:id/progress`, `GET /users/me/progress`) are also wired up for real, through an explicit sync-queue architecture described below the relevant endpoints. As of Phase 12 (work unit 12B-M1), the Account Security screen (`src/app/account-security.tsx`) wires up `/auth/change-password`, `/auth/logout-all`, `GET /auth/sessions`, and `DELETE /auth/sessions/:id` for real, via `src/services/auth/account-security-service.ts`; the unauthenticated password-reset endpoints (`/auth/password-reset/request`/`confirm`) remain deliberately NOT connected on mobile — see those endpoints' own notes below for why. Every other endpoint documented below is still not connected — view tracking, search, category browsing, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
 
 **Sync-queue architecture (like/save/progress, Phase 9):** `src/stores/video-interactions.tsx` and `src/stores/series-progress.tsx` both follow the same pattern. `toggleLike`/`toggleSave`/`recordProgress` update local state immediately (optimistic UI) and enqueue an explicit, `AsyncStorage`-persisted sync command, ordered per-entity (per `videoId` for interactions, per `seriesId` for progress) so an older command can never race ahead of a newer one for the same entity. A background drain loop (module-level, not a hook, so a scheduled retry survives across renders) pushes queued commands to the backend once the user is authenticated and the auth store has hydrated; a failed push retries with exponential backoff (capped) and sets a recoverable `hasSyncFailures` flag that callers can surface in the UI rather than losing the local change. First-login merge (reconciling whatever was recorded locally before the user authenticated against what the backend already has for that user) is a separate, one-time bootstrap step that calls the backend directly to converge state — it does not go through the sync queue and is never observed by the queue-drain logic.
 
@@ -273,6 +273,98 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - MVP priority: P0
 - Backend notes: Throws `ApiError` with code `INVALID_ACCESS_TOKEN` (status 401) on any failure (expired, revoked, or malformed token).
 - Connected: Implemented but unused, similar to `getVideoById` (see the `/videos/:id` Connected note below). `getCurrentUser(accessToken)` in `src/services/auth/auth-service.ts` calls `request('auth/me', ...)` and is unit-tested, but nothing in the app currently calls it — app bootstrap instead rehydrates the persisted user/tokens directly from `AsyncStorage` in `src/stores/auth.tsx`'s hydration effect, without a round trip to the backend.
+
+### POST /auth/change-password
+
+- Purpose: Change the current user's password from the Account Security screen.
+- Method and path: `POST /auth/change-password`
+- Auth required: Yes
+- Request body (from `changePassword()` in `src/services/auth/account-security-service.ts`):
+
+```json
+{
+  "currentPassword": "old-password",
+  "newPassword": "new-password-123",
+  "refreshToken": "jwt_refresh_token"
+}
+```
+
+`refreshToken` identifies which of the caller's sessions is "the current one" being rotated — the access-token payload alone carries no session identity.
+
+- Example response (`AuthResponse`, `src/types/auth.ts` — same shape as `/auth/login`/`/auth/refresh`):
+
+```json
+{
+  "accessToken": "new_jwt_access_token",
+  "refreshToken": "new_jwt_refresh_token",
+  "user": { "id": "user_001", "email": "gladyaz@example.com", "displayName": "Gladyaz" }
+}
+```
+
+- Mobile screen: Account Security (`src/app/account-security.tsx`)
+- MVP priority: P0 (Phase 12, work unit 12B-B1/12B-M1)
+- Backend notes: **CRITICAL side effect** — on success, the backend ROTATES the current session's access/refresh token pair and revokes every OTHER session for the account. Throws `ApiError` with code `INVALID_CREDENTIALS` (status 401) for a wrong `currentPassword` (the same generic code `login()` uses, not a distinct code), or `INVALID_REFRESH_TOKEN` (status 401) if `refreshToken` doesn't identify a usable session for this account. `newPassword` policy: 8–128 characters (`MIN_PASSWORD_LENGTH`/`MAX_PASSWORD_LENGTH`, same source of truth as `/auth/register`'s password policy); `currentPassword` has no length check (verified against the stored hash only).
+- Connected: Yes. `changePassword()` in `src/services/auth/account-security-service.ts` calls `request('auth/change-password', ...)` with `{ requiresAuth: true }`. `src/app/account-security.tsx`'s change-password form calls it directly (not through `stores/auth.tsx`), then persists the rotated token pair via `tokenStore.setTokensAndNotify(...)` — the same path `services/api/client.ts`'s refresh-on-401 interceptor uses — so `stores/auth.tsx`'s existing subscription re-persists the new tokens to `AsyncStorage` without any change to that store.
+
+### POST /auth/logout-all
+
+- Purpose: Log out of every session for the account, from the Account Security screen's "danger zone".
+- Method and path: `POST /auth/logout-all`
+- Auth required: Yes
+- Request body: None (no `refreshToken` — the whole point of this endpoint is that no session is excluded, unlike `/auth/change-password`/`/auth/refresh`/`/auth/logout`).
+- Example response: `{ "success": true }`, discarded by the mobile client (return type is `void`).
+- Mobile screen: Account Security (`src/app/account-security.tsx`)
+- MVP priority: P0 (Phase 12, work unit 12B-B2/12B-M1)
+- Backend notes: **FROZEN SEMANTIC** — revokes EVERY session for the account, INCLUDING the one that made this very request. Every outstanding refresh token stops working immediately; the access token this request was authenticated with remains cryptographically valid until it naturally expires (~15 min, stateless JWT) — this is a pre-existing property of the whole auth system, not unique to this endpoint.
+- Connected: Yes. `logoutAll()` in `src/services/auth/account-security-service.ts` calls `request('auth/logout-all', ...)` with `{ requiresAuth: true }`. Because this device's own session is revoked too, `src/app/account-security.tsx` always follows a successful call with a full local sign-out via `useAuth().logout()` (the same client-side clear `stores/auth.tsx`'s existing Profile-screen logout button uses) and then navigates to `/login`. The UI never presents this as "log out other devices" — the confirm step explicitly says every session including the current device.
+
+### GET /auth/sessions
+
+- Purpose: List the current user's own active sessions, for the Account Security screen's session-management list.
+- Method and path: `GET /auth/sessions`
+- Auth required: Yes
+- Request params/body: None.
+- Example response (`readonly SessionSummary[]`, `src/types/auth.ts` — raw array, no envelope):
+
+```json
+[
+  {
+    "id": "session_001",
+    "userAgent": "iPhone App/1.0",
+    "lastUsedAt": "2026-07-20T10:00:00.000Z",
+    "createdAt": "2026-07-01T09:00:00.000Z",
+    "expiresAt": "2026-08-01T09:00:00.000Z"
+  }
+]
+```
+
+`userAgent`/`lastUsedAt` are nullable (a session created before this work unit, or without request-context info, has neither). Never a token hash, IP hash, or `userId`.
+
+- Mobile screen: Account Security (`src/app/account-security.tsx`)
+- MVP priority: P0 (Phase 12, work unit 12B-B2/12B-M1)
+- Backend notes: Throws `ApiError` with code `INVALID_ACCESS_TOKEN` (status 401) if unauthenticated. Only ever returns the caller's own sessions.
+- Connected: Yes. `listSessions()` in `src/services/auth/account-security-service.ts` calls `request('auth/sessions', ...)` with `{ requiresAuth: true }`, fetched on mount by `src/app/account-security.tsx` with loading/error+retry states.
+
+### DELETE /auth/sessions/:id
+
+- Purpose: Revoke one of the current user's own sessions (e.g. "sign out this device") from the Account Security screen.
+- Method and path: `DELETE /auth/sessions/:id`
+- Auth required: Yes
+- Request path params: `{ "id": "session_001" }`
+- Example response: `204 No Content` (no body) on success.
+- Mobile screen: Account Security (`src/app/account-security.tsx`)
+- MVP priority: P0 (Phase 12, work unit 12B-B2/12B-M1)
+- Backend notes: Throws `ApiError` with code `SESSION_NOT_FOUND` (status 404) both for a nonexistent id and for another account's id — the identical response either way, so this can never be used to probe which session ids exist for other accounts.
+- Connected: Yes. `revokeSession(sessionId)` in `src/services/auth/account-security-service.ts` calls `request('auth/sessions/${sessionId}', { method: 'DELETE' }, { requiresAuth: true })`. `src/app/account-security.tsx` requires an explicit confirm step before calling this (a destructive action), and removes the session from the locally-rendered list on success. **Client note:** a `204 No Content` response has no body; `services/api/client.ts`'s `request()` now special-cases `response.status === 204` and resolves with `undefined` instead of attempting (and failing) to parse an empty body as JSON — see that file's `HTTP_NO_CONTENT` constant.
+
+### POST /auth/password-reset/request / POST /auth/password-reset/confirm
+
+- Purpose: Unauthenticated "forgot password" flow — request a reset token for an email, then consume it to set a new password.
+- Auth required: No (both routes).
+- Backend notes: `POST /auth/password-reset/request` always responds `202 { success: true, devToken? }` (anti-enumeration; never reveals whether the email resolved to an account). `devToken` (the raw, one-time reset token) is present ONLY when the backend runs with `DEV_TOOLS_ENABLED=true && NODE_ENV != production`. `POST /auth/password-reset/confirm` responds `200 { success: true }`, consumes a single-use token, sets the new password, and revokes ALL sessions for that account.
+- Mobile screen: None.
+- MVP priority: P2 (deferred)
+- Connected: **No, deliberately, as of Phase 12 work unit 12B-M1.** This flow is for a user who is logged out and cannot authenticate at all — it doesn't fit the authenticated Account Security screen this work unit built, and the runbook's hard requirement ("no dev-token control compiled into or reachable from a production build") is safer satisfied by not building a partial version of this surface than by half-building it. Nothing in the mobile app calls either route, reads `devToken`, or references it anywhere — there is no dev-only control to gate because there is no reset-password UI at all yet. A future work unit that adds this screen must keep `devToken` behind `__DEV__` and never render/log/persist it in a production build.
 
 ### GET /videos/feed
 

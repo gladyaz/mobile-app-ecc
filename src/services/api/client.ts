@@ -5,6 +5,8 @@ import {
 } from '@/services/auth/token-store';
 import type { AuthResponse } from '@/types/auth';
 
+const HTTP_NO_CONTENT = 204;
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -216,6 +218,14 @@ export async function request<TResponse>(
     }
 
     throw apiError;
+  }
+
+  // `204 No Content` (e.g. `DELETE /auth/sessions/:id`) has no body by HTTP
+  // definition - calling `.json()` on it throws even though the request
+  // succeeded, so it's handled before the JSON-parse attempt below rather
+  // than being (mis)treated as an `INVALID_RESPONSE` failure.
+  if (response.status === HTTP_NO_CONTENT) {
+    return undefined as TResponse;
   }
 
   try {

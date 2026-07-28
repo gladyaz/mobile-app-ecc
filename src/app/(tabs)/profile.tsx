@@ -73,6 +73,25 @@ export default function ProfileScreen() {
         <Pressable
           accessibilityRole="button"
           onPress={() => {
+            router.push('/account-security');
+          }}
+          style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
+          <SymbolView
+            name={{ ios: 'lock.shield', android: 'security', web: 'security' }}
+            size={20}
+            tintColor={Palette.textSecondary}
+          />
+          <Text style={styles.processingButtonText}>Keamanan Akun</Text>
+          <SymbolView
+            name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+            size={16}
+            tintColor={Palette.textDisabled}
+          />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
             router.push('../processing');
           }}
           style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>

@@ -57,6 +57,23 @@ describe('request', () => {
     __resetTokenStoreForTests();
   });
 
+  describe('204 No Content responses', () => {
+    it('resolves with undefined instead of attempting to parse a (nonexistent) JSON body', async () => {
+      const jsonSpy = jest.fn().mockRejectedValue(new Error('Unexpected end of JSON input'));
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 204,
+        statusText: 'No Content',
+        json: jsonSpy,
+      } as unknown as Response);
+
+      const result = await request<void>('protected/thing', undefined, { requiresAuth: true });
+
+      expect(result).toBeUndefined();
+      expect(jsonSpy).not.toHaveBeenCalled();
+    });
+  });
+
   describe('without requiresAuth', () => {
     it('does not attach an Authorization header even if tokens are set', async () => {
       setTokens(ORIGINAL_TOKENS);

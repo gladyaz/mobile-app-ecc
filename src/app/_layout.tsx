@@ -61,6 +61,7 @@ function AppContent() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />
         <Stack.Screen name="processing" options={{ headerShown: false }} />
+        <Stack.Screen name="account-security" options={{ headerShown: false }} />
         <Stack.Screen name="series/[id]" options={{ headerShown: false }} />
       </Stack>
     </>

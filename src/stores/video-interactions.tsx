@@ -291,6 +291,34 @@ async function pushInteractionConvergence(
   }
 }
 
+/**
+ * Account-deletion-only cleanup (Phase 12, work unit 12C-M1): removes EVERY
+ * key this store persists for a specific, now-permanently-gone identity -
+ * the main interaction data, the sync queue, and the one-time first-login
+ * merge flag. Deliberately MORE aggressive than what an ordinary
+ * `useAuth().logout()` transition to the guest identity does on its own:
+ * an ordinary logout leaves the just-signed-out identity's own data in
+ * AsyncStorage ON PURPOSE (see the identity-scoped hydration effect below -
+ * "isLeavingAuthenticatedIdentity" only clears the QUEUE, not the main data
+ * or the synced flag), so the SAME account can resume its local state if it
+ * logs back in later on this device. Account deletion is different: the
+ * account no longer exists, so there is no "later login as this account" to
+ * ever resume for - leaving this data behind would mean the device keeps a
+ * permanently-deleted user's cached like/save state indefinitely, with
+ * nothing left to reclaim it. Plain async function, not a hook - callable
+ * directly from a screen's event handler (e.g. after a successful
+ * `deleteMyAccount()` call) without needing this provider's own React
+ * context. Safe to call with any identityKey; callers should only ever pass
+ * a real (non-guest) user id here.
+ */
+export async function clearPersistedInteractionsForIdentity(identityKey: string): Promise<void> {
+  await Promise.all([
+    removeItem(withIdentitySuffix(STORAGE_KEYS.videoInteractions, identityKey)),
+    removeItem(withIdentitySuffix(VIDEO_INTERACTIONS_QUEUE_STORAGE_KEY, identityKey)),
+    removeItem(withIdentitySuffix(VIDEO_INTERACTIONS_SYNCED_STORAGE_KEY, identityKey)),
+  ]);
+}
+
 export function VideoInteractionsProvider({ children }: PropsWithChildren) {
   const [interactions, setInteractionsState] = useState<Record<string, VideoInteraction>>({});
   const [isHydrated, setIsHydrated] = useState(false);

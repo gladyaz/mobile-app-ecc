@@ -5,7 +5,11 @@ import { Text } from 'react-native';
 import { getProgress as fetchRemoteProgress, upsertProgress } from '@/services/progress/progress-service';
 import { getItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
-import { SeriesProgressProvider, useSeriesProgress } from '@/stores/series-progress';
+import {
+  clearPersistedProgressForIdentity,
+  SeriesProgressProvider,
+  useSeriesProgress,
+} from '@/stores/series-progress';
 
 /**
  * Regression tests for the Phase 9 QA cross-account local-storage bleed
@@ -375,5 +379,77 @@ describe('series-progress identity-scoped storage', () => {
     }>(`${STORAGE_KEYS.seriesProgress}:user-2`, 1);
     expect(user2Data?.progressBySeriesId['series-1']?.lastWatchedVideoId).toBe('video-9');
     expect(user2Data?.progressBySeriesId['series-1']?.positionSeconds).toBe(90);
+  });
+});
+
+/**
+ * Phase 12, work unit 12C-M1: account-deletion-only cleanup - mirrors
+ * `video-interactions-identity-scoping.test.tsx`'s equivalent block.
+ */
+describe('clearPersistedProgressForIdentity (account deletion)', () => {
+  it('removes the main progress data, the sync queue, and the synced flag for the given identity', async () => {
+    await setItem(`${STORAGE_KEYS.seriesProgress}:user-1`, 1, {
+      progressBySeriesId: {
+        'series-1': {
+          lastWatchedVideoId: 'video-2',
+          lastWatchedEpisodeNumber: 2,
+          positionSeconds: 30,
+          durationSeconds: 120,
+          updatedAt: '2026-07-01T00:00:00.000Z',
+        },
+      },
+    });
+    await setItem('@mobile-app-ecc/series-progress-sync-queue:user-1', 1, {
+      queue: [
+        {
+          seriesId: 'series-1',
+          videoId: 'video-2',
+          episodeNumber: 2,
+          positionSeconds: 30,
+          attempts: 0,
+          enqueuedAt: 1,
+        },
+      ],
+    });
+    await setItem('@mobile-app-ecc/series-progress-synced:user-1', 1, { hasSynced: true });
+
+    await clearPersistedProgressForIdentity('user-1');
+
+    expect(await getItem(`${STORAGE_KEYS.seriesProgress}:user-1`, 1)).toBeUndefined();
+    expect(
+      await getItem('@mobile-app-ecc/series-progress-sync-queue:user-1', 1)
+    ).toBeUndefined();
+    expect(await getItem('@mobile-app-ecc/series-progress-synced:user-1', 1)).toBeUndefined();
+  });
+
+  it('does not touch a DIFFERENT identity\'s progress', async () => {
+    await setItem(`${STORAGE_KEYS.seriesProgress}:user-1`, 1, {
+      progressBySeriesId: {
+        'series-1': {
+          lastWatchedVideoId: 'video-2',
+          lastWatchedEpisodeNumber: 2,
+          positionSeconds: 30,
+          updatedAt: '2026-07-01T00:00:00.000Z',
+        },
+      },
+    });
+    await setItem(`${STORAGE_KEYS.seriesProgress}:user-2`, 1, {
+      progressBySeriesId: {
+        'series-1': {
+          lastWatchedVideoId: 'video-9',
+          lastWatchedEpisodeNumber: 9,
+          positionSeconds: 90,
+          updatedAt: '2026-07-01T00:00:00.000Z',
+        },
+      },
+    });
+
+    await clearPersistedProgressForIdentity('user-1');
+
+    expect(await getItem(`${STORAGE_KEYS.seriesProgress}:user-1`, 1)).toBeUndefined();
+    const user2Data = await getItem<{
+      progressBySeriesId: Record<string, { lastWatchedVideoId: string }>;
+    }>(`${STORAGE_KEYS.seriesProgress}:user-2`, 1);
+    expect(user2Data?.progressBySeriesId['series-1']?.lastWatchedVideoId).toBe('video-9');
   });
 });

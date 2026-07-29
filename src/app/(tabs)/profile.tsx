@@ -92,6 +92,25 @@ export default function ProfileScreen() {
         <Pressable
           accessibilityRole="button"
           onPress={() => {
+            router.push('/account-data');
+          }}
+          style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
+          <SymbolView
+            name={{ ios: 'square.and.arrow.up', android: 'file_download', web: 'file_download' }}
+            size={20}
+            tintColor={Palette.textSecondary}
+          />
+          <Text style={styles.processingButtonText}>Data & Privasi</Text>
+          <SymbolView
+            name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+            size={16}
+            tintColor={Palette.textDisabled}
+          />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
             router.push('../processing');
           }}
           style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>

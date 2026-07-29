@@ -281,6 +281,25 @@ async function pushProgressConvergence(seriesId: string, progress: SeriesProgres
   }
 }
 
+/**
+ * Account-deletion-only cleanup (Phase 12, work unit 12C-M1) - mirrors
+ * `clearPersistedInteractionsForIdentity` in
+ * `src/stores/video-interactions.tsx`; see that function's doc comment for
+ * the full rationale. Removes EVERY key this store persists for a specific,
+ * now-permanently-gone identity: the main progress data, the sync queue, and
+ * the one-time first-login merge flag. Deliberately more aggressive than an
+ * ordinary logout, which leaves this data behind on purpose for a possible
+ * later login as the SAME account - account deletion has no such "later" to
+ * preserve it for.
+ */
+export async function clearPersistedProgressForIdentity(identityKey: string): Promise<void> {
+  await Promise.all([
+    removeItem(withIdentitySuffix(STORAGE_KEYS.seriesProgress, identityKey)),
+    removeItem(withIdentitySuffix(SERIES_PROGRESS_QUEUE_STORAGE_KEY, identityKey)),
+    removeItem(withIdentitySuffix(SERIES_PROGRESS_SYNCED_STORAGE_KEY, identityKey)),
+  ]);
+}
+
 export function SeriesProgressProvider({ children }: PropsWithChildren) {
   const [progressBySeriesId, setProgressState] = useState<Record<string, SeriesProgress>>({});
   const [isHydrated, setIsHydrated] = useState(false);

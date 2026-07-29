@@ -366,6 +366,61 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - MVP priority: P2 (deferred)
 - Connected: **No, deliberately, as of Phase 12 work unit 12B-M1.** This flow is for a user who is logged out and cannot authenticate at all — it doesn't fit the authenticated Account Security screen this work unit built, and the runbook's hard requirement ("no dev-token control compiled into or reachable from a production build") is safer satisfied by not building a partial version of this surface than by half-building it. Nothing in the mobile app calls either route, reads `devToken`, or references it anywhere — there is no dev-only control to gate because there is no reset-password UI at all yet. A future work unit that adds this screen must keep `devToken` behind `__DEV__` and never render/log/persist it in a production build.
 
+### POST /users/me/deletion
+
+- Purpose: Permanently delete the current user's account, from the "Data & Privasi" screen's danger zone.
+- Method and path: `POST /users/me/deletion`
+- Auth required: Yes
+- Request body (from `deleteMyAccount()` in `src/services/auth/account-deletion-service.ts`):
+
+```json
+{
+  "currentPassword": "current-password",
+  "confirmDeletion": true
+}
+```
+
+`confirmDeletion` must be the LITERAL boolean `true` — the backend rejects the string `"true"` and any other value with a `400`. `deleteMyAccount()` has no parameter for this field and always sends the literal `true`; there is no code path in this client that can send anything else.
+
+- Example response: `200 { "success": true }`.
+- Mobile screen: Data & Privasi (`src/app/account-data.tsx`)
+- MVP priority: P0 (Phase 12, work unit 12C-B1/12C-M1)
+- Backend notes: **IMMEDIATE and IRREVERSIBLE** — no grace period, no cancellation endpoint. On success, every session for the account (including this device's own current session) is revoked and the `User` row itself is deleted in the same transaction; related rows cascade-delete (sessions, like/save interactions, watch progress, entitlements, password-reset tokens, lockouts) while `AnalyticsEvent`/`AuthAuditEvent` rows survive anonymized (`userId` set to `null`). Throws `ApiError` with code `INVALID_CREDENTIALS` (status 401) for a wrong `currentPassword` on an account that still exists — the same generic code `login()`/`changePassword()` use. Throws code `INVALID_ACCESS_TOKEN` (status 401) — NOT `INVALID_CREDENTIALS` — if the user no longer exists, including a repeated call on an already-deleted account (no distinct "already deleted" oracle, by design): this reuses the same generic "vanished user" code `GET /users/me/export` throws for the identical condition (see that endpoint's notes below), rather than collapsing it into the wrong-password code. Verified against backend source: `src/auth/auth.service.ts`'s `deleteAccount` throws `AppErrorCode.INVALID_ACCESS_TOKEN` when `this.prisma.user.findUnique` returns null, pinned by `src/auth/account-deletion.service.spec.ts`'s "is idempotent: a second call for an already-deleted account gets the same clean INVALID_ACCESS_TOKEN 401 every other 'user vanished' path already uses" test. Throws code `ACCOUNT_DELETION_FORBIDDEN` (status 403) if the account's role is not a plain `user` (e.g. admin/operator) — self-service deletion is not available for those roles this phase. Throws status 429 (generic `HTTP_ERROR` code — the backend's throttler does not emit an endpoint-specific error code, so `error.status`, not `error.code`, is the only reliable signal for this case) once the dedicated 5-calls-per-15-minutes rate limit is exceeded.
+- Connected: Yes. `deleteMyAccount(currentPassword)` in `src/services/auth/account-deletion-service.ts` calls `request('users/me/deletion', ...)` with `{ requiresAuth: true }`. `src/app/account-data.tsx` requires an explicit, unmissable "this is permanent and cannot be undone" confirmation (via the shared `ConfirmDialog`) plus the current password before ever calling this. On success, the screen purges the just-deleted identity's own cached per-user data — `clearPersistedInteractionsForIdentity`/`clearPersistedProgressForIdentity` (new exports added to `src/stores/video-interactions.tsx`/`src/stores/series-progress.tsx` for this work unit) — BEFORE calling `useAuth().logout()` and redirecting to `/login`. This extra purge is deliberately more aggressive than what `logout()` alone does: an ordinary logout leaves a signed-out identity's own like/save/watch-progress data cached in `AsyncStorage` on purpose, so the same device can resume it if that same account logs back in later (see those two stores' identity-scoped hydration effects). Account deletion has no "later login as this account" to ever resume for, so this work unit added a dedicated, more aggressive purge path for exactly this case rather than changing `logout()`'s own (intentional, unrelated) behavior for every other caller.
+
+### GET /users/me/export
+
+- Purpose: Let the current user view a synchronous JSON export of their own data, from the "Data & Privasi" screen.
+- Method and path: `GET /users/me/export`
+- Auth required: Yes
+- Request params/body: None.
+- Example response (`UserExport`, `src/types/export.ts`):
+
+```json
+{
+  "exportedAt": "2026-07-29T10:00:00.000Z",
+  "profile": {
+    "email": "jane@example.com",
+    "displayName": "Jane",
+    "memberSince": "2026-01-01T00:00:00.000Z"
+  },
+  "interactions": [
+    { "videoId": "video_001", "videoTitle": "Episode 1", "isLiked": true, "isSaved": false, "updatedAt": "2026-07-01T00:00:00.000Z" }
+  ],
+  "watchProgress": [
+    { "seriesId": "series_001", "videoId": "video_001", "videoTitle": "Episode 1", "episodeNumber": 1, "positionSeconds": 42, "durationSeconds": 120, "updatedAt": "2026-07-02T00:00:00.000Z" }
+  ],
+  "entitlements": [
+    { "tier": "premium", "source": "dev_grant", "grantedAt": "2026-01-05T00:00:00.000Z", "expiresAt": null, "revokedAt": null }
+  ]
+}
+```
+
+- Mobile screen: Data & Privasi (`src/app/account-data.tsx`)
+- MVP priority: P0 (Phase 12, work unit 12C-B2/12C-M1)
+- Backend notes: Read-only, no side effect on the account. Deliberately excludes every internal database id, storage path/key, role, password hash, and session/security-metadata field — only catalog ids (`videoId`/`seriesId`, already client-visible via `/videos/feed`) are kept, paired with a resolved `videoTitle` so entries are meaningful. Throws status 429 (generic `HTTP_ERROR` code, same caveat as `/users/me/deletion` above — only `error.status` is reliable) once the dedicated 10-calls-per-5-minutes export rate limit is exceeded.
+- Connected: Yes. `exportMyData()` in `src/services/export/export-service.ts` calls `request('users/me/export', ...)` with `{ requiresAuth: true }`. `src/app/account-data.tsx` renders the returned JSON in-app (pretty-printed, in a `selectable` `<Text>` the user can long-press to manually copy) — it is deliberately **never** written to disk or handed to an OS share sheet. Personal data leaving this screen under the app's own control (a file on disk, a share-sheet target the user didn't explicitly choose) would mean the app itself relinquishes control over where a sensitive personal-data export ends up; rendering it in-app, with the OS's own built-in text-selection/copy affordance available if the user wants to move it elsewhere themselves, needs no new dependency (`expo-file-system`/`expo-sharing` are not in `package.json` — only transitively installed by `expo` itself — and were deliberately not added for this).
+
 ### GET /videos/feed
 
 - Purpose: Return the vertical short-drama feed.

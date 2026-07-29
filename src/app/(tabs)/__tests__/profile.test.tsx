@@ -43,4 +43,26 @@ describe('ProfileScreen', () => {
 
     expect(queryByText('Keamanan Akun')).toBeNull();
   });
+
+  it('navigates to the Data & Privasi screen when "Data & Privasi" is pressed', async () => {
+    mockUseAuth.mockReturnValue({
+      isAuthenticated: true,
+      logout: jest.fn(),
+      user: { id: 'user_1', name: 'Jane', username: 'jane', email: 'jane@example.com' },
+    });
+
+    const { getByText } = await render(<ProfileScreen />);
+
+    fireEvent.press(getByText('Data & Privasi'));
+
+    expect(router.push).toHaveBeenCalledWith('/account-data');
+  });
+
+  it('does not render the Data & Privasi entry for a guest', async () => {
+    mockUseAuth.mockReturnValue({ isAuthenticated: false, logout: jest.fn(), user: null });
+
+    const { queryByText } = await render(<ProfileScreen />);
+
+    expect(queryByText('Data & Privasi')).toBeNull();
+  });
 });

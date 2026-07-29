@@ -11,7 +11,11 @@ import {
 } from '@/services/interactions/interactions-service';
 import { getItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
-import { useVideoInteractions, VideoInteractionsProvider } from '@/stores/video-interactions';
+import {
+  clearPersistedInteractionsForIdentity,
+  useVideoInteractions,
+  VideoInteractionsProvider,
+} from '@/stores/video-interactions';
 
 /**
  * Regression tests for the Phase 9 QA cross-account local-storage bleed
@@ -343,5 +347,52 @@ describe('video-interactions identity-scoped storage', () => {
       interactions: Record<string, { isLiked: boolean; isSaved: boolean }>;
     }>(`${STORAGE_KEYS.videoInteractions}:user-2`, 1);
     expect(user2Data?.interactions['video-1']).toEqual({ isLiked: true, isSaved: false });
+  });
+});
+
+/**
+ * Phase 12, work unit 12C-M1: account-deletion-only cleanup. Distinct from
+ * the identity-scoping tests above (which prove one identity never SEES
+ * another's data) - these prove that a specific, now-deleted identity's
+ * OWN cached data is fully purged from AsyncStorage, and that doing so does
+ * not disturb any other identity's data.
+ */
+describe('clearPersistedInteractionsForIdentity (account deletion)', () => {
+  it('removes the main interaction data, the sync queue, and the synced flag for the given identity', async () => {
+    await setItem(`${STORAGE_KEYS.videoInteractions}:user-1`, 1, {
+      interactions: { 'video-1': { isLiked: true, isSaved: true } },
+    });
+    await setItem('@mobile-app-ecc/video-interactions-sync-queue:user-1', 1, {
+      queue: [{ kind: 'like', videoId: 'video-1', targetIsLiked: true, attempts: 0, enqueuedAt: 1 }],
+    });
+    await setItem('@mobile-app-ecc/video-interactions-synced:user-1', 1, { hasSynced: true });
+
+    await clearPersistedInteractionsForIdentity('user-1');
+
+    expect(
+      await getItem(`${STORAGE_KEYS.videoInteractions}:user-1`, 1)
+    ).toBeUndefined();
+    expect(
+      await getItem('@mobile-app-ecc/video-interactions-sync-queue:user-1', 1)
+    ).toBeUndefined();
+    expect(
+      await getItem('@mobile-app-ecc/video-interactions-synced:user-1', 1)
+    ).toBeUndefined();
+  });
+
+  it('does not touch a DIFFERENT identity\'s data', async () => {
+    await setItem(`${STORAGE_KEYS.videoInteractions}:user-1`, 1, {
+      interactions: { 'video-1': { isLiked: true, isSaved: false } },
+    });
+    await setItem(`${STORAGE_KEYS.videoInteractions}:user-2`, 1, {
+      interactions: { 'video-1': { isLiked: false, isSaved: true } },
+    });
+
+    await clearPersistedInteractionsForIdentity('user-1');
+
+    expect(await getItem(`${STORAGE_KEYS.videoInteractions}:user-1`, 1)).toBeUndefined();
+    expect(await getItem(`${STORAGE_KEYS.videoInteractions}:user-2`, 1)).toEqual({
+      interactions: { 'video-1': { isLiked: false, isSaved: true } },
+    });
   });
 });

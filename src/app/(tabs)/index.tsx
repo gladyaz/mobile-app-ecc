@@ -21,6 +21,7 @@ import { DramaFeedItem } from '@/components/drama-feed-item';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { trackEvent } from '@/services/analytics/analytics-queue';
+import { onVideoTransition } from '@/services/ads/ad-controller';
 import { getNextEpisode, getSeriesById } from '@/services/videos/series-service';
 import { useSeriesProgress } from '@/stores/series-progress';
 import { useToast } from '@/stores/toast';
@@ -117,6 +118,16 @@ export default function HomeScreen() {
     recordProgressRef.current = recordProgress;
   }, [recordProgress]);
 
+  // Slice 15A-S1: tracks the last video id this callback already evaluated
+  // for ad pacing, so a repeated fire for the SAME item (initial layout,
+  // the onLayout height change, re-entry into the 80% viewport - none of
+  // which are a real transition) doesn't over-count. `undefined` means
+  // "nothing evaluated yet in this mount," which also deliberately skips
+  // the very first activation (app opened on video 1 is not a
+  // "transition"). Resets on every HomeScreen remount, matching the
+  // existing handledRequestedVideoIdRef idiom above.
+  const lastAdCheckedVideoIdRef = useRef<string | undefined>(undefined);
+
   const handleViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken<Video>[] }) => {
       const activeItem = viewableItems.find((viewableItem) => viewableItem.isViewable);
@@ -126,6 +137,18 @@ export default function HomeScreen() {
       }
 
       setActiveVideoId(activeItem.item.id);
+
+      // Slice 15A-S1: onVideoTransition() is the counter-based interstitial
+      // ad gate's entry point - it must fire exactly once per genuine
+      // change of active video, never on a repeat fire for the same item,
+      // and never for the very first activation. Module-level import, same
+      // as trackEvent below — adds no dependency to this deliberately-
+      // stable callback.
+      if (lastAdCheckedVideoIdRef.current !== undefined
+        && lastAdCheckedVideoIdRef.current !== activeItem.item.id) {
+        onVideoTransition();
+      }
+      lastAdCheckedVideoIdRef.current = activeItem.item.id;
 
       // Phase 11 (11-M3): the definition of video_play is "this video
       // became the active feed item." Module-level import — adds no

@@ -1,6 +1,6 @@
 # Mobile API Contract
 
-This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. As of Phase 9, like/save (`/videos/:id/like`, `/videos/:id/save`, `GET /users/me/interactions`) and watch progress (`PUT /series/:id/progress`, `GET /users/me/progress`) are also wired up for real, through an explicit sync-queue architecture described below the relevant endpoints. As of Phase 12 (work unit 12B-M1), the Account Security screen (`src/app/account-security.tsx`) wires up `/auth/change-password`, `/auth/logout-all`, `GET /auth/sessions`, and `DELETE /auth/sessions/:id` for real, via `src/services/auth/account-security-service.ts`; the unauthenticated password-reset endpoints (`/auth/password-reset/request`/`confirm`) remain deliberately NOT connected on mobile — see those endpoints' own notes below for why. Every other endpoint documented below is still not connected — view tracking, search, category browsing, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
+This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. As of Phase 9, like/save (`/videos/:id/like`, `/videos/:id/save`, `GET /users/me/interactions`) and watch progress (`PUT /series/:id/progress`, `GET /users/me/progress`) are also wired up for real, through an explicit sync-queue architecture described below the relevant endpoints. As of Phase 12 (work unit 12B-M1), the Account Security screen (`src/app/account-security.tsx`) wires up `/auth/change-password`, `/auth/logout-all`, `GET /auth/sessions`, and `DELETE /auth/sessions/:id` for real, via `src/services/auth/account-security-service.ts`; the unauthenticated password-reset endpoints (`/auth/password-reset/request`/`confirm`) remain deliberately NOT connected on mobile — see those endpoints' own notes below for why. As of Phase 15 (slice 15A-S1), `GET /config/ads` is also wired up for real, via `src/services/ads/ads-config-service.ts`, backing the counter-based interstitial ad gate. Every other endpoint documented below is still not connected — view tracking, search, category browsing, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
 
 **Sync-queue architecture (like/save/progress, Phase 9):** `src/stores/video-interactions.tsx` and `src/stores/series-progress.tsx` both follow the same pattern. `toggleLike`/`toggleSave`/`recordProgress` update local state immediately (optimistic UI) and enqueue an explicit, `AsyncStorage`-persisted sync command, ordered per-entity (per `videoId` for interactions, per `seriesId` for progress) so an older command can never race ahead of a newer one for the same entity. A background drain loop (module-level, not a hook, so a scheduled retry survives across renders) pushes queued commands to the backend once the user is authenticated and the auth store has hydrated; a failed push retries with exponential backoff (capped) and sets a recoverable `hasSyncFailures` flag that callers can surface in the UI rather than losing the local change. First-login merge (reconciling whatever was recorded locally before the user authenticated against what the backend already has for that user) is a separate, one-time bootstrap step that calls the backend directly to converge state — it does not go through the sync queue and is never observed by the queue-drain logic.
 
@@ -1003,6 +1003,43 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
   and `src/app/series/[id].tsx`; fatal JS errors/unhandled rejections are
   reported as `app_error` via `src/services/analytics/error-reporting.ts`,
   installed once in `src/app/_layout.tsx`.
+
+### GET /config/ads
+
+- Purpose: Return the counter-based interstitial ad pacing config (Phase 15,
+  slice 15A-S1). Drives when the mobile app is allowed to show an
+  interstitial between feed videos.
+- Method and path: `GET /config/ads`
+- Auth required: No (top-level JSON, no envelope, no auth guard — frozen by
+  the 15A-S1 approval).
+- Request params/body: None.
+- Example response (`AdsConfig`, `src/services/ads/ad-gate.ts` — raw DTO, no envelope):
+
+```json
+{
+  "enabled": true,
+  "minVideosBetweenAds": 3,
+  "maxVideosBetweenAds": 6,
+  "minSecondsBetweenAds": 120,
+  "graceVideos": 5
+}
+```
+
+- Mobile screen: Home (drives `src/hooks/use-interstitial-ad.ts` via the ads
+  store), fetched once on app start.
+- MVP priority: P1 (Phase 15)
+- Backend notes: Defaults shown above (`enabled=true, min=3, max=6,
+  seconds=120, grace=5`). Backend-side env parsing/fallback behavior is out
+  of scope for this mobile-only contract entry.
+- Connected: Yes. `fetchAdsConfig()` in
+  `src/services/ads/ads-config-service.ts` calls
+  `request<unknown>('config/ads')` (no `requiresAuth`), validates all five
+  fields are present with the correct type, and falls back to
+  `DEFAULT_ADS_CONFIG` (matching the response shape above) on ANY failure —
+  network error, non-2xx, or a malformed/incomplete payload — logging via
+  `console.warn` gated by `__DEV__`. Fetched once on mount by `AdsBridge`
+  (`src/components/ads-bridge.tsx`, mounted in `src/app/_layout.tsx`) and
+  stored in `src/stores/ads-store.ts`.
 
 ## Open Questions
 

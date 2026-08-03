@@ -12,6 +12,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { AdsBridge } from '@/components/ads-bridge';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { Palette } from '@/constants/theme';
 import { VideoCatalogProvider } from '@/features/videos/video-catalog-provider';
@@ -57,6 +58,11 @@ function AppContent() {
   return (
     <>
       <AnimatedSplashOverlay />
+      {/* Mounted here (not higher, alongside EntitlementProvider) so the
+          interstitial hook only starts loading ads once isPremium has
+          settled post-hydration, not during the transient false it reports
+          while auth/entitlement are still resolving. */}
+      <AdsBridge />
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />

@@ -11,7 +11,9 @@ import { BrandMark } from '@/components/brand-mark';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { trackEvent } from '@/services/analytics/analytics-queue';
+import { recordVideoWatched } from '@/services/ads/ad-controller';
 import { getTokens } from '@/services/auth/token-store';
+import { useAdsStore } from '@/stores/ads-store';
 import { useEntitlement } from '@/stores/entitlement';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
@@ -39,6 +41,12 @@ const CAPTION_EXPANDED_MAX_LINES = 6;
 // How often to persist playback progress while a video is actively
 // playing - a throttle, not a per-frame write.
 const PROGRESS_WRITE_INTERVAL_MS = 5000;
+
+// Slice 15A-S1: how often to add to the accumulated-active-playing-time
+// counter that decides when a watch "counts" for ad pacing purposes, and
+// the cumulative threshold (seconds) at which it counts.
+const AD_WATCH_ACCUMULATION_TICK_MS = 1000;
+const AD_WATCHED_THRESHOLD_SECONDS = 5;
 
 // screen-orientation lock is only meaningful where the OS actually exposes
 // it (iOS/Android) - on web, lockAsync always rejects with a
@@ -115,6 +123,12 @@ export function DramaFeedItem({
   const isWideLayout = windowWidth >= WIDE_LAYOUT_BREAKPOINT;
   const metadataBottomOffset = tabBarHeight + BOTTOM_GAP;
   const { isPremium } = useEntitlement();
+  // Slice 15A-S1: whether an interstitial ad is currently on screen.
+  // Folded into the existing autoplay effect below (rather than a second,
+  // separate imperative pause/resume effect) so it composes correctly with
+  // `isManuallyPaused` — an ad closing must never force-resume a video the
+  // user had already paused themselves.
+  const adVisible = useAdsStore((state) => state.adVisible);
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const [isInFullscreen, setIsInFullscreen] = useState(false);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
@@ -302,7 +316,11 @@ export function DramaFeedItem({
     // Skip redundant play()/pause() calls when already in the desired
     // state - repeated calls during fast swiping are a likely source of
     // the player's "play() request was interrupted" console errors.
-    if (isActive && isScreenFocused && !isManuallyPaused) {
+    // Slice 15A-S1: `!adVisible` gates this the same way - a video paused
+    // for an ad resumes automatically when the ad closes (adVisible flips
+    // false and this effect re-runs), without needing a second effect that
+    // could otherwise race this one.
+    if (isActive && isScreenFocused && !isManuallyPaused && !adVisible) {
       if (!player.playing) {
         player.play();
       }
@@ -312,7 +330,48 @@ export function DramaFeedItem({
     if (player.playing) {
       player.pause();
     }
-  }, [hasPlaybackUrl, isActive, isScreenFocused, isManuallyPaused, isInFullscreen, player]);
+  }, [hasPlaybackUrl, isActive, isScreenFocused, isManuallyPaused, isInFullscreen, adVisible, player]);
+
+  // Slice 15A-S1: resets the accumulated-watch-time counter whenever this
+  // item stops being active, so the NEXT activation starts from zero and
+  // `recordVideoWatched` can fire at most once per activation.
+  const watchedSecondsRef = useRef(0);
+  const hasRecordedAdWatchRef = useRef(false);
+
+  useEffect(() => {
+    if (isActive) {
+      return;
+    }
+
+    watchedSecondsRef.current = 0;
+    hasRecordedAdWatchRef.current = false;
+  }, [isActive]);
+
+  // Accumulates ACTIVE PLAYING time (not merely "active" - a manual pause
+  // or a buffering stall stops the clock, but doesn't reset it) toward the
+  // ad-pacing "this video counted as watched" threshold. Deliberately does
+  // NOT use `playbackPositionSeconds`/`player.currentTime` as a proxy:
+  // `player.loop = true` above wraps it, and the resume-seek effect makes
+  // it non-monotonic on mount.
+  useEffect(() => {
+    if (!isActive || !isScreenFocused || !isPlaying) {
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      watchedSecondsRef.current += AD_WATCH_ACCUMULATION_TICK_MS / 1000;
+
+      if (
+        !hasRecordedAdWatchRef.current &&
+        watchedSecondsRef.current >= AD_WATCHED_THRESHOLD_SECONDS
+      ) {
+        hasRecordedAdWatchRef.current = true;
+        recordVideoWatched(video.id);
+      }
+    }, AD_WATCH_ACCUMULATION_TICK_MS);
+
+    return () => clearInterval(intervalId);
+  }, [isActive, isScreenFocused, isPlaying, video.id]);
 
   useEffect(() => {
     if (status === 'error' && isInFullscreen) {

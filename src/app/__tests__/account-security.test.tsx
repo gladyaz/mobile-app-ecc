@@ -133,7 +133,13 @@ describe('AccountSecurityScreen - change password', () => {
       expect(getByText('Password baru harus 8-128 karakter')).toBeTruthy()
     );
     expect(mockedChangePassword).not.toHaveBeenCalled();
-  });
+    // First heavy render in this file, so it pays the whole RN/Expo module-graph
+    // transform cost. With a COLD Jest cache that alone measured ~2.5 s on an M1
+    // (41 ms warm), and a slower CI runner lands at ~5-7.5 s — over Jest's 5000 ms
+    // default, which is exactly how this failed on GitHub Actions at `813af73`.
+    // The timeout buys the wall-clock that cold-start genuinely needs; every
+    // assertion, the waitFor conditions, and all UI copy are unchanged.
+  }, 15000);
 
   it('shows a mismatch error and does not call the API when confirmation does not match', async () => {
     const { getByText, getByTestId } = await render(<AccountSecurityScreen />);

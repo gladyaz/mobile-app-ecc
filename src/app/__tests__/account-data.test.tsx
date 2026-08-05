@@ -108,7 +108,13 @@ describe('AccountDataScreen - export my data', () => {
       deferred.resolve(buildExport());
       await deferred.promise;
     });
-  });
+    // First heavy render in this file, so it pays the whole RN/Expo module-graph
+    // transform cost. With a COLD Jest cache that measured ~761 ms on an M1
+    // (233 ms warm); a slower CI runner plus this test's extra in-flight
+    // deferred-promise cycle pushes it past Jest's 5000 ms default, which is
+    // exactly how it failed on GitHub Actions at `813af73`. The timeout buys the
+    // wall-clock cold-start needs; the double-submit assertion is unchanged.
+  }, 15000);
 
   it('renders the exported payload on success', async () => {
     mockedExportMyData.mockResolvedValueOnce(buildExport());

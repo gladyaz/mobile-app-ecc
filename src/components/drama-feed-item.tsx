@@ -1,6 +1,5 @@
 import { useEvent } from 'expo';
 import { router } from 'expo-router';
-import { useBottomTabBarHeight } from 'expo-router/js-tabs';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { SymbolView } from 'expo-symbols';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -10,6 +9,10 @@ import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from
 import { BrandMark } from '@/components/brand-mark';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { FeedProgressBar } from '@/components/feed-progress-bar';
+import { useFeedBottomAnchor } from '@/hooks/use-feed-bottom-anchor';
+import { isDemoMode } from '@/services/demo/demo-mode';
+import { useTranslation } from '@/stores/language';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { recordVideoWatched } from '@/services/ads/ad-controller';
 import { getTokens } from '@/services/auth/token-store';
@@ -22,17 +25,47 @@ import type { Video } from '@/types/video';
 // bottom playback-progress bar - a throttle, not per-frame.
 const TIME_UPDATE_INTERVAL_SECONDS = 0.25;
 
-// useBottomTabBarHeight() (re-exported from expo-router's own vendored
-// react-navigation/bottom-tabs) returns the tab bar's actual rendered
-// height, safe-area inset already included, correct on both web and
-// native - replaces the previous Platform.OS branch that guessed a fixed
-// 56px on web and assumed native excludes the tab bar entirely from the
-// content area (neither guess held up across real devices).
-const BOTTOM_GAP = 12;
+
+// How far two fingers have to spread (or close) before clear display toggles.
+// Loose enough to feel effortless, tight enough that a two-finger scroll or a
+// clumsy grab does not trigger it.
+const PINCH_ACTIVATION_RATIO = 1.25;
+
+// Height of the clear-display control strip. The progress bar is lifted by
+// exactly this much while clear display is on, so it sits directly above the
+// strip rather than behind it.
+const CLEAR_CONTROLS_HEIGHT = 64;
+
+const FAST_PLAYBACK_SPEED = 2;
+
+// The quick-actions bar hides itself again rather than waiting to be
+// dismissed, so a long press that was not meant to open anything costs the
+// viewer nothing.
+const QUICK_ACTIONS_TIMEOUT_MS = 4000;
+
+/**
+ * Distance between the first two active touches. Returns 0 for anything that
+ * is not a two-finger gesture, which callers read as "not a pinch".
+ */
+export function touchDistance(
+  touches: readonly { readonly pageX: number; readonly pageY: number }[]
+): number {
+  if (touches.length < 2) {
+    return 0;
+  }
+
+  const [first, second] = touches;
+
+  return Math.hypot(first.pageX - second.pageX, first.pageY - second.pageY);
+}
+
 
 // Above this length, the 1-line-clamped caption is likely to actually
 // truncate, so it's worth offering a "Lebih banyak" expand affordance.
-const CAPTION_EXPAND_THRESHOLD = 60;
+// Roughly the number of characters that fit on one line at the caption's size
+// and column width. Above it the single-line caption really does ellipsize, so
+// "more" is honest rather than decorative.
+const CAPTION_EXPAND_THRESHOLD = 40;
 
 // Caps how tall an expanded caption can grow, so an unusually long caption
 // can't cover most of the video or collide with the action rail.
@@ -90,6 +123,13 @@ type DramaFeedItemProps = {
   readonly onToggleSave: () => void;
   readonly onToggleMute: () => void;
   readonly onRecordProgress?: (positionSeconds: number, durationSeconds?: number) => void;
+  /**
+   * Clear display: everything except the video and the progress bar steps
+   * aside. Owned by the feed rather than the item so it survives swiping to
+   * the next episode.
+   */
+  readonly isClearDisplay?: boolean;
+  readonly onToggleClearDisplay?: (nextIsClearDisplay: boolean) => void;
 };
 
 export function formatLikeCount(likeCount: number) {
@@ -117,11 +157,22 @@ export function DramaFeedItem({
   onToggleSave,
   onToggleMute,
   onRecordProgress,
+  isClearDisplay = false,
+  onToggleClearDisplay,
 }: DramaFeedItemProps) {
-  const tabBarHeight = useBottomTabBarHeight();
+  // Spread of the two fingers when the pinch began. Zeroed once a pinch has
+  // fired so one gesture toggles clear display exactly once, however far the
+  // fingers keep travelling.
+  const pinchStartDistanceRef = useRef(0);
+  // Deliberately per-item: a speed bump is something you reach for on one
+  // clip, not a setting you expect to follow you through the whole feed.
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [isQuickActionsVisible, setIsQuickActionsVisible] = useState(false);
+  const { t } = useTranslation();
   const { width: windowWidth } = useWindowDimensions();
   const isWideLayout = windowWidth >= WIDE_LAYOUT_BREAKPOINT;
-  const metadataBottomOffset = tabBarHeight + BOTTOM_GAP;
+  // Single source of truth for everything pinned to the bottom of the item.
+  const { overlayBottom, progressBottom } = useFeedBottomAnchor();
   const { isPremium } = useEntitlement();
   // Slice 15A-S1: whether an interstitial ad is currently on screen.
   // Folded into the existing autoplay effect below (rather than a second,
@@ -151,12 +202,23 @@ export function DramaFeedItem({
   // guest correctly falls straight into the existing error-state UI
   // instead of a silently-stuck idle player with no source and no message.
   const accessToken = getTokens()?.accessToken;
-  const hasPlaybackUrl = video.playbackUrl.length > 0 && Boolean(accessToken);
+  // A demo build plays clips bundled into the binary, so there is no
+  // token-protected endpoint in front of them and nothing to authorise -
+  // demanding a token there would hide the whole product behind a login for
+  // no reason. Every other build keeps the Phase 10 contract intact:
+  // `GET /videos/:id/stream` rejects an unauthenticated request, so without a
+  // token there genuinely is nothing playable and the error state is correct.
+  const requiresAccessToken = !isDemoMode();
+  const hasPlaybackUrl =
+    video.playbackUrl.length > 0 && (!requiresAccessToken || Boolean(accessToken));
   const videoViewRef = useRef<VideoView>(null);
   const isInFullscreenRef = useRef(false);
   const hasSeekedToResumeRef = useRef(false);
+  const playbackHeaders = requiresAccessToken
+    ? { Authorization: `Bearer ${accessToken}` }
+    : undefined;
   const playbackSource = hasPlaybackUrl
-    ? { uri: video.playbackUrl, headers: { Authorization: `Bearer ${accessToken}` } }
+    ? { uri: video.playbackUrl, headers: playbackHeaders }
     : null;
   const player = useVideoPlayer(playbackSource, (nextPlayer) => {
     nextPlayer.loop = true;
@@ -171,6 +233,23 @@ export function DramaFeedItem({
     // eslint-disable-next-line react-hooks/immutability
     player.muted = isMuted;
   }, [isMuted, player]);
+
+  // Same shape as the mute mirror above: the setup callback runs once, so the
+  // rate has to be pushed to the player whenever the choice changes.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/immutability
+    player.playbackRate = playbackSpeed;
+  }, [playbackSpeed, player]);
+
+  useEffect(() => {
+    if (!isQuickActionsVisible) {
+      return;
+    }
+
+    const timer = setTimeout(() => setIsQuickActionsVisible(false), QUICK_ACTIONS_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [isQuickActionsVisible]);
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
   const { status, error } = useEvent(player, 'statusChange', {
     status: player.status,
@@ -185,6 +264,7 @@ export function DramaFeedItem({
   });
   const playbackProgressRatio =
     player.duration > 0 ? Math.min(1, Math.max(0, playbackPositionSeconds / player.duration)) : 0;
+
   const hasPlaybackError = !hasPlaybackUrl || status === 'error';
   const hasLoggedErrorRef = useRef(false);
 
@@ -433,8 +513,10 @@ export function DramaFeedItem({
       episodeNumber: nextEpisode.episodeNumber,
       source: 'feed-next-episode',
     });
-    router.push({ pathname: '/', params: { videoId: nextEpisode.videoId } });
-  }, [nextEpisode, isPremium]);
+    // Opens the series page rather than jumping straight into the next clip,
+    // so the viewer lands on the episode list and can pick where to go.
+    router.push({ pathname: '/series/[id]', params: { id: video.seriesId } });
+  }, [nextEpisode, isPremium, video.seriesId]);
 
   const handleGoToFreeEpisode = useCallback(() => {
     setIsPremiumModalVisible(false);
@@ -456,12 +538,68 @@ export function DramaFeedItem({
   }, [flushProgress]);
 
   return (
-    <View style={[styles.container, { height }]}>
+    <View
+      style={[styles.container, { height }]}
+      // Capture phase, and only for a genuine two-finger gesture. Single-touch
+      // interactions - tap to pause, swipe to the next episode, dragging the
+      // scrubber - never reach here, so none of them change behaviour.
+      onStartShouldSetResponderCapture={(event) => {
+        const { touches } = event.nativeEvent;
+
+        if (touches.length !== 2) {
+          return false;
+        }
+
+        pinchStartDistanceRef.current = touchDistance(touches);
+
+        return true;
+      }}
+      // Second chance to claim the gesture. If the touch-start negotiation was
+      // missed - a child already held the responder, or the two fingers landed
+      // in the same frame - the first two-finger move still takes over and
+      // seeds the baseline here.
+      onMoveShouldSetResponderCapture={(event) => {
+        const { touches } = event.nativeEvent;
+
+        if (touches.length !== 2) {
+          return false;
+        }
+
+        if (pinchStartDistanceRef.current <= 0) {
+          pinchStartDistanceRef.current = touchDistance(touches);
+        }
+
+        return true;
+      }}
+      onResponderMove={(event) => {
+        const { touches } = event.nativeEvent;
+        const startDistance = pinchStartDistanceRef.current;
+
+        if (touches.length !== 2 || startDistance <= 0) {
+          return;
+        }
+
+        const ratio = touchDistance(touches) / startDistance;
+
+        if (!isClearDisplay && ratio >= PINCH_ACTIVATION_RATIO) {
+          pinchStartDistanceRef.current = 0;
+          onToggleClearDisplay?.(true);
+        } else if (isClearDisplay && ratio <= 1 / PINCH_ACTIVATION_RATIO) {
+          pinchStartDistanceRef.current = 0;
+          onToggleClearDisplay?.(false);
+        }
+      }}
+      onResponderRelease={() => {
+        pinchStartDistanceRef.current = 0;
+      }}
+      onResponderTerminate={() => {
+        pinchStartDistanceRef.current = 0;
+      }}>
       <View style={styles.videoLayer}>
         {hasPlaybackError ? (
           <View style={styles.errorState}>
-            <Text style={styles.errorTitle}>Video unavailable</Text>
-            <Text style={styles.errorHint}>Check the local media server connection.</Text>
+            <Text style={styles.errorTitle}>{t('feed.videoUnavailable')}</Text>
+            <Text style={styles.errorHint}>{t('feed.videoUnavailableHint')}</Text>
           </View>
         ) : (
           <VideoView
@@ -482,10 +620,16 @@ export function DramaFeedItem({
         )}
       </View>
 
-      {hasPlaybackError ? null : (
+      {hasPlaybackError || isClearDisplay ? null : (
         <Pressable
+          testID="feed-item-play-pause"
           accessibilityRole="button"
           onPress={handlePlayPause}
+          // Holding the middle of the screen is the way in to clear display.
+          // It sits on the button that is already centred there, so there is
+          // no second invisible target competing for the same touch.
+          onLongPress={() => setIsQuickActionsVisible(true)}
+          delayLongPress={400}
           style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
           {isIndicatorVisible ? (
             <View style={styles.playPauseCircle}>
@@ -499,31 +643,28 @@ export function DramaFeedItem({
         </Pressable>
       )}
 
-      {hasPlaybackError || !isHorizontal ? null : (
+      {hasPlaybackError || !isHorizontal || isClearDisplay ? null : (
         <Pressable
           accessibilityRole="button"
           onPress={handleEnterFullscreen}
           style={({ pressed }) => [styles.fullscreenButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.fullscreenText}>Fullscreen</Text>
+          <Text style={styles.fullscreenText}>{t('feed.fullscreen')}</Text>
         </Pressable>
       )}
 
-      {nextEpisode ? (
+      {nextEpisode && !isClearDisplay ? (
         <Pressable
           accessibilityRole="button"
           onPress={handleNextEpisode}
           style={({ pressed }) => [styles.nextEpisodeButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.nextEpisodeText}>Episode Berikutnya</Text>
+          <Text style={styles.nextEpisodeText}>{t('feed.nextEpisode')}</Text>
         </Pressable>
       ) : null}
 
-      {hasPlaybackError ? null : (
-        <View style={[styles.progressTrack, { bottom: metadataBottomOffset - BOTTOM_GAP }]}>
-          <View style={[styles.progressFill, { width: `${playbackProgressRatio * 100}%` }]} />
-        </View>
-      )}
-
-      <View style={[styles.content, { bottom: metadataBottomOffset }]}>
+      <View
+        testID="feed-item-bottom-overlay"
+        pointerEvents={isClearDisplay ? 'none' : 'auto'}
+        style={[styles.content, { bottom: overlayBottom }, isClearDisplay && styles.contentHidden]}>
         <Pressable
           accessibilityRole="button"
           onPress={() =>
@@ -547,21 +688,46 @@ export function DramaFeedItem({
             </Text>
             <Text style={[styles.categoryChip, styles.textShadow]}>{video.category}</Text>
           </View>
-          <Text
-            numberOfLines={isCaptionExpanded ? CAPTION_EXPANDED_MAX_LINES : 1}
-            style={[styles.caption, styles.textShadow]}>
-            {video.caption}
-            {video.caption.length > CAPTION_EXPAND_THRESHOLD ? (
+          {/* The toggle cannot be nested inside the caption while collapsed:
+              `numberOfLines={1}` clips everything past the first line, and a
+              trailing child is exactly what gets clipped - which is why the
+              affordance never actually appeared. Sitting beside the caption in
+              a row, it survives the ellipsis. */}
+          {isCaptionExpanded ? (
+            <>
+              <Text
+                numberOfLines={CAPTION_EXPANDED_MAX_LINES}
+                style={[styles.caption, styles.textShadow]}>
+                {video.caption}
+              </Text>
               <Text
                 onPress={(event) => {
                   event.stopPropagation();
-                  setIsCaptionExpanded((current) => !current);
+                  setIsCaptionExpanded(false);
                 }}
-                style={[styles.captionExpandToggle, styles.textShadow]}>
-                {isCaptionExpanded ? '  Lebih sedikit' : '  Lebih banyak'}
+                style={[styles.captionToggle, styles.captionToggleTrailing, styles.textShadow]}>
+                {t('feed.less')}
               </Text>
-            ) : null}
-          </Text>
+            </>
+          ) : (
+            <View style={styles.captionRow}>
+              <Text
+                numberOfLines={1}
+                style={[styles.caption, styles.captionCollapsed, styles.textShadow]}>
+                {video.caption}
+              </Text>
+              {video.caption.length > CAPTION_EXPAND_THRESHOLD ? (
+                <Text
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    setIsCaptionExpanded(true);
+                  }}
+                  style={[styles.captionToggle, styles.captionToggleInline, styles.textShadow]}>
+                  {t('feed.more')}
+                </Text>
+              ) : null}
+            </View>
+          )}
         </Pressable>
 
         <View style={styles.actions}>
@@ -586,16 +752,18 @@ export function DramaFeedItem({
             accessibilityLabel={isLiked ? 'Unlike' : 'Like'}
             accessibilityRole="button"
             onPress={onToggleLike}
-            style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
-            <SymbolView
-              name={{
-                ios: isLiked ? 'heart.fill' : 'heart',
-                android: isLiked ? 'favorite' : 'favorite_border',
-                web: isLiked ? 'favorite' : 'favorite_border',
-              }}
-              size={24}
-              tintColor={isLiked ? Palette.primary : '#fff'}
-            />
+            style={({ pressed }) => [styles.actionItem, pressed && styles.buttonPressed]}>
+            <View style={styles.actionButton}>
+              <SymbolView
+                name={{
+                  ios: isLiked ? 'heart.fill' : 'heart',
+                  android: isLiked ? 'favorite' : 'favorite_border',
+                  web: isLiked ? 'favorite' : 'favorite_border',
+                }}
+                size={24}
+                tintColor={isLiked ? Palette.primary : '#fff'}
+              />
+            </View>
             <Text style={[styles.actionValue, styles.textShadow]}>
               {formatLikeCount(likeCount)}
             </Text>
@@ -628,6 +796,81 @@ export function DramaFeedItem({
           </Pressable>
         </View>
       </View>
+
+      {hasPlaybackError ? null : (
+        <FeedProgressBar
+          progressRatio={playbackProgressRatio}
+          bottom={isClearDisplay ? progressBottom + CLEAR_CONTROLS_HEIGHT : progressBottom}
+        />
+      )}
+
+      {isQuickActionsVisible && !isClearDisplay ? (
+        <View style={styles.quickActions}>
+          <Pressable
+            accessibilityLabel="Tampilan bersih"
+            accessibilityRole="button"
+            onPress={() => {
+              setIsQuickActionsVisible(false);
+              onToggleClearDisplay?.(true);
+            }}
+            style={({ pressed }) => [styles.quickActionButton, pressed && styles.buttonPressed]}>
+            <SymbolView
+              name={{
+                ios: 'arrow.up.left.and.arrow.down.right',
+                android: 'fullscreen',
+                web: 'fullscreen',
+              }}
+              size={18}
+              tintColor="#fff"
+            />
+            <Text style={styles.quickActionText}>{t('feed.clearDisplay')}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {isClearDisplay ? (
+        <View style={styles.clearControls}>
+          <Pressable
+            accessibilityLabel="Keluar dari tampilan bersih"
+            accessibilityRole="button"
+            onPress={() => onToggleClearDisplay?.(false)}
+            style={({ pressed }) => [styles.clearExitButton, pressed && styles.buttonPressed]}>
+            <SymbolView
+              name={{ ios: 'xmark', android: 'close', web: 'close' }}
+              size={20}
+              tintColor="#fff"
+            />
+          </Pressable>
+
+          <View style={styles.clearControlGroup}>
+            <Pressable
+              accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
+              accessibilityRole="button"
+              onPress={handlePlayPause}
+              style={({ pressed }) => [styles.clearControlButton, pressed && styles.buttonPressed]}>
+              <SymbolView
+                name={{
+                  ios: isPlaying ? 'pause.fill' : 'play.fill',
+                  android: isPlaying ? 'pause' : 'play_arrow',
+                  web: isPlaying ? 'pause' : 'play_arrow',
+                }}
+                size={20}
+                tintColor="#fff"
+              />
+            </Pressable>
+            <View style={styles.clearControlDivider} />
+            <Pressable
+              accessibilityLabel={`Kecepatan ${playbackSpeed}x`}
+              accessibilityRole="button"
+              onPress={() =>
+                setPlaybackSpeed((current) => (current === 1 ? FAST_PLAYBACK_SPEED : 1))
+              }
+              style={({ pressed }) => [styles.clearControlButton, pressed && styles.buttonPressed]}>
+              <Text style={styles.clearSpeedText}>{`${playbackSpeed}×`}</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
 
       <PremiumPreviewModal
         onDismiss={() => setIsPremiumModalVisible(false)}
@@ -729,16 +972,83 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.bold,
     color: Palette.text,
   },
-  progressTrack: {
+  // The one piece of chrome clear display adds rather than removes: without a
+  // visible way out, the only exit would be a gesture the viewer has to
+  // already know about.
+  // Sits just below the middle of the screen so the finger that opened it is
+  // not covering it, and well clear of the caption underneath.
+  quickActions: {
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 2.5,
-    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+    top: '58%',
+    alignItems: 'center',
   },
-  progressFill: {
-    height: '100%',
-    backgroundColor: Palette.primary,
+  quickActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    height: 44,
+    paddingHorizontal: 18,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(13, 13, 15, 0.92)',
+    borderWidth: 1,
+    borderColor: Palette.border,
+  },
+  quickActionText: {
+    fontSize: 14,
+    fontFamily: FontFamily.bold,
+    color: '#fff',
+  },
+  clearControls: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: CLEAR_CONTROLS_HEIGHT,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    backgroundColor: '#000',
+  },
+  clearExitButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+  },
+  clearControlGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 40,
+    paddingHorizontal: 6,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+  },
+  clearControlButton: {
+    minWidth: 44,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clearControlDivider: {
+    width: 1,
+    height: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.28)',
+  },
+  clearSpeedText: {
+    fontSize: 15,
+    fontFamily: FontFamily.bold,
+    color: '#fff',
+    fontVariant: ['tabular-nums'],
+  },
+  // Clear display is about reading the frame underneath, so the metadata and
+  // the action rail step out of the way entirely.
+  contentHidden: {
+    opacity: 0,
   },
   content: {
     position: 'absolute',
@@ -816,14 +1126,39 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.regular,
     color: Palette.textSecondary,
   },
-  captionExpandToggle: {
+  captionRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+  },
+  // Shrinks so the ellipsis lands before the toggle rather than pushing it off
+  // the row.
+  captionCollapsed: {
+    flex: 1,
+  },
+  captionToggle: {
     fontSize: 12.5,
     fontFamily: FontFamily.bold,
     color: Palette.text,
   },
+  captionToggleInline: {
+    marginLeft: 5,
+  },
+  captionToggleTrailing: {
+    alignSelf: 'flex-end',
+    marginTop: 4,
+  },
   actions: {
     alignItems: 'center',
     gap: 14,
+  },
+  // Like is the only action carrying a count, so the pill holds the icon alone
+  // and the number sits underneath as a sibling. Putting both inside the fixed
+  // 48px pill pushed the icon off its centre and squeezed the number against
+  // the pill's border, which is why that one control read as broken next to
+  // the other three.
+  actionItem: {
+    alignItems: 'center',
+    gap: 5,
   },
   actionButton: {
     width: 48,
@@ -836,10 +1171,12 @@ const styles = StyleSheet.create({
     borderColor: Palette.border,
   },
   actionValue: {
-    marginTop: 4,
-    fontSize: 11,
+    fontSize: 12,
     fontFamily: FontFamily.bold,
     color: Palette.text,
+    // Keeps the count from changing width as it ticks (18.7K -> 18.8K), which
+    // would otherwise nudge the whole rail sideways on every like.
+    fontVariant: ['tabular-nums'],
   },
   buttonPressed: {
     opacity: 0.7,

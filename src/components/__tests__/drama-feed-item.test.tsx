@@ -1,9 +1,10 @@
-import { render, fireEvent, act } from '@testing-library/react-native';
+import { render, fireEvent, act, within } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import type { ReactElement } from 'react';
-import { Platform } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 
-import { DramaFeedItem } from '@/components/drama-feed-item';
+import { DramaFeedItem, touchDistance } from '@/components/drama-feed-item';
+import { FeedBottomGap } from '@/constants/theme';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
 
@@ -42,6 +43,10 @@ jest.mock('expo-symbols', () => ({
 // rather than exercised for real, matching how this file already mocks
 // every other cross-cutting dependency (auth/store wiring is not this
 // component's own concern to re-test).
+jest.mock('@/services/demo/demo-mode', () => ({
+  isDemoMode: jest.fn(() => false),
+}));
+
 jest.mock('@/services/auth/token-store', () => ({
   getTokens: jest.fn(() => ({ accessToken: 'test-access-token', refreshToken: 'test-refresh' })),
 }));
@@ -181,9 +186,39 @@ const baseProps = {
   onToggleMute: jest.fn(),
 };
 
+describe('touchDistance', () => {
+  it('measures the spread between two fingers', () => {
+    // 3-4-5 triangle, so the distance is exactly 5.
+    expect(
+      touchDistance([
+        { pageX: 0, pageY: 0 },
+        { pageX: 3, pageY: 4 },
+      ])
+    ).toBe(5);
+  });
+
+  it('reports nothing for a gesture that is not two fingers', () => {
+    // Callers read 0 as "not a pinch", which is what keeps single-touch taps,
+    // swipes and scrub drags from ever toggling clear display.
+    expect(touchDistance([])).toBe(0);
+    expect(touchDistance([{ pageX: 10, pageY: 10 }])).toBe(0);
+  });
+});
+
 describe('DramaFeedItem', () => {
   beforeEach(() => {
     mockUseEntitlement.mockReturnValue({ isPremium: false, refresh: jest.fn() });
+    // clearMocks only clears calls, not return values, so a case that turns
+    // demo mode on (or signs the user out) would otherwise leak into every
+    // test after it.
+    (
+      jest.requireMock<typeof import('@/services/demo/demo-mode')>('@/services/demo/demo-mode')
+        .isDemoMode as jest.Mock
+    ).mockReturnValue(false);
+    (
+      jest.requireMock<typeof import('@/services/auth/token-store')>('@/services/auth/token-store')
+        .getTokens as jest.Mock
+    ).mockReturnValue({ accessToken: 'test-access-token', refreshToken: 'test-refresh' });
   });
 
   it('clamps title to 2 lines and caption to 1 line by default', async () => {
@@ -194,7 +229,104 @@ describe('DramaFeedItem', () => {
     expect(getByText(video.caption).props.numberOfLines).toBe(1);
   });
 
-  it('expands a long caption when "Lebih banyak" is pressed', async () => {
+  it('anchors the bottom overlay one gap above the navbar without re-adding the tab bar height', async () => {
+    // Arrange: useBottomTabBarHeight is mocked to 56 above. The tabs navigator
+    // lays that bar out in flow, so this item's box already ends at its top
+    // edge - adding 56 again here is what floated the overlay mid-video.
+    const video = buildVideo();
+
+    // Act
+    const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    // Assert
+    const overlay = StyleSheet.flatten(getByTestId('feed-item-bottom-overlay').props.style);
+    const progress = StyleSheet.flatten(getByTestId('feed-item-progress-track').props.style);
+
+    expect(overlay.bottom).toBe(FeedBottomGap);
+    expect(progress.bottom).toBe(0);
+  });
+
+  it('leaves only the video and the progress bar on screen in clear display', async () => {
+    // Arrange
+    const video = buildVideo();
+
+    // Act
+    const { getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} isClearDisplay />
+    );
+
+    // Assert: the metadata and action rail are both invisible and untappable,
+    // while the progress bar survives - that pairing is the whole feature.
+    const overlay = getByTestId('feed-item-bottom-overlay');
+
+    expect(StyleSheet.flatten(overlay.props.style).opacity).toBe(0);
+    expect(overlay.props.pointerEvents).toBe('none');
+    expect(getByTestId('feed-item-progress-track')).toBeTruthy();
+  });
+
+  it('opens clear display from a long press in the middle of the video', async () => {
+    // Arrange
+    const video = buildVideo();
+    const onToggleClearDisplay = jest.fn();
+
+    const { getByTestId, queryByLabelText, findByLabelText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} onToggleClearDisplay={onToggleClearDisplay} />
+    );
+
+    // Nothing is offered until the viewer asks for it - a normal tap still
+    // just plays and pauses.
+    expect(queryByLabelText('Tampilan bersih')).toBeNull();
+
+    // Act
+    fireEvent(getByTestId('feed-item-play-pause'), 'longPress');
+    fireEvent.press(await findByLabelText('Tampilan bersih'));
+
+    // Assert
+    expect(onToggleClearDisplay).toHaveBeenCalledWith(true);
+  });
+
+  it('gives clear display a visible way out, plus play and speed controls', async () => {
+    // Arrange: without an on-screen exit, the only way back would be a gesture
+    // the viewer has to already know about.
+    const video = buildVideo();
+    const onToggleClearDisplay = jest.fn();
+
+    // Act
+    const { getByLabelText, findByLabelText } = await renderFeedItem(
+      <DramaFeedItem
+        video={video}
+        {...baseProps}
+        isClearDisplay
+        onToggleClearDisplay={onToggleClearDisplay}
+      />
+    );
+
+    // Assert: speed toggles between the two supported rates...
+    fireEvent.press(getByLabelText('Kecepatan 1x'));
+    expect(await findByLabelText('Kecepatan 2x')).toBeTruthy();
+
+    // ...and the exit hands control back to the feed that owns the state.
+    fireEvent.press(getByLabelText('Keluar dari tampilan bersih'));
+    expect(onToggleClearDisplay).toHaveBeenCalledWith(false);
+  });
+
+  it('keeps the metadata and the action rail on one shared bottom anchor', async () => {
+    // Arrange
+    const video = buildVideo();
+
+    // Act
+    const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+    const overlay = getByTestId('feed-item-bottom-overlay');
+
+    // Assert: both the metadata text and every action-rail button live inside
+    // the single element that carries the anchor, so they cannot drift apart.
+    expect(within(overlay).getByText(video.title)).toBeTruthy();
+    expect(within(overlay).getByLabelText('Like')).toBeTruthy();
+    expect(within(overlay).getByLabelText('Save')).toBeTruthy();
+    expect(within(overlay).getByLabelText('Share')).toBeTruthy();
+  });
+
+  it('expands a long caption when "more" is pressed, and offers "less" to close it', async () => {
     const longCaption =
       'Sebuah rahasia besar terungkap ketika keluarga itu kembali ke kampung halaman setelah bertahun-tahun pergi.';
     const video = buildVideo({ caption: longCaption });
@@ -202,12 +334,26 @@ describe('DramaFeedItem', () => {
       <DramaFeedItem video={video} {...baseProps} />
     );
 
-    expect(getByText('Lebih banyak')).toBeTruthy();
+    // The toggle has to sit beside the caption rather than inside it: a child
+    // at the end of a `numberOfLines={1}` text is clipped away with the
+    // overflow, which is what used to hide it completely.
+    expect(getByText('more')).toBeTruthy();
 
-    await fireEvent.press(getByText('Lebih banyak'));
+    await fireEvent.press(getByText('more'));
 
-    expect(queryByText('Lebih banyak')).toBeNull();
-    expect(getByText('Lebih sedikit')).toBeTruthy();
+    expect(queryByText('more')).toBeNull();
+    expect(getByText('less')).toBeTruthy();
+
+    await fireEvent.press(getByText('less'));
+
+    expect(getByText('more')).toBeTruthy();
+  });
+
+  it('leaves a caption that fits on one line without a "more" affordance', async () => {
+    const video = buildVideo({ caption: 'Pendek saja.' });
+    const { queryByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    expect(queryByText('more')).toBeNull();
   });
 
   it('caps an expanded caption to a maximum number of lines', async () => {
@@ -216,7 +362,7 @@ describe('DramaFeedItem', () => {
     const video = buildVideo({ caption: longCaption });
     const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
-    await fireEvent.press(getByText('Lebih banyak'));
+    await fireEvent.press(getByText('more'));
 
     expect(getByText(longCaption, { exact: false }).props.numberOfLines).toBe(6);
   });
@@ -314,6 +460,37 @@ describe('DramaFeedItem', () => {
     expect(getByText('Video unavailable')).toBeTruthy();
   });
 
+  it('plays a bundled clip before login in a demo build, where nothing is token-protected', async () => {
+    // Arrange: signed out, demo build. The clips ship inside the binary, so
+    // there is no stream endpoint to authorise against and no reason to make
+    // someone log in before they can see the product.
+    const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
+      '@/services/auth/token-store'
+    );
+    const { isDemoMode } = jest.requireMock<typeof import('@/services/demo/demo-mode')>(
+      '@/services/demo/demo-mode'
+    );
+    const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+    (getTokens as jest.Mock).mockReturnValue(null);
+    (isDemoMode as jest.Mock).mockReturnValue(true);
+
+    const video = buildVideo();
+
+    // Act
+    const { queryByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    // Assert: a real source is built, and no Authorization header is invented
+    // for a local file.
+    const lastSource = (useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0] as {
+      uri: string;
+      headers?: Record<string, string>;
+    };
+
+    expect(queryByText('Video unavailable')).toBeNull();
+    expect(lastSource.uri).toBe(video.playbackUrl);
+    expect(lastSource.headers).toBeUndefined();
+  });
+
   it('pressing the sound control does not trigger Like, Save, or navigation', async () => {
     const video = buildVideo();
     const onToggleLike = jest.fn();
@@ -343,9 +520,11 @@ describe('DramaFeedItem', () => {
 
     await fireEvent.press(getByText('Episode Berikutnya'));
 
+    // The button opens the series page rather than jumping straight into the
+    // clip, so the viewer lands on the episode list.
     expect(router.push).toHaveBeenCalledWith({
-      pathname: '/',
-      params: { videoId: 'video-2' },
+      pathname: '/series/[id]',
+      params: { id: 'series-ceo-dingin' },
     });
   });
 
@@ -414,8 +593,8 @@ describe('DramaFeedItem', () => {
 
     expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
     expect(router.push).toHaveBeenCalledWith({
-      pathname: '/',
-      params: { videoId: 'video-6' },
+      pathname: '/series/[id]',
+      params: { id: 'series-ceo-dingin' },
     });
   });
 

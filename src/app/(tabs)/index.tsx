@@ -25,6 +25,7 @@ import { onVideoTransition } from '@/services/ads/ad-controller';
 import { getNextEpisode, getSeriesById } from '@/services/videos/series-service';
 import { useSeriesProgress } from '@/stores/series-progress';
 import { useToast } from '@/stores/toast';
+import { useTranslation } from '@/stores/language';
 import { useVideoInteractions } from '@/stores/video-interactions';
 import type { Video } from '@/types/video';
 
@@ -40,6 +41,7 @@ const VIEWABILITY_CONFIG: ViewabilityConfig = {
 };
 
 export default function HomeScreen() {
+  const { t } = useTranslation();
   const { height } = useWindowDimensions();
   const isScreenFocused = useIsFocused();
 
@@ -57,6 +59,10 @@ export default function HomeScreen() {
   const { getProgress, recordProgress } = useSeriesProgress();
   const { showToast } = useToast();
   const [feedHeight, setFeedHeight] = useState(height);
+  // Clear display lives here rather than inside a feed item so it survives
+  // swiping between episodes - someone who cleared the screen expects it to
+  // stay cleared, not to reappear on the next video.
+  const [isClearDisplay, setIsClearDisplay] = useState(false);
   const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
   // Web browsers block audible autoplay without a prior user gesture, so
   // the feed has to start muted there and let the sound toggle be the
@@ -201,7 +207,7 @@ export default function HomeScreen() {
 
         if (webNavigator?.clipboard?.writeText) {
           await webNavigator.clipboard.writeText(message);
-          showToast('Link video disalin');
+          showToast(t('home.linkCopied'));
           return;
         }
 
@@ -220,9 +226,9 @@ export default function HomeScreen() {
         }
       );
     } catch {
-      Alert.alert('Share unavailable', 'Please try again later.');
+      Alert.alert(t('home.shareUnavailable'), t('home.shareUnavailableHint'));
     }
-  }, [showToast]);
+  }, [showToast, t]);
 
   const renderItem: ListRenderItem<Video> = useCallback(
     ({ item }) => {
@@ -249,6 +255,8 @@ export default function HomeScreen() {
           nextEpisode={nextEpisode}
           firstFreeEpisodeInSeries={firstFreeEpisodeInSeries}
           resumePositionSeconds={resumePositionSeconds}
+          isClearDisplay={isClearDisplay}
+          onToggleClearDisplay={setIsClearDisplay}
           onShare={() => {
             void handleShare(item);
           }}
@@ -259,7 +267,7 @@ export default function HomeScreen() {
           onToggleSave={() => {
             toggleSave(item.id);
             trackEvent('video_save', { videoId: item.id, value: !interaction.isSaved });
-            showToast(interaction.isSaved ? 'Dihapus dari Saved' : 'Disimpan ke Saved');
+            showToast(interaction.isSaved ? t('home.removedFromSaved') : t('home.addedToSaved'));
           }}
           onToggleMute={() => {
             setIsMuted((current) => !current);
@@ -281,6 +289,8 @@ export default function HomeScreen() {
       resolvedActiveVideoId,
       isScreenFocused,
       feedHeight,
+      isClearDisplay,
+      t,
       getInteraction,
       getLikeCount,
       getProgress,
@@ -304,13 +314,13 @@ export default function HomeScreen() {
   if (error) {
     return (
       <View style={[styles.container, styles.centerState]}>
-        <Text style={styles.stateTitle}>Video gagal dimuat.</Text>
+        <Text style={styles.stateTitle}>{t('home.loadError')}</Text>
         {__DEV__ ? <Text style={styles.stateDetail}>{error.message}</Text> : null}
         <Pressable
           accessibilityRole="button"
           onPress={refresh}
           style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.retryButtonText}>Retry</Text>
+          <Text style={styles.retryButtonText}>{t('common.retry')}</Text>
         </Pressable>
       </View>
     );
@@ -319,7 +329,7 @@ export default function HomeScreen() {
   if (videos.length === 0) {
     return (
       <View style={[styles.container, styles.centerState]}>
-        <Text style={styles.stateTitle}>Belum ada video tersedia.</Text>
+        <Text style={styles.stateTitle}>{t('home.empty')}</Text>
       </View>
     );
   }
@@ -331,7 +341,10 @@ export default function HomeScreen() {
         data={videos}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
-        extraData={resolvedActiveVideoId}
+        // Cells are memoised, so both pieces of state that change how an item
+        // renders have to be declared here or clear display would only take
+        // effect on the next re-mount.
+        extraData={`${resolvedActiveVideoId}:${isClearDisplay}`}
         pagingEnabled
         snapToAlignment="start"
         snapToInterval={feedHeight}
@@ -348,7 +361,9 @@ export default function HomeScreen() {
           index,
         })}
       />
-      <View pointerEvents="none" style={styles.brandOverlay}>
+      <View
+        pointerEvents="none"
+        style={[styles.brandOverlay, isClearDisplay && styles.brandOverlayHidden]}>
         <Text style={styles.brandOverlayText}>Red Panda</Text>
         <View style={styles.brandOverlayDot} />
       </View>
@@ -394,6 +409,9 @@ const styles = StyleSheet.create({
   },
   buttonPressed: {
     opacity: 0.7,
+  },
+  brandOverlayHidden: {
+    opacity: 0,
   },
   brandOverlay: {
     position: 'absolute',

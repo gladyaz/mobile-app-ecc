@@ -54,6 +54,14 @@ export const Spacing = {
   six: 64,
 } as const;
 
+/**
+ * The single intentional gap between a feed item's bottom overlay cluster and
+ * whatever sits below it (the tab bar, or the safe-area edge when the bar is
+ * hidden). Consumed only through `useFeedBottomAnchor` - never inline - so the
+ * metadata overlay, the action rail and the progress bar cannot drift apart.
+ */
+export const FeedBottomGap = 12;
+
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 800;
 

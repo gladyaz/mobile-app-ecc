@@ -1,132 +1,135 @@
-import { buildMediaUrl } from '@/services/media/media-url';
-import type { Video } from '@/types/video';
+import { resolveBundledMediaUri } from '@/services/media/media-url';
+import type { Video, VideoCategory } from '@/types/video';
 
-// The "10-雨夜校花（34集）" folder name indicates the local dev source has 34
-// episode files following the "01.mp4", "02.mp4", ... naming convention.
-// Episodes 2-7 below extend that same series so Phase 6A's free (ep 1-5) /
-// premium (ep 6+) boundary and numeric-ordering behavior have real data to
-// exercise. Episodes 6-7 are intentionally the first premium episodes.
-const ceoDinginEpisodes: readonly Video[] = [1, 2, 3, 4, 5, 6, 7].map((episodeNumber) => ({
-  id: `series-ceo-dingin-ep-${episodeNumber}`,
-  seriesId: 'series-ceo-dingin',
-  storageKey: `processed-videos/drama-china/ceo-dingin/ep-${String(episodeNumber).padStart(2, '0')}-id-sub.mp4`,
-  playbackUrl: buildMediaUrl(
-    `短剧下载/10-雨夜校花（34集）/${String(episodeNumber).padStart(2, '0')}.mp4`
-  ),
-  thumbnailUrl: `https://cdn.example.com/thumbnails/drama-china/ceo-dingin/ep-${String(episodeNumber).padStart(2, '0')}.jpg`,
-  // Measured with ffprobe against the real local file: 1280x720 (horizontal).
-  width: 1280,
-  height: 720,
-  title: 'Kontrak Cinta CEO Dingin',
-  episodeNumber,
-  channelName: 'Mandarin Drama ID',
-  category: 'CEO',
-  sourceLanguage: 'Mandarin',
-  hasEmbeddedIndonesianSubtitle: true,
-  processingStatus: 'completed',
-  caption: [
-    'Pertemuan pertama yang mengubah hidup Lin Yue.',
-    'Lin Yue mulai curiga dengan kontrak yang ia tanda tangani.',
-    'Rahasia keluarga CEO mulai terbongkar sedikit demi sedikit.',
-    'Sebuah kecelakaan mempertemukan Lin Yue dengan masa lalu sang CEO.',
-    'Lin Yue harus memilih antara cinta dan kebenaran.',
-    'Konflik memuncak saat identitas asli CEO terungkap.',
-    'Babak akhir: siapa yang benar-benar mengendalikan kontrak ini?',
-  ][episodeNumber - 1],
-  likeCount: 12800 + episodeNumber * 320,
-  isSaved: false,
-}));
+/**
+ * The bundled catalog, used when EXPO_PUBLIC_USE_MOCK_DATA=true or in a
+ * demo build (see services/demo/demo-mode.ts).
+ *
+ * Both clips and posters ship inside the app binary so an offline showcase
+ * build plays real content with no backend, no media server, and no
+ * network. They are resolved through `resolveBundledMediaUri` into the
+ * same `playbackUrl` / `thumbnailUrl` fields the backend normally fills,
+ * so nothing downstream has to know where the bytes came from (see
+ * docs/internal-storage.md).
+ *
+ * Only vertically-shot source material is used here: the feed is a
+ * full-bleed vertical player, and the horizontal 1280x720 series in the
+ * library render with heavy letterboxing. Episodes are limited to 1-5,
+ * which are the free tier - a demo viewer should never hit a paywall they
+ * cannot clear.
+ *
+ * `require` paths are relative on purpose. Metro resolves these at bundle
+ * time and the argument must be a static literal, so they cannot be built
+ * from a variable.
+ */
 
-export const mockDramaVideos: readonly Video[] = [
-  ...ceoDinginEpisodes,
+const pewarisClips = [
+  require('../../assets/videos/pewaris-ep-1.mp4'),
+  require('../../assets/videos/pewaris-ep-2.mp4'),
+  require('../../assets/videos/pewaris-ep-3.mp4'),
+  require('../../assets/videos/pewaris-ep-4.mp4'),
+  require('../../assets/videos/pewaris-ep-5.mp4'),
+];
+
+const pewarisPosters = [
+  require('../../assets/thumbnails/pewaris-ep-1.jpg'),
+  require('../../assets/thumbnails/pewaris-ep-2.jpg'),
+  require('../../assets/thumbnails/pewaris-ep-3.jpg'),
+  require('../../assets/thumbnails/pewaris-ep-4.jpg'),
+  require('../../assets/thumbnails/pewaris-ep-5.jpg'),
+];
+
+const nonaShenClips = [
+  require('../../assets/videos/nona-shen-ep-1.mp4'),
+  require('../../assets/videos/nona-shen-ep-2.mp4'),
+  require('../../assets/videos/nona-shen-ep-3.mp4'),
+  require('../../assets/videos/nona-shen-ep-4.mp4'),
+  require('../../assets/videos/nona-shen-ep-5.mp4'),
+];
+
+const nonaShenPosters = [
+  require('../../assets/thumbnails/nona-shen-ep-1.jpg'),
+  require('../../assets/thumbnails/nona-shen-ep-2.jpg'),
+  require('../../assets/thumbnails/nona-shen-ep-3.jpg'),
+  require('../../assets/thumbnails/nona-shen-ep-4.jpg'),
+  require('../../assets/thumbnails/nona-shen-ep-5.jpg'),
+];
+
+type BundledSeries = {
+  readonly seriesId: string;
+  readonly slug: string;
+  readonly title: string;
+  readonly channelName: string;
+  readonly category: VideoCategory;
+  readonly baseLikeCount: number;
+  readonly captions: readonly string[];
+  readonly clips: readonly number[];
+  readonly posters: readonly number[];
+};
+
+const bundledSeries: readonly BundledSeries[] = [
   {
-    id: 'series-putri-hilang-ep-1',
-    seriesId: 'series-putri-hilang',
-    storageKey: 'processed-videos/drama-china/putri-hilang/ep-01-id-sub.mp4',
-    // Local dev source (requires the local media server, see README):
-    // /Users/gladyaz/VideoDracin/短剧下载/10-花卷致富：我的小吃店通古今！（76集）/1.mp4
-    playbackUrl: buildMediaUrl('短剧下载/10-花卷致富：我的小吃店通古今！（76集）/1.mp4'),
-    thumbnailUrl: 'https://cdn.example.com/thumbnails/drama-china/putri-hilang/ep-01.jpg',
-    // Measured with ffprobe against the real local file: 1280x720 (horizontal).
-    width: 1280,
-    height: 720,
-    title: 'Rahasia Putri yang Hilang',
-    episodeNumber: 1,
-    channelName: 'CDrama Mini',
-    category: 'Family',
-    sourceLanguage: 'Mandarin',
-    hasEmbeddedIndonesianSubtitle: true,
-    processingStatus: 'completed',
-    caption: 'Sebuah liontin tua membuka identitas yang tersembunyi.',
-    likeCount: 9200,
-    isSaved: false,
-  },
-  {
-    id: 'series-pewaris-ep-1',
     seriesId: 'series-pewaris',
-    storageKey: 'processed-videos/drama-china/pewaris/ep-01-id-sub.mp4',
-    // Local dev source (requires the local media server, see README):
-    // /Users/gladyaz/VideoDracin/短剧下载/101-我与女帝的快乐生活（84集）/第1集.mp4
-    playbackUrl: buildMediaUrl('短剧下载/101-我与女帝的快乐生活（84集）/第1集.mp4'),
-    thumbnailUrl: 'https://cdn.example.com/thumbnails/drama-china/pewaris/ep-01.jpg',
-    // Measured with ffprobe against the real local file: 720x1280 (vertical).
-    width: 720,
-    height: 1280,
+    slug: 'pewaris',
     title: 'Balas Dendam Sang Pewaris',
-    episodeNumber: 1,
     channelName: 'Short Drama Mandarin',
     category: 'Revenge',
-    sourceLanguage: 'Mandarin',
-    hasEmbeddedIndonesianSubtitle: true,
-    processingStatus: 'completed',
-    caption: 'Chen Wei kembali dengan nama baru dan rencana besar.',
-    likeCount: 18400,
-    isSaved: false,
+    baseLikeCount: 18400,
+    captions: [
+      'Chen Wei kembali dengan nama baru dan rencana besar.',
+      'Pertemuan pertama dengan keluarga yang dulu membuangnya.',
+      'Satu tanda tangan mengubah peta kekuasaan perusahaan.',
+      'Sekutu lama ternyata menyimpan agenda sendiri.',
+      'Kartu terakhir Chen Wei akhirnya dibuka di meja rapat.',
+    ],
+    clips: pewarisClips,
+    posters: pewarisPosters,
   },
   {
-    id: 'series-nona-shen-ep-1',
     seriesId: 'series-nona-shen',
-    storageKey: 'processed-videos/drama-china/nona-shen/ep-01-id-sub.mp4',
-    // Local dev source (requires the local media server, see README):
-    // /Users/gladyaz/VideoDracin/短剧下载/106-找工作抱歉老娘快成仙了（70集）/1.mp4
-    playbackUrl: buildMediaUrl('短剧下载/106-找工作抱歉老娘快成仙了（70集）/1.mp4'),
-    thumbnailUrl: 'https://cdn.example.com/thumbnails/drama-china/nona-shen/ep-01.jpg',
-    // Measured with ffprobe against the real local file: 720x1280 (vertical).
-    width: 720,
-    height: 1280,
+    slug: 'nona-shen',
     title: 'Pernikahan Kilat Nona Shen',
-    episodeNumber: 1,
     channelName: 'Drama Harian CN',
     category: 'Romance',
-    sourceLanguage: 'Mandarin',
-    hasEmbeddedIndonesianSubtitle: true,
-    processingStatus: 'completed',
-    caption: 'Pernikahan palsu mulai terasa terlalu nyata.',
-    likeCount: 15100,
-    isSaved: false,
-  },
-  {
-    id: 'series-topeng-ep-1',
-    seriesId: 'series-topeng',
-    storageKey: 'processed-videos/drama-china/topeng/ep-01-id-sub.mp4',
-    // Local dev source (requires the local media server, see README):
-    // /Users/gladyaz/VideoDracin/短剧下载/100-过年回家，与三个精神小妹挤软卧（74集）/11.mp4
-    playbackUrl: buildMediaUrl(
-      '短剧下载/100-过年回家，与三个精神小妹挤软卧（74集）/11.mp4'
-    ),
-    thumbnailUrl: 'https://cdn.example.com/thumbnails/drama-china/topeng/ep-01.jpg',
-    // Measured with ffprobe against the real local file: 720x1280 (vertical).
-    width: 720,
-    height: 1280,
-    title: 'Cinta di Balik Topeng',
-    episodeNumber: 1,
-    channelName: 'Mandarin Hits',
-    category: 'Historical',
-    sourceLanguage: 'Mandarin',
-    hasEmbeddedIndonesianSubtitle: true,
-    processingStatus: 'completed',
-    caption: 'Satu pesta topeng mempertemukan dua musuh lama.',
-    likeCount: 11300,
-    isSaved: false,
+    baseLikeCount: 15100,
+    captions: [
+      'Pernikahan palsu mulai terasa terlalu nyata.',
+      'Satu malam yang membuat keduanya sulit berpura-pura.',
+      'Mantan tunangan muncul di saat paling tidak tepat.',
+      'Rahasia keluarga Shen perlahan terbongkar.',
+      'Nona Shen harus memilih: kontrak atau perasaannya.',
+    ],
+    clips: nonaShenClips,
+    posters: nonaShenPosters,
   },
 ];
+
+function buildEpisodes(series: BundledSeries): readonly Video[] {
+  return series.clips.map((clip, index) => {
+    const episodeNumber = index + 1;
+    const paddedEpisode = String(episodeNumber).padStart(2, '0');
+
+    return {
+      id: `${series.seriesId}-ep-${episodeNumber}`,
+      seriesId: series.seriesId,
+      storageKey: `processed-videos/drama-china/${series.slug}/ep-${paddedEpisode}-id-sub.mp4`,
+      playbackUrl: resolveBundledMediaUri(clip),
+      thumbnailUrl: resolveBundledMediaUri(series.posters[index]),
+      // Every bundled clip is re-encoded from vertical 720x1280 source.
+      width: 720,
+      height: 1280,
+      title: series.title,
+      episodeNumber,
+      channelName: series.channelName,
+      category: series.category,
+      sourceLanguage: 'Mandarin',
+      hasEmbeddedIndonesianSubtitle: true,
+      processingStatus: 'completed',
+      caption: series.captions[index] ?? series.title,
+      likeCount: series.baseLikeCount + episodeNumber * 320,
+      isSaved: false,
+    } satisfies Video;
+  });
+}
+
+export const mockDramaVideos: readonly Video[] = bundledSeries.flatMap(buildEpisodes);

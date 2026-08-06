@@ -11,6 +11,8 @@ import {
 import { ApiError } from '@/services/api/client';
 import { login as loginRequest, logout as logoutRequest, register as registerRequest } from '@/services/auth/auth-service';
 import * as tokenStore from '@/services/auth/token-store';
+import { buildDemoAuthResponse } from '@/services/demo/demo-auth';
+import { isDemoMode } from '@/services/demo/demo-mode';
 import { getItem, removeItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
 import type { AuthResponse, AuthTokens, AuthUser as BackendAuthUser } from '@/types/auth';
 
@@ -134,14 +136,22 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const login = useCallback(async (email: string, password: string) => {
     let authResponse: AuthResponse;
 
-    try {
-      authResponse = await loginRequest(email, password);
-    } catch (error) {
-      if (!isInvalidCredentialsError(error)) {
-        throw error;
-      }
+    if (isDemoMode()) {
+      // No backend exists in a demo build, so there is nothing to
+      // authenticate against and nothing to fall back to. Any credentials
+      // are accepted; see services/demo/demo-auth.ts for why the tokens
+      // are synthetic and why the user id is fixed.
+      authResponse = buildDemoAuthResponse(email);
+    } else {
+      try {
+        authResponse = await loginRequest(email, password);
+      } catch (error) {
+        if (!isInvalidCredentialsError(error)) {
+          throw error;
+        }
 
-      authResponse = await registerRequest(email, password);
+        authResponse = await registerRequest(email, password);
+      }
     }
 
     const derivedUser = deriveAuthUser(authResponse.user);

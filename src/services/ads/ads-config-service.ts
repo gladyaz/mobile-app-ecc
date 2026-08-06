@@ -1,5 +1,6 @@
 import { request } from '@/services/api/client';
 import { DEFAULT_ADS_CONFIG, type AdsConfig } from '@/services/ads/ad-gate';
+import { isDemoMode } from '@/services/demo/demo-mode';
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -44,6 +45,14 @@ function parseAdsConfig(payload: unknown): AdsConfig {
  * over.
  */
 export async function fetchAdsConfig(): Promise<AdsConfig> {
+  if (isDemoMode()) {
+    // Without this, a demo build shows ads rather than hiding them: the
+    // fetch below fails (no backend) and falls back to DEFAULT_ADS_CONFIG,
+    // whose `enabled` is true. Someone trying the app for the first time
+    // should not be interrupted by an interstitial labelled "Test Ad".
+    return { ...DEFAULT_ADS_CONFIG, enabled: false };
+  }
+
   try {
     const payload = await request<unknown>('config/ads');
 

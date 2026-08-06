@@ -42,3 +42,8 @@ example
 # generated native folders
 /ios
 /android
+
+# Demo showcase clips. Regenerated with the ffmpeg command in the demo
+# commit message; kept out of history because they are ~62 MB of binary.
+assets/videos/
+assets/thumbnails/

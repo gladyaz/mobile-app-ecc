@@ -61,5 +61,12 @@
     "setupFiles": [
       "./jest.setup.js"
     ]
+  },
+  "expo": {
+    "autolinking": {
+      "exclude": [
+        "react-native-google-mobile-ads"
+      ]
+    }
   }
 }

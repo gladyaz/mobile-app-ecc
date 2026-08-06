@@ -1,3 +1,5 @@
+import { Asset } from 'expo-asset';
+
 const DEV_FALLBACK_MEDIA_URL = '';
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -33,4 +35,19 @@ export function buildMediaUrl(relativePath: string): string {
   }
 
   return `${normalizeBaseUrl(baseUrl)}/${encodeRelativePath(relativePath)}`;
+}
+
+/**
+ * Resolves media bundled into the app binary (via `require`) to a URI
+ * string.
+ *
+ * Demo builds have no media server and no backend, but nothing downstream
+ * should have to know that: docs/internal-storage.md fixes `playbackUrl`
+ * and `thumbnailUrl` as the fields mobile playback reads, specifically so
+ * the bytes can move between a backend endpoint, a CDN, or - here - the
+ * app bundle without changing the data model. Resolving to a URI keeps
+ * that promise, instead of adding a second media field for the demo case.
+ */
+export function resolveBundledMediaUri(assetModule: number): string {
+  return Asset.fromModule(assetModule).uri;
 }

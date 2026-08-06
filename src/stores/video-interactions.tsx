@@ -17,6 +17,7 @@ import {
   unlikeVideo,
   unsaveVideo,
 } from '@/services/interactions/interactions-service';
+import { isDemoMode } from '@/services/demo/demo-mode';
 import { getItem, removeItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
 import type { UserInteraction } from '@/types/interaction';
@@ -208,7 +209,12 @@ async function runInteractionDrainLoop(params: DrainLoopParams, epochAtStart: nu
 
     const authNow = authRef.current;
 
-    if (!authNow.isAuthenticated || !authNow.isAuthHydrated) {
+    // Demo builds sign in locally against no backend, so `isAuthenticated`
+    // is true but the token is synthetic and there is nothing to sync to.
+    // Stopping here (rather than earlier) keeps likes and saves on their
+    // normal local-first path - they are still written to AsyncStorage and
+    // still survive a relaunch; only the network half is skipped.
+    if (isDemoMode() || !authNow.isAuthenticated || !authNow.isAuthHydrated) {
       break;
     }
 

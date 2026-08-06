@@ -1,5 +1,6 @@
 import { mockDramaVideos } from '@/data/mock-drama-videos';
 import { ApiError, request } from '@/services/api/client';
+import { isDemoMode } from '@/services/demo/demo-mode';
 import { mapBackendVideoToVideo, type BackendVideoDto } from '@/services/videos/video-mapper';
 import type { Video, VideoCategory } from '@/types/video';
 
@@ -17,8 +18,14 @@ const categoryFilters: readonly VideoCategoryFilter[] = [
   'Drama',
 ];
 
+/**
+ * Demo mode implies mock data: an offline showcase build has no backend to
+ * fetch a feed from, so it resolves the bundled catalog for the same reason
+ * EXPO_PUBLIC_USE_MOCK_DATA does. Folding it in here means a demo build
+ * needs one flag set, not two kept in sync.
+ */
 function shouldUseMockData(): boolean {
-  return process.env.EXPO_PUBLIC_USE_MOCK_DATA === 'true';
+  return process.env.EXPO_PUBLIC_USE_MOCK_DATA === 'true' || isDemoMode();
 }
 
 function normalizeSearchValue(value: string) {

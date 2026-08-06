@@ -9,6 +9,7 @@ export const STORAGE_KEYS = {
   auth: '@mobile-app-ecc/auth',
   videoInteractions: '@mobile-app-ecc/video-interactions',
   seriesProgress: '@mobile-app-ecc/series-progress',
+  language: '@mobile-app-ecc/language',
 } as const;
 
 /**

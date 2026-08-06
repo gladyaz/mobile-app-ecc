@@ -13,12 +13,14 @@ import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AdsBridge } from '@/components/ads-bridge';
+import { isDemoMode } from '@/services/demo/demo-mode';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { Palette } from '@/constants/theme';
 import { VideoCatalogProvider } from '@/features/videos/video-catalog-provider';
 import { installGlobalErrorReporting } from '@/services/analytics/error-reporting';
 import { AuthProvider, useAuth } from '@/stores/auth';
 import { EntitlementProvider } from '@/stores/entitlement';
+import { LanguageProvider } from '@/stores/language';
 import { SeriesProgressProvider, useSeriesProgress } from '@/stores/series-progress';
 import { ToastProvider } from '@/stores/toast';
 import { useVideoInteractions, VideoInteractionsProvider } from '@/stores/video-interactions';
@@ -62,7 +64,11 @@ function AppContent() {
           interstitial hook only starts loading ads once isPremium has
           settled post-hydration, not during the transient false it reports
           while auth/entitlement are still resolving. */}
-      <AdsBridge />
+      {/* A demo build ships without the AdMob native module, so anything
+          that reaches into it throws at mount - `useInterstitialAd()` does,
+          before any "are ads enabled" check can run. Ads are off in demo
+          mode regardless, so the bridge is simply not mounted. */}
+      {!isDemoMode() && <AdsBridge />}
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />
@@ -102,19 +108,23 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <ThemeProvider value={NavigationTheme}>
-        <ToastProvider>
-          <AuthProvider>
-            <EntitlementProvider>
-              <VideoCatalogProvider>
-                <VideoInteractionsProvider>
-                  <SeriesProgressProvider>
-                    <AppContent />
-                  </SeriesProgressProvider>
-                </VideoInteractionsProvider>
-              </VideoCatalogProvider>
-            </EntitlementProvider>
-          </AuthProvider>
-        </ToastProvider>
+        {/* Outermost of the app's own providers: every screen below reads copy
+            from it, including the toasts. */}
+        <LanguageProvider>
+          <ToastProvider>
+            <AuthProvider>
+              <EntitlementProvider>
+                <VideoCatalogProvider>
+                  <VideoInteractionsProvider>
+                    <SeriesProgressProvider>
+                      <AppContent />
+                    </SeriesProgressProvider>
+                  </VideoInteractionsProvider>
+                </VideoCatalogProvider>
+              </EntitlementProvider>
+            </AuthProvider>
+          </ToastProvider>
+        </LanguageProvider>
       </ThemeProvider>
     </SafeAreaProvider>
   );

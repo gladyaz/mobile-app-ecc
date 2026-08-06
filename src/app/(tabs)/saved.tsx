@@ -7,10 +7,12 @@ import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { getSavedVideos } from '@/services/videos/video-service';
+import { useTranslation } from '@/stores/language';
 import { useVideoInteractions } from '@/stores/video-interactions';
 import type { Video } from '@/types/video';
 
 export default function SavedScreen() {
+  const { t } = useTranslation();
   const { getLikeCount, savedVideoIds, toggleSave } = useVideoInteractions();
   const { videos } = useVideoCatalog();
   const savedVideos = useMemo(
@@ -21,7 +23,7 @@ export default function SavedScreen() {
   if (savedVideos.length === 0) {
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.title}>Saved</Text>
+        <Text style={styles.title}>{t('saved.title')}</Text>
         <View style={styles.emptyState}>
           <View style={styles.emptyIconCircle}>
             <SymbolView
@@ -30,15 +32,15 @@ export default function SavedScreen() {
               tintColor={Palette.textMuted}
             />
           </View>
-          <Text style={styles.emptyTitle}>Belum ada video tersimpan</Text>
+          <Text style={styles.emptyTitle}>{t('saved.empty')}</Text>
           <Text style={styles.description}>
-            Simpan drama favoritmu dari Home agar mudah ditonton lagi.
+            {t('saved.emptyBlurb')}
           </Text>
           <Pressable
             accessibilityRole="button"
             onPress={() => router.push('/')}
             style={({ pressed }) => [styles.exploreButton, pressed && styles.buttonPressed]}>
-            <Text style={styles.exploreButtonText}>Jelajahi Home</Text>
+            <Text style={styles.exploreButtonText}>{t('saved.browseHome')}</Text>
           </Pressable>
         </View>
       </View>
@@ -48,8 +50,8 @@ export default function SavedScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
-        <Text style={styles.title}>Saved</Text>
-        <Text style={styles.savedCount}>{savedVideos.length} video</Text>
+        <Text style={styles.title}>{t('saved.title')}</Text>
+        <Text style={styles.savedCount}>{t('saved.videoCount', { count: savedVideos.length })}</Text>
       </View>
       <FlatList
         data={savedVideos}
@@ -76,6 +78,7 @@ type SavedVideoCardProps = {
 };
 
 export function SavedVideoCard({ video, likeCount: _likeCount, onUnsave }: SavedVideoCardProps) {
+  const { t } = useTranslation();
   return (
     <View style={styles.card}>
       <Pressable
@@ -100,7 +103,7 @@ export function SavedVideoCard({ video, likeCount: _likeCount, onUnsave }: Saved
         accessibilityRole="button"
         onPress={onUnsave}
         style={({ pressed }) => [styles.unsaveButton, pressed && styles.buttonPressed]}>
-        <Text style={styles.unsaveButtonText}>Unsave</Text>
+        <Text style={styles.unsaveButtonText}>{t('saved.unsave')}</Text>
       </Pressable>
     </View>
   );

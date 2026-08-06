@@ -2,6 +2,7 @@ import { Image } from 'expo-image';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { useTranslation } from '@/stores/language';
 import type { Episode } from '@/types/series';
 
 type SeriesEpisodeRowProps = {
@@ -11,6 +12,7 @@ type SeriesEpisodeRowProps = {
 };
 
 export function SeriesEpisodeRow({ episode, isCurrentlyPlaying, onPress }: SeriesEpisodeRowProps) {
+  const { t } = useTranslation();
   const isPressable = episode.isAvailable && onPress != null;
 
   return (
@@ -38,12 +40,16 @@ export function SeriesEpisodeRow({ episode, isCurrentlyPlaying, onPress }: Serie
               episode.accessType === 'premium' ? styles.premiumBadge : styles.freeBadge,
             ]}>
             <Text style={styles.accessBadgeText}>
-              {episode.accessType === 'premium' ? 'Premium' : 'Free'}
+              {episode.accessType === 'premium' ? t('series.premium') : t('series.free')}
             </Text>
           </View>
         </View>
-        {!episode.isAvailable ? <Text style={styles.unavailableText}>Tidak tersedia</Text> : null}
-        {isCurrentlyPlaying ? <Text style={styles.playingText}>Sedang diputar</Text> : null}
+        {!episode.isAvailable ? (
+          <Text style={styles.unavailableText}>{t('series.unavailable')}</Text>
+        ) : null}
+        {isCurrentlyPlaying ? (
+          <Text style={styles.playingText}>{t('series.nowPlaying')}</Text>
+        ) : null}
       </View>
     </Pressable>
   );

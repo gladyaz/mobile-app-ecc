@@ -20,12 +20,14 @@ import {
   searchVideos,
   type VideoCategoryFilter,
 } from '@/services/videos/video-service';
+import { useTranslation } from '@/stores/language';
 import { useVideoInteractions } from '@/stores/video-interactions';
 import type { Video } from '@/types/video';
 
 const categoryFilters = getCategories();
 
 export default function DiscoverScreen() {
+  const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<VideoCategoryFilter>('All');
   const { getLikeCount } = useVideoInteractions();
@@ -37,7 +39,7 @@ export default function DiscoverScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Discover</Text>
+      <Text style={styles.title}>{t('discover.title')}</Text>
       <View style={styles.searchBar}>
         <SymbolView
           name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}
@@ -48,7 +50,7 @@ export default function DiscoverScreen() {
           autoCapitalize="none"
           autoCorrect={false}
           onChangeText={setSearchQuery}
-          placeholder="Cari judul drama…"
+          placeholder={t('discover.searchPlaceholder')}
           placeholderTextColor={Palette.textMuted}
           style={styles.searchInput}
           value={searchQuery}
@@ -107,12 +109,12 @@ export default function DiscoverScreen() {
             </View>
           ) : error ? (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>Video gagal dimuat.</Text>
+              <Text style={styles.emptyTitle}>{t('home.loadError')}</Text>
               <Pressable
                 accessibilityRole="button"
                 onPress={refresh}
                 style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}>
-                <Text style={styles.retryButtonText}>Retry</Text>
+                <Text style={styles.retryButtonText}>{t('common.retry')}</Text>
               </Pressable>
             </View>
           ) : (
@@ -124,7 +126,7 @@ export default function DiscoverScreen() {
                   tintColor={Palette.textMuted}
                 />
               </View>
-              <Text style={styles.emptyTitle}>Tidak ada hasil</Text>
+              <Text style={styles.emptyTitle}>{t('discover.noResults')}</Text>
               <Text style={styles.emptyDescription}>
                 Coba kata kunci lain atau pilih kategori yang berbeda.
               </Text>
@@ -135,7 +137,7 @@ export default function DiscoverScreen() {
                   setSelectedCategory('All');
                 }}
                 style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}>
-                <Text style={styles.retryButtonText}>Reset pencarian</Text>
+                <Text style={styles.retryButtonText}>{t('discover.resetSearch')}</Text>
               </Pressable>
             </View>
           )

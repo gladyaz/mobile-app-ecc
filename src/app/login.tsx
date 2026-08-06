@@ -6,11 +6,13 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
 import { useAuth } from '@/stores/auth';
+import { useTranslation } from '@/stores/language';
 import { useToast } from '@/stores/toast';
 
 const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
 
 export default function LoginScreen() {
+  const { t } = useTranslation();
   const { login } = useAuth();
   const { showToast } = useToast();
   const [email, setEmail] = useState('');
@@ -21,12 +23,12 @@ export default function LoginScreen() {
   const trimmedEmail = email.trim();
   const emailError = isSubmitted
     ? !trimmedEmail
-      ? 'Email wajib diisi'
+      ? t('login.emailRequired')
       : !EMAIL_PATTERN.test(trimmedEmail)
-        ? 'Format email tidak valid'
+        ? t('login.emailInvalid')
         : null
     : null;
-  const passwordError = isSubmitted && !password.trim() ? 'Password wajib diisi' : null;
+  const passwordError = isSubmitted && !password.trim() ? t('login.passwordRequired') : null;
 
   const handleLogin = async () => {
     setIsSubmitted(true);
@@ -40,9 +42,9 @@ export default function LoginScreen() {
     try {
       await login(trimmedEmail, password);
       router.replace('/profile');
-      showToast('Selamat datang!');
+      showToast(t('login.welcome'));
     } catch {
-      showToast('Login gagal. Periksa koneksi kamu dan coba lagi.');
+      showToast(t('login.failed'));
     } finally {
       setIsSubmitting(false);
     }
@@ -69,17 +71,17 @@ export default function LoginScreen() {
         />
       </Pressable>
 
-      <Text style={styles.title}>Masuk</Text>
-      <Text style={styles.subtitle}>Gunakan akun Red Panda kamu.</Text>
+      <Text style={styles.title}>{t('login.title')}</Text>
+      <Text style={styles.subtitle}>{t('login.subtitle')}</Text>
 
       <View style={styles.form}>
         <View style={styles.field}>
-          <Text style={styles.label}>Email</Text>
+          <Text style={styles.label}>{t('login.email')}</Text>
           <TextInput
             autoCapitalize="none"
             keyboardType="email-address"
             onChangeText={setEmail}
-            placeholder="nama@email.com"
+            placeholder={t('login.emailPlaceholder')}
             placeholderTextColor={Palette.textMuted}
             style={[styles.input, emailError && styles.inputError]}
             value={email}
@@ -88,7 +90,7 @@ export default function LoginScreen() {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Password</Text>
+          <Text style={styles.label}>{t('login.password')}</Text>
           <TextInput
             onChangeText={setPassword}
             placeholder="••••••••"
@@ -115,11 +117,11 @@ export default function LoginScreen() {
             end={{ x: 1, y: 1 }}
             start={{ x: 0, y: 0 }}
             style={styles.primaryButtonGradient}>
-            <Text style={styles.primaryButtonText}>{isSubmitting ? 'Memproses...' : 'Login'}</Text>
+            <Text style={styles.primaryButtonText}>{isSubmitting ? t('login.submitting') : t('login.submit')}</Text>
           </LinearGradient>
         </Pressable>
 
-        <Text style={styles.hint}>Isi email valid &amp; password apa pun — akun dibuat otomatis jika belum ada.</Text>
+        <Text style={styles.hint}>{t('login.hint')}</Text>
       </View>
     </View>
   );

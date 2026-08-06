@@ -4,8 +4,11 @@ import { SymbolView } from 'expo-symbols';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
+import { isDemoMode } from '@/services/demo/demo-mode';
 import { resetAllPersistedState } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
+import { LANGUAGE_LABELS, LANGUAGES } from '@/services/i18n/translations';
+import { useTranslation } from '@/stores/language';
 import { useToast } from '@/stores/toast';
 import { useVideoInteractions } from '@/stores/video-interactions';
 
@@ -32,7 +35,46 @@ function DevResetButton() {
   );
 }
 
+/**
+ * Rendered in both the signed-in and the guest branch. Language is a device
+ * preference, not an account setting - leaving it behind the signed-in state
+ * would make it unreachable for exactly the person most likely to need it.
+ */
+function LanguagePicker() {
+  const { t, language, setLanguage } = useTranslation();
+
+  return (
+    <View style={styles.languageSection}>
+      <Text style={styles.languageLabel}>{t('profile.language')}</Text>
+      <View style={styles.languageRow}>
+        {LANGUAGES.map((code) => {
+          const isSelected = code === language;
+
+          return (
+            <Pressable
+              key={code}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isSelected }}
+              onPress={() => setLanguage(code)}
+              style={({ pressed }) => [
+                styles.languageChip,
+                isSelected && styles.languageChipSelected,
+                pressed && styles.buttonPressed,
+              ]}>
+              <Text
+                style={[styles.languageChipText, isSelected && styles.languageChipTextSelected]}>
+                {LANGUAGE_LABELS[code]}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 export default function ProfileScreen() {
+  const { t } = useTranslation();
   const { isAuthenticated, logout, user } = useAuth();
   const { savedVideoIds, likedVideoIds } = useVideoInteractions();
   const { showToast } = useToast();
@@ -40,7 +82,7 @@ export default function ProfileScreen() {
   if (isAuthenticated && user) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>Profile</Text>
+        <Text style={styles.title}>{t('profile.title')}</Text>
 
         <View style={styles.identityRow}>
           <LinearGradient
@@ -62,80 +104,95 @@ export default function ProfileScreen() {
             <Text style={[styles.statsValue, styles.statsValuePrimary]}>
               {savedVideoIds.length}
             </Text>
-            <Text style={styles.statsLabel}>Video tersimpan</Text>
+            <Text style={styles.statsLabel}>{t('profile.savedCount')}</Text>
           </View>
           <View style={styles.statsBox}>
             <Text style={styles.statsValue}>{likedVideoIds.length}</Text>
-            <Text style={styles.statsLabel}>Video disukai</Text>
+            <Text style={styles.statsLabel}>{t('profile.likedCount')}</Text>
           </View>
         </View>
 
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            router.push('/account-security');
-          }}
-          style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
-          <SymbolView
-            name={{ ios: 'lock.shield', android: 'security', web: 'security' }}
-            size={20}
-            tintColor={Palette.textSecondary}
-          />
-          <Text style={styles.processingButtonText}>Keamanan Akun</Text>
-          <SymbolView
-            name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-            size={16}
-            tintColor={Palette.textDisabled}
-          />
-        </Pressable>
+        <LanguagePicker />
 
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            router.push('/account-data');
-          }}
-          style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
-          <SymbolView
-            name={{ ios: 'square.and.arrow.up', android: 'file_download', web: 'file_download' }}
-            size={20}
-            tintColor={Palette.textSecondary}
-          />
-          <Text style={styles.processingButtonText}>Data & Privasi</Text>
-          <SymbolView
-            name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-            size={16}
-            tintColor={Palette.textDisabled}
-          />
-        </Pressable>
+        {/* Every destination below needs the backend: password change and
+            session management, data export and account deletion, and the
+            internal processing queue. A demo build has none of it, so these
+            entries are hidden rather than left to fail when someone taps
+            them. */}
+        {!isDemoMode() && (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                router.push('/account-security');
+              }}
+              style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
+              <SymbolView
+                name={{ ios: 'lock.shield', android: 'security', web: 'security' }}
+                size={20}
+                tintColor={Palette.textSecondary}
+              />
+              <Text style={styles.processingButtonText}>{t('profile.accountSecurity')}</Text>
+              <SymbolView
+                name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+                size={16}
+                tintColor={Palette.textDisabled}
+              />
+            </Pressable>
 
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            router.push('../processing');
-          }}
-          style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
-          <SymbolView
-            name={{ ios: 'clock', android: 'schedule', web: 'schedule' }}
-            size={20}
-            tintColor={Palette.textSecondary}
-          />
-          <Text style={styles.processingButtonText}>Processing History</Text>
-          <Text style={styles.internalBadge}>INTERNAL</Text>
-          <SymbolView
-            name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-            size={16}
-            tintColor={Palette.textDisabled}
-          />
-        </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                router.push('/account-data');
+              }}
+              style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
+              <SymbolView
+                name={{
+                  ios: 'square.and.arrow.up',
+                  android: 'file_download',
+                  web: 'file_download',
+                }}
+                size={20}
+                tintColor={Palette.textSecondary}
+              />
+              <Text style={styles.processingButtonText}>{t('profile.dataPrivacy')}</Text>
+              <SymbolView
+                name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+                size={16}
+                tintColor={Palette.textDisabled}
+              />
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                router.push('../processing');
+              }}
+              style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
+              <SymbolView
+                name={{ ios: 'clock', android: 'schedule', web: 'schedule' }}
+                size={20}
+                tintColor={Palette.textSecondary}
+              />
+              <Text style={styles.processingButtonText}>{t('profile.processingHistory')}</Text>
+              <Text style={styles.internalBadge}>INTERNAL</Text>
+              <SymbolView
+                name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+                size={16}
+                tintColor={Palette.textDisabled}
+              />
+            </Pressable>
+          </>
+        )}
 
         <Pressable
           accessibilityRole="button"
           onPress={() => {
             logout();
-            showToast('Kamu telah logout');
+            showToast(t('profile.loggedOut'));
           }}
           style={({ pressed }) => [styles.logoutButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.logoutButtonText}>Logout</Text>
+          <Text style={styles.logoutButtonText}>{t('profile.logout')}</Text>
         </Pressable>
 
         <DevResetButton />
@@ -145,7 +202,7 @@ export default function ProfileScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Profile</Text>
+      <Text style={styles.title}>{t('profile.title')}</Text>
       <View style={styles.guestState}>
         <View style={styles.guestAvatar}>
           <SymbolView
@@ -154,10 +211,8 @@ export default function ProfileScreen() {
             tintColor={Palette.textMuted}
           />
         </View>
-        <Text style={styles.guestTitle}>Guest User</Text>
-        <Text style={styles.description}>
-          Masuk untuk menyimpan drama favoritmu dan melanjutkan tontonan di semua perangkat.
-        </Text>
+        <Text style={styles.guestTitle}>{t('profile.guest')}</Text>
+        <Text style={styles.description}>{t('profile.guestBlurb')}</Text>
         <Pressable
           accessibilityRole="button"
           onPress={() => {
@@ -169,9 +224,11 @@ export default function ProfileScreen() {
             end={{ x: 1, y: 1 }}
             start={{ x: 0, y: 0 }}
             style={styles.loginButtonGradient}>
-            <Text style={styles.loginButtonText}>Login</Text>
+            <Text style={styles.loginButtonText}>{t('profile.login')}</Text>
           </LinearGradient>
         </Pressable>
+
+        <LanguagePicker />
 
         <DevResetButton />
       </View>
@@ -306,6 +363,39 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     fontFamily: FontFamily.semiBold,
     color: Palette.textSecondary,
+  },
+  languageSection: {
+    gap: 10,
+    marginBottom: 8,
+  },
+  languageLabel: {
+    fontSize: 13,
+    fontFamily: FontFamily.bold,
+    color: Palette.textSecondary,
+  },
+  languageRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  languageChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Palette.border,
+  },
+  languageChipSelected: {
+    borderColor: Palette.primary,
+    backgroundColor: 'rgba(255, 122, 26, 0.14)',
+  },
+  languageChipText: {
+    fontSize: 13,
+    fontFamily: FontFamily.bold,
+    color: Palette.textSecondary,
+  },
+  languageChipTextSelected: {
+    color: Palette.primary,
   },
   processingButton: {
     marginTop: 16,

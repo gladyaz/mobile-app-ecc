@@ -10,10 +10,12 @@ import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { getSeriesById } from '@/services/videos/series-service';
 import { useEntitlement } from '@/stores/entitlement';
+import { useTranslation } from '@/stores/language';
 import { useSeriesProgress } from '@/stores/series-progress';
 import type { Episode } from '@/types/series';
 
 export default function SeriesDetailScreen() {
+  const { t } = useTranslation();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getProgress } = useSeriesProgress();
@@ -62,12 +64,12 @@ export default function SeriesDetailScreen() {
   if (error) {
     return (
       <View style={[styles.container, styles.centerState]}>
-        <Text style={styles.stateTitle}>Series gagal dimuat.</Text>
+        <Text style={styles.stateTitle}>{t('series.loadError')}</Text>
         <Pressable
           accessibilityRole="button"
           onPress={refresh}
           style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.retryButtonText}>Retry</Text>
+          <Text style={styles.retryButtonText}>{t('common.retry')}</Text>
         </Pressable>
       </View>
     );
@@ -76,12 +78,12 @@ export default function SeriesDetailScreen() {
   if (!series) {
     return (
       <View style={[styles.container, styles.centerState]}>
-        <Text style={styles.stateTitle}>Series tidak ditemukan.</Text>
+        <Text style={styles.stateTitle}>{t('series.notFound')}</Text>
         <Pressable
           accessibilityRole="button"
           onPress={handleBack}
           style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.retryButtonText}>Back</Text>
+          <Text style={styles.retryButtonText}>{t('common.back')}</Text>
         </Pressable>
       </View>
     );
@@ -105,7 +107,7 @@ export default function SeriesDetailScreen() {
         accessibilityRole="button"
         onPress={handleBack}
         style={({ pressed }) => [styles.backButton, pressed && styles.buttonPressed]}>
-        <Text style={styles.backButtonText}>Back</Text>
+        <Text style={styles.backButtonText}>{t('common.back')}</Text>
       </Pressable>
 
       <Image contentFit="cover" source={{ uri: series.coverUrl }} style={styles.cover} />
@@ -115,7 +117,7 @@ export default function SeriesDetailScreen() {
         <Text style={styles.channel}>{series.channelName}</Text>
       </View>
       <Text style={styles.title}>{series.title}</Text>
-      <Text style={styles.episodeCount}>{series.episodeCount} episode</Text>
+      <Text style={styles.episodeCount}>{t('series.episodeCount', { count: series.episodeCount })}</Text>
       <Text style={styles.description}>{series.description}</Text>
 
       {primaryPlaybackEpisode ? (
@@ -124,15 +126,15 @@ export default function SeriesDetailScreen() {
           onPress={() => handleSelectEpisode(primaryPlaybackEpisode)}
           style={({ pressed }) => [styles.playButton, pressed && styles.buttonPressed]}>
           <Text style={styles.playButtonText}>
-            {continueEpisode ? 'Lanjutkan Menonton' : 'Mulai Menonton'}
+            {continueEpisode ? t('series.continueWatching') : t('series.startWatching')}
           </Text>
         </Pressable>
       ) : null}
 
-      <Text style={styles.sectionTitle}>Episodes</Text>
+      <Text style={styles.sectionTitle}>{t('series.episodes')}</Text>
       <View style={styles.episodeList}>
         {series.episodes.length === 0 ? (
-          <Text style={styles.emptyText}>Belum ada episode tersedia.</Text>
+          <Text style={styles.emptyText}>{t('series.noEpisodes')}</Text>
         ) : (
           series.episodes.map((episode) => (
             <SeriesEpisodeRow

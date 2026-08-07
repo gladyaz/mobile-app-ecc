@@ -10,7 +10,13 @@ import { BrandMark } from '@/components/brand-mark';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { FeedProgressBar } from '@/components/feed-progress-bar';
+import { useAppForeground } from '@/hooks/use-app-foreground';
 import { useFeedBottomAnchor } from '@/hooks/use-feed-bottom-anchor';
+import {
+  logPlaybackDebug,
+  playbackPlayerLabel,
+  reportPlayingState,
+} from '@/services/debug/playback-debug';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { useTranslation } from '@/stores/language';
 import { trackEvent } from '@/services/analytics/analytics-queue';
@@ -174,6 +180,7 @@ export function DramaFeedItem({
   // Single source of truth for everything pinned to the bottom of the item.
   const { overlayBottom, progressBottom } = useFeedBottomAnchor();
   const { isPremium } = useEntitlement();
+  const isAppForeground = useAppForeground();
   // Slice 15A-S1: whether an interstitial ad is currently on screen.
   // Folded into the existing autoplay effect below (rather than a second,
   // separate imperative pause/resume effect) so it composes correctly with
@@ -225,6 +232,23 @@ export function DramaFeedItem({
     nextPlayer.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_SECONDS;
   });
 
+  // Stable per-instance label ("p1", "p2", ...) so [PlaybackDebug] lines can
+  // tell "the same player kept playing" apart from "a new player was created".
+  const playerLabel = playbackPlayerLabel(player);
+
+  // THE one authoritative playback rule. Every play()/pause() the feed issues
+  // flows from this single predicate via the reconciler effect below - no
+  // other effect may start playback. (isInFullscreen is deliberately not part
+  // of it: in native fullscreen the native controls own playback and the
+  // reconciler abstains instead.)
+  const shouldPlay =
+    hasPlaybackUrl &&
+    isActive &&
+    isScreenFocused &&
+    isAppForeground &&
+    !isManuallyPaused &&
+    !adVisible;
+
   // The setup callback above only runs once at player creation, so it can't
   // react to the isMuted preference changing (e.g. the user tapping the
   // sound toggle, or scrolling to a new active item) - that has to be a
@@ -235,11 +259,24 @@ export function DramaFeedItem({
   }, [isMuted, player]);
 
   // Same shape as the mute mirror above: the setup callback runs once, so the
-  // rate has to be pushed to the player whenever the choice changes.
+  // rate has to be pushed to the player whenever the choice changes. The
+  // equality guard is load-bearing, not an optimisation: expo-video's iOS
+  // playbackRate setter assigns AVPlayer.rate on EVERY write (its didSet runs
+  // even for an unchanged value), and a non-zero rate STARTS playback - so an
+  // unguarded mount-time write of the default 1 kicked off every mounted
+  // item's player at once, video and audio, active or not.
+  // eslint-disable-next-line react-hooks/immutability
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/immutability
-    player.playbackRate = playbackSpeed;
-  }, [playbackSpeed, player]);
+    if (player.playbackRate !== playbackSpeed) {
+      logPlaybackDebug('PLAYBACK_RATE_WRITE', {
+        video: video.id,
+        player: playerLabel,
+        rate: playbackSpeed,
+      });
+      // eslint-disable-next-line react-hooks/immutability
+      player.playbackRate = playbackSpeed;
+    }
+  }, [playbackSpeed, player, playerLabel, video.id]);
 
   useEffect(() => {
     if (!isQuickActionsVisible) {
@@ -264,6 +301,54 @@ export function DramaFeedItem({
   });
   const playbackProgressRatio =
     player.duration > 0 ? Math.min(1, Math.max(0, playbackPositionSeconds / player.duration)) : 0;
+
+  // Dev-only evidence trail. PLAYING_CHANGED with playing=true on an item
+  // whose isActive=false is the double-audio signature, and the registry
+  // turns any two simultaneous playing=true reports into a loud
+  // [PlaybackInvariantViolation] regardless of what started them.
+  useEffect(() => {
+    logPlaybackDebug('MOUNT', { video: video.id, player: playerLabel });
+
+    return () => logPlaybackDebug('UNMOUNT', { video: video.id, player: playerLabel });
+  }, [video.id, playerLabel]);
+
+  useEffect(() => {
+    logPlaybackDebug('ACTIVE_CHANGED', { video: video.id, player: playerLabel, isActive });
+  }, [isActive, video.id, playerLabel]);
+
+  useEffect(() => {
+    logPlaybackDebug('FOCUS_CHANGED', {
+      video: video.id,
+      player: playerLabel,
+      focused: isScreenFocused,
+    });
+  }, [isScreenFocused, video.id, playerLabel]);
+
+  useEffect(() => {
+    logPlaybackDebug('APP_STATE_CHANGED', {
+      video: video.id,
+      player: playerLabel,
+      foreground: isAppForeground,
+    });
+  }, [isAppForeground, video.id, playerLabel]);
+
+  useEffect(() => {
+    logPlaybackDebug('PLAYER_STATUS', { video: video.id, player: playerLabel, status });
+  }, [status, video.id, playerLabel]);
+
+  useEffect(() => {
+    logPlaybackDebug('PLAYING_CHANGED', {
+      video: video.id,
+      player: playerLabel,
+      playing: isPlaying,
+      isActive,
+      desired: shouldPlay,
+      muted: isMuted,
+    });
+    reportPlayingState(playerLabel, video.id, isPlaying);
+
+    return () => reportPlayingState(playerLabel, video.id, false);
+  }, [isPlaying, isActive, shouldPlay, isMuted, video.id, playerLabel]);
 
   const hasPlaybackError = !hasPlaybackUrl || status === 'error';
   const hasLoggedErrorRef = useRef(false);
@@ -393,24 +478,44 @@ export function DramaFeedItem({
       return;
     }
 
-    // Skip redundant play()/pause() calls when already in the desired
-    // state - repeated calls during fast swiping are a likely source of
-    // the player's "play() request was interrupted" console errors.
-    // Slice 15A-S1: `!adVisible` gates this the same way - a video paused
-    // for an ad resumes automatically when the ad closes (adVisible flips
-    // false and this effect re-runs), without needing a second effect that
-    // could otherwise race this one.
-    if (isActive && isScreenFocused && !isManuallyPaused && !adVisible) {
+    // The single playback reconciler - the only effect allowed to call
+    // play() or pause(). Skips a redundant play() when already playing:
+    // repeated play() calls during fast swiping are a likely source of the
+    // player's "play() request was interrupted" console errors.
+    // Slice 15A-S1: `!adVisible` (inside shouldPlay) gates this the same
+    // way - a video paused for an ad resumes automatically when the ad
+    // closes (adVisible flips false and this effect re-runs), without
+    // needing a second effect that could otherwise race this one.
+    if (shouldPlay) {
       if (!player.playing) {
+        logPlaybackDebug('PLAY_REQUEST', {
+          video: video.id,
+          player: playerLabel,
+          status: player.status,
+        });
         player.play();
       }
       return;
     }
 
-    if (player.playing) {
-      player.pause();
-    }
-  }, [hasPlaybackUrl, isActive, isScreenFocused, isManuallyPaused, isInFullscreen, adVisible, player]);
+    // The pause is deliberately NOT guarded by `player.playing`: that
+    // property mirrors the native player's actual state, and it stays false
+    // the whole time a play() is still pending or the clip is buffering (iOS
+    // timeControlStatus `waitingToPlayAtSpecifiedRate`, Android ExoPlayer
+    // STATE_BUFFERING). Guarding on it skipped the pause exactly when a
+    // swiped-away item was mid-buffer, and the pending play() then started
+    // audio under the new active item - two videos audible at once, looping
+    // until the item left the render window. pause() on an already-paused
+    // player is a native no-op, and JS->native player calls apply in order,
+    // so a pause issued after a pending play always wins.
+    logPlaybackDebug('PAUSE_REQUEST', {
+      video: video.id,
+      player: playerLabel,
+      playing: player.playing,
+      status: player.status,
+    });
+    player.pause();
+  }, [shouldPlay, hasPlaybackUrl, isInFullscreen, player, playerLabel, video.id]);
 
   // Slice 15A-S1: resets the accumulated-watch-time counter whenever this
   // item stops being active, so the NEXT activation starts from zero and
@@ -474,18 +579,27 @@ export function DramaFeedItem({
   }, [isPlaying]);
 
   const handlePlayPause = useCallback(() => {
+    // Only the active item may drive playback from its tap target. A tap
+    // landing on a mounted-but-inactive item (reachable on web, or during a
+    // mid-swipe layout) must never start a second player.
+    if (!isActive) {
+      return;
+    }
+
     setIsIndicatorVisible(true);
 
     if (isPlaying) {
+      logPlaybackDebug('PAUSE_REQUEST', { video: video.id, player: playerLabel, manual: true });
       player.pause();
       setIsManuallyPaused(true);
       flushProgress();
       return;
     }
 
+    logPlaybackDebug('PLAY_REQUEST', { video: video.id, player: playerLabel, manual: true });
     player.play();
     setIsManuallyPaused(false);
-  }, [isPlaying, player, flushProgress]);
+  }, [isActive, isPlaying, player, playerLabel, video.id, flushProgress]);
 
   const handleEnterFullscreen = useCallback(() => {
     void videoViewRef.current?.enterFullscreen();
@@ -527,15 +641,17 @@ export function DramaFeedItem({
   }, [firstFreeEpisodeInSeries]);
 
   const handleFullscreenEnter = useCallback(() => {
+    logPlaybackDebug('FULLSCREEN', { video: video.id, player: playerLabel, entering: true });
     setIsInFullscreen(true);
     lockOrientation(ScreenOrientation.OrientationLock.LANDSCAPE);
-  }, []);
+  }, [video.id, playerLabel]);
 
   const handleFullscreenExit = useCallback(() => {
+    logPlaybackDebug('FULLSCREEN', { video: video.id, player: playerLabel, entering: false });
     setIsInFullscreen(false);
     lockOrientation(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     flushProgress();
-  }, [flushProgress]);
+  }, [video.id, playerLabel, flushProgress]);
 
   return (
     <View

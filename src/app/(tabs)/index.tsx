@@ -22,6 +22,7 @@ import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { onVideoTransition } from '@/services/ads/ad-controller';
+import { logPlaybackDebug } from '@/services/debug/playback-debug';
 import { getNextEpisode, getSeriesById } from '@/services/videos/series-service';
 import { useSeriesProgress } from '@/stores/series-progress';
 import { useToast } from '@/stores/toast';
@@ -143,6 +144,7 @@ export default function HomeScreen() {
       }
 
       setActiveVideoId(activeItem.item.id);
+      logPlaybackDebug('VIEWABILITY_CHANGED', { video: activeItem.item.id });
 
       // Slice 15A-S1: onVideoTransition() is the counter-based interstitial
       // ad gate's entry point - it must fire exactly once per genuine

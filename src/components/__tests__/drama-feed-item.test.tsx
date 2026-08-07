@@ -1,7 +1,7 @@
 import { render, fireEvent, act, within } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import type { ReactElement } from 'react';
-import { Platform, StyleSheet } from 'react-native';
+import { AppState, Platform, StyleSheet } from 'react-native';
 
 import { DramaFeedItem, touchDistance } from '@/components/drama-feed-item';
 import { FeedBottomGap } from '@/constants/theme';
@@ -79,7 +79,28 @@ jest.mock('expo-video', () => {
 
   return {
     useVideoPlayer: jest.fn((_source: unknown, configure?: (player: unknown) => void) => {
-      const player = { loop: false, muted: false, playing: false, play: jest.fn(), pause: jest.fn() };
+      // playbackRate is a tracked property, not a plain field: on iOS the
+      // native setter assigns AVPlayer.rate on EVERY write and a non-zero
+      // rate STARTS playback, so tests must be able to assert that mounting
+      // never writes it at all.
+      const rateWrites: number[] = [];
+      let playbackRate = 1;
+      const player = {
+        loop: false,
+        muted: false,
+        playing: false,
+        play: jest.fn(),
+        pause: jest.fn(),
+        rateWrites,
+      };
+
+      Object.defineProperty(player, 'playbackRate', {
+        get: () => playbackRate,
+        set: (nextRate: number) => {
+          rateWrites.push(nextRate);
+          playbackRate = nextRate;
+        },
+      });
       configure?.(player);
       return player;
     }),
@@ -207,6 +228,17 @@ describe('touchDistance', () => {
 
 describe('DramaFeedItem', () => {
   beforeEach(() => {
+    // The component's dev-only [PlaybackDebug] instrumentation logs on every
+    // play/pause decision (Jest runs with __DEV__ true); silence it so test
+    // output stays readable.
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    // react-native's Jest preset returns undefined from
+    // AppState.addEventListener, which breaks useAppForeground's cleanup on
+    // unmount - give every test a real subscription shape by default. Tests
+    // that need to drive app-state transitions install their own spy on top.
+    jest
+      .spyOn(AppState, 'addEventListener')
+      .mockImplementation((() => ({ remove: jest.fn() })) as never);
     mockUseEntitlement.mockReturnValue({ isPremium: false, refresh: jest.fn() });
     // clearMocks only clears calls, not return values, so a case that turns
     // demo mode on (or signs the user out) would otherwise leak into every
@@ -711,5 +743,285 @@ describe('DramaFeedItem', () => {
     expect(warnSpy).toHaveBeenCalled();
 
     warnSpy.mockRestore();
+  });
+
+  describe('activation play/pause lifecycle', () => {
+    function latestPlayer() {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+      return (useVideoPlayer as jest.Mock).mock.results.at(-1)?.value as {
+        playing: boolean;
+        play: jest.Mock;
+        pause: jest.Mock;
+        rateWrites: number[];
+      };
+    }
+
+    it('does not write playbackRate at mount - on iOS that write starts every mounted player', async () => {
+      // Arrange & Act: an inactive mounted item, exactly like the ~10 items
+      // FlatList mounts around the active one at launch.
+      await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive={false} />
+      );
+
+      // Assert: no rate write means no AVPlayer.rate assignment, so nothing
+      // starts playing off-screen.
+      expect(latestPlayer().rateWrites).toEqual([]);
+    });
+
+    it('writes playbackRate only when the viewer changes the speed', async () => {
+      // Arrange
+      const { getByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isClearDisplay />
+      );
+
+      // Act
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 1x'));
+      });
+
+      // Assert: exactly the one deliberate write, no mount-time write of 1.
+      expect(latestPlayer().rateWrites).toEqual([2]);
+    });
+
+    it('plays when it is the active, focused item', async () => {
+      // Arrange & Act
+      await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive />);
+
+      // Assert
+      expect(latestPlayer().play).toHaveBeenCalled();
+    });
+
+    it('pauses on deactivation even while player.playing still reads false (double-audio regression)', async () => {
+      // Arrange: the item is active, so a play() has been issued. The mock
+      // player's `playing` stays false - exactly like a real native player
+      // that is still buffering (iOS `waitingToPlayAtSpecifiedRate`, Android
+      // ExoPlayer STATE_BUFFERING), where the pending play() will start
+      // audio only after the item has already been swiped away.
+      const video = buildVideo();
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+
+      expect(latestPlayer().play).toHaveBeenCalled();
+
+      // Act: the item stops being active while `playing` still reads false.
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+      });
+
+      // Assert: the pause must be issued anyway - guarding it behind
+      // `player.playing` is what let a buffering player keep its pending
+      // play() and speak over the next active item.
+      expect(latestPlayer().pause).toHaveBeenCalled();
+    });
+  });
+
+  describe('single-player ownership invariant', () => {
+    type MockPlayer = {
+      playing: boolean;
+      play: jest.Mock;
+      pause: jest.Mock;
+      rateWrites: number[];
+    };
+
+    function allPlayers(): MockPlayer[] {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+      return (useVideoPlayer as jest.Mock).mock.results.map(
+        (mockResult) => mockResult.value as MockPlayer
+      );
+    }
+
+    it('ten mounted items: exactly one player gets play(), the other nine get pause()', async () => {
+      // Arrange & Act: the shape FlatList produces at cold launch - several
+      // mounted items, exactly one active.
+      await renderFeedItem(
+        <>
+          {Array.from({ length: 10 }, (_, index) => (
+            <DramaFeedItem
+              key={index}
+              video={buildVideo({ id: `video-${index + 1}` })}
+              {...baseProps}
+              isActive={index === 0}
+            />
+          ))}
+        </>
+      );
+
+      // Assert: mounted != playing. One play, nine pauses, zero rate writes.
+      const players = allPlayers();
+
+      expect(players).toHaveLength(10);
+      expect(players.filter((player) => player.play.mock.calls.length > 0)).toHaveLength(1);
+      expect(players.filter((player) => player.pause.mock.calls.length > 0)).toHaveLength(9);
+      expect(players.every((player) => player.rateWrites.length === 0)).toBe(true);
+    });
+
+    it('rapid A -> B -> C transitions leave only C playing', async () => {
+      const videos = [1, 2, 3].map((n) => buildVideo({ id: `video-${n}` }));
+      const feedWithActive = (activeIndex: number) => (
+        <>
+          {videos.map((video, index) => (
+            <DramaFeedItem
+              key={video.id}
+              video={video}
+              {...baseProps}
+              isActive={index === activeIndex}
+            />
+          ))}
+        </>
+      );
+
+      const { rerender } = await renderFeedItem(feedWithActive(0));
+
+      await act(async () => {
+        rerender(feedWithActive(1));
+      });
+      await act(async () => {
+        rerender(feedWithActive(2));
+      });
+
+      // The last render pass produced one player per item, in item order.
+      const [playerA, playerB, playerC] = allPlayers().slice(-3);
+
+      expect(playerA.play).not.toHaveBeenCalled();
+      expect(playerA.pause).toHaveBeenCalled();
+      expect(playerB.play).not.toHaveBeenCalled();
+      expect(playerB.pause).toHaveBeenCalled();
+      expect(playerC.play).toHaveBeenCalled();
+      expect(playerC.pause).not.toHaveBeenCalled();
+    });
+
+    it('backgrounding pauses the active item and foregrounding resumes it', async () => {
+      const appStateListeners: ((state: string) => void)[] = [];
+      const addListenerSpy = jest.spyOn(AppState, 'addEventListener').mockImplementation(((
+        _event: string,
+        listener: (state: string) => void
+      ) => {
+        appStateListeners.push(listener);
+
+        return { remove: jest.fn() };
+      }) as never);
+
+      try {
+        await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive />);
+
+        expect(allPlayers().at(-1)!.play).toHaveBeenCalled();
+
+        await act(async () => {
+          appStateListeners.forEach((listener) => listener('background'));
+        });
+
+        expect(allPlayers().at(-1)!.pause).toHaveBeenCalled();
+
+        await act(async () => {
+          appStateListeners.forEach((listener) => listener('active'));
+        });
+
+        expect(allPlayers().at(-1)!.play).toHaveBeenCalled();
+      } finally {
+        addListenerSpy.mockRestore();
+      }
+    });
+
+    it('foregrounding never starts an inactive item', async () => {
+      const appStateListeners: ((state: string) => void)[] = [];
+      const addListenerSpy = jest.spyOn(AppState, 'addEventListener').mockImplementation(((
+        _event: string,
+        listener: (state: string) => void
+      ) => {
+        appStateListeners.push(listener);
+
+        return { remove: jest.fn() };
+      }) as never);
+
+      try {
+        await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive={false} />
+        );
+
+        await act(async () => {
+          appStateListeners.forEach((listener) => listener('background'));
+        });
+        await act(async () => {
+          appStateListeners.forEach((listener) => listener('active'));
+        });
+
+        expect(allPlayers().at(-1)!.play).not.toHaveBeenCalled();
+        expect(allPlayers().at(-1)!.pause).toHaveBeenCalled();
+      } finally {
+        addListenerSpy.mockRestore();
+      }
+    });
+
+    it('losing screen focus pauses; regaining focus resumes only the active item', async () => {
+      const video = buildVideo();
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive isScreenFocused={false} />);
+      });
+
+      expect(allPlayers().at(-1)!.pause).toHaveBeenCalled();
+
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive isScreenFocused />);
+      });
+
+      expect(allPlayers().at(-1)!.play).toHaveBeenCalled();
+    });
+
+    it('fullscreen transition keeps ownership with the fullscreen player', async () => {
+      const video = buildVideo({ width: 1280, height: 720 });
+
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} isActive />);
+
+      await act(async () => {
+        mockLatestVideoViewProps.onFullscreenEnter?.();
+      });
+
+      // While native fullscreen owns playback, the reconciler abstains: it
+      // must neither pause the fullscreen playback nor issue competing plays.
+      const playerInFullscreen = allPlayers().at(-1)!;
+
+      expect(playerInFullscreen.play).not.toHaveBeenCalled();
+      expect(playerInFullscreen.pause).not.toHaveBeenCalled();
+
+      await act(async () => {
+        mockLatestVideoViewProps.onFullscreenExit?.();
+      });
+
+      expect(allPlayers().at(-1)!.play).toHaveBeenCalled();
+    });
+
+    it('the 2x speed control cannot start an inactive player', async () => {
+      const { getByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive={false} isClearDisplay />
+      );
+
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 1x'));
+      });
+
+      const player = allPlayers().at(-1)!;
+
+      expect(player.rateWrites).toEqual([2]);
+      expect(player.play).not.toHaveBeenCalled();
+    });
+
+    it('a tap on an inactive item play/pause target does not start playback', async () => {
+      const { getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive={false} />
+      );
+
+      await act(async () => {
+        fireEvent.press(getByTestId('feed-item-play-pause'));
+      });
+
+      expect(allPlayers().at(-1)!.play).not.toHaveBeenCalled();
+    });
   });
 });

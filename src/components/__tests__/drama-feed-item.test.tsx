@@ -89,6 +89,7 @@ jest.mock('@/stores/entitlement', () => ({
 let mockLatestVideoViewProps: {
   onFullscreenEnter?: () => void;
   onFullscreenExit?: () => void;
+  nativeControls?: boolean;
 } = {};
 const mockExitFullscreen = jest.fn(() => Promise.resolve());
 
@@ -883,6 +884,43 @@ describe('DramaFeedItem', () => {
     expect(warnSpy).toHaveBeenCalled();
 
     warnSpy.mockRestore();
+  });
+
+  describe('fullscreen affordances (reported from device QA)', () => {
+    it('keeps the Fullscreen button clear of the feed brand overlay', async () => {
+      // The overlay in app/(tabs)/index.tsx starts at top: 64 and is roughly
+      // 20pt tall; at the old top: 54 the label rendered over the wordmark.
+      const video = buildVideo({ width: 1280, height: 720 });
+      const { getByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      const button = getByText('Fullscreen').parent;
+      const style = StyleSheet.flatten(button?.props.style);
+
+      expect(style.top).toBeGreaterThan(90);
+    });
+
+    it('hands control to the platform while fullscreen, so there is a visible way out', async () => {
+      // With nativeControls permanently false, fullscreen had no chrome at
+      // all and no exit button - a viewer had to guess that rotating the
+      // device was the only way back.
+      const video = buildVideo({ width: 1280, height: 720 });
+
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} isActive />);
+
+      expect(mockLatestVideoViewProps.nativeControls).toBe(false);
+
+      await act(async () => {
+        mockLatestVideoViewProps.onFullscreenEnter?.();
+      });
+      expect(mockLatestVideoViewProps.nativeControls).toBe(true);
+
+      await act(async () => {
+        mockLatestVideoViewProps.onFullscreenExit?.();
+      });
+      expect(mockLatestVideoViewProps.nativeControls).toBe(false);
+    });
   });
 
   describe('activation play/pause lifecycle', () => {

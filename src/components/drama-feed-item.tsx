@@ -123,6 +123,10 @@ function lockOrientation(orientation: ScreenOrientation.OrientationLock) {
 // portion of frame where a video's burned-in subtitle typically sits. Capping
 // the block's width on wide screens keeps it compact without touching the
 // bottom anchor or phone-width layout.
+// Clears the feed's brand overlay, which starts at top: 64 and is roughly 20pt
+// tall. Anything above ~90 collides with the wordmark.
+const FULLSCREEN_BUTTON_TOP = 104;
+
 const WIDE_LAYOUT_BREAKPOINT = 700;
 const DETAILS_MAX_WIDTH_WIDE = 440;
 
@@ -928,7 +932,14 @@ export function DramaFeedItem({
               orientation: 'landscape',
               autoExitOnRotate: true,
             }}
-            nativeControls={false}
+            // The feed itself keeps its custom chrome, but native fullscreen
+            // had `nativeControls={false}` too - which left it with no
+            // controls at all, so a viewer who entered fullscreen had no
+            // visible way back out and had to guess (rotating the device was
+            // the only exit). Enabling the platform controls while, and only
+            // while, fullscreen is active restores the standard Done/collapse
+            // affordance people already know, without touching the in-feed UI.
+            nativeControls={isInFullscreen}
             onFullscreenEnter={handleFullscreenEnter}
             onFullscreenExit={handleFullscreenExit}
             player={player}
@@ -1261,7 +1272,13 @@ const styles = StyleSheet.create({
   },
   fullscreenButton: {
     position: 'absolute',
-    top: 54,
+    // Sits below the feed's "Red Panda" brand overlay (top: 64 in
+    // app/(tabs)/index.tsx), not beside it. At top: 54 the two occupied the
+    // same corner and the label rendered on top of the wordmark - reported
+    // from a device, where a horizontal clip is the only case that shows this
+    // button at all. The opposite corner is already taken by "Episode
+    // Berikutnya", so the free space is downward.
+    top: FULLSCREEN_BUTTON_TOP,
     left: 18,
     minWidth: 74,
     alignItems: 'center',

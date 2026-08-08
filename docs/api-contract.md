@@ -472,7 +472,40 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - MVP priority: P0
 - Backend notes: Optimize for paginated mobile playback. Backend can serve processed videos through a media/static endpoint first, then later return CDN or signed URLs in `playbackUrl`.
 - Connected: Yes. `getVideoFeed()` in `src/services/videos/video-service.ts` calls `request('videos/feed')` (the typed client in `src/services/api/client.ts`), and `VideoCatalogProvider` (`src/features/videos/video-catalog-provider.tsx`) fetches it on mount for the Home feed. `id`, `seriesId`, `title`, `episodeNumber`, `channelName`, `caption`, `category`, `storageKey`, `playbackUrl`, `sourceLanguage`, and `hasEmbeddedIndonesianSubtitle`, and `likeCount` are all validated as required by `mapBackendVideoToVideo` (`src/services/videos/video-mapper.ts`) and will throw if missing; `thumbnailUrl`, `width`, `height`, and `durationSeconds` are optional. The mapper always sets `isSaved: false` and drops any `isLiked` field entirely — save/like state comes only from the local `VideoInteractionsProvider` (`src/stores/video-interactions.tsx`), not this response. When `EXPO_PUBLIC_USE_MOCK_DATA=true`, this call is bypassed and bundled mock data is returned instead.
-- **`playbackUrl` (Phase 10, work unit 10-B3/10-M2):** the video stream endpoint (`GET {playbackUrl}`, i.e. `GET /videos/:id/stream` on the backend) now requires `Authorization: Bearer <accessToken>` — previously unauthenticated. `src/components/drama-feed-item.tsx` attaches the current access token (read from `src/services/auth/token-store.ts`) via `expo-video`'s `VideoSource.headers` option, since `useVideoPlayer` is a native player call, not a `request()`-mediated fetch. Episodes past `FREE_EPISODE_LIMIT` additionally require an active entitlement — see `GET /users/me/entitlement` below. (Phase 11: the free/premium decision behind that guard is now sourced from a DB-backed per-episode tier rather than pure `episodeNumber` math, with the existing outcome preserved for every episode — see the Phase 11 note under "Series and Episode" above. Nothing about this paragraph's mobile-visible behavior changed.)
+- **`playbackUrl` (Phase 10, work unit 10-B3/10-M2; superseded for actual playback by Slice 11M — see `GET /videos/:id/playback` below):** the video stream endpoint (`GET {playbackUrl}`, i.e. `GET /videos/:id/stream` on the backend) requires `Authorization: Bearer <accessToken>`. This field is still returned on every feed item and is still what `src/app/(tabs)/index.tsx`'s Share action links to, but as of Slice 11M `src/components/drama-feed-item.tsx` no longer plays it directly — R2-backed media has an empty local `storageKey`, so this URL 404s for those rows. The feed item instead requests a playable URL from `GET /videos/:id/playback` for the active item only; see that endpoint's entry below for the full contract. Episodes past `FREE_EPISODE_LIMIT` require an active entitlement — see `GET /users/me/entitlement` below. (Phase 11: the free/premium decision behind that guard is sourced from a DB-backed per-episode tier rather than pure `episodeNumber` math, with the existing outcome preserved for every episode — see the Phase 11 note under "Series and Episode" above.)
+
+### GET /videos/:id/playback
+
+- Purpose: Return short-lived authorization to play one video, for either storage kind the backend holds it in (Slice 11M; see the control workspace `DECISIONS.md`, "Slice 11M approved; playback contract decided (Option A, dedicated endpoint)", 2026-08-08).
+- Method and path: `GET /videos/:id/playback`
+- Auth required: Yes (same Bearer auth as the rest of the API)
+- Request path params: `{ "id": "video_001" }`
+- Example response (`PlaybackAuthorization`, `src/types/playback.ts` — raw DTO, no envelope):
+
+```json
+{
+  "playbackUrl": "https://media.example.com/videos/video_001/stream",
+  "expiresAt": "2026-08-08T10:15:00.000Z",
+  "requiresAuthHeader": true
+}
+```
+
+For an R2-backed video the same shape instead carries a short-lived (15
+minute) presigned GET URL straight to the storage provider:
+
+```json
+{
+  "playbackUrl": "https://r2.example.com/bucket/video_002.mp4?X-Amz-Signature=...",
+  "expiresAt": "2026-08-08T10:15:00.000Z",
+  "requiresAuthHeader": false
+}
+```
+
+- Mobile screen: Home (the feed item's active-item player source)
+- MVP priority: P0 (Phase 11, Slice 11M)
+- Backend notes: Answers for BOTH storage kinds so the mobile app keeps one code path and learns nothing about R2 — local-backed media gets the existing `/videos/:id/stream` URL with `requiresAuthHeader: true`; R2-backed media gets a presigned GET with `requiresAuthHeader: false`. The object key is always read from the media row server-side; no key, bucket, or endpoint is ever accepted from the client. Applies the same premium-entitlement gate `/videos/:id/stream` already enforces. Throws `ApiError` with: 404 (not found / not published), 401 `INVALID_ACCESS_TOKEN` (unauthenticated), 403 `ENTITLEMENT_REQUIRED` (premium episode, no entitlement), 409 `MEDIA_PLAYBACK_SOURCE_UNAVAILABLE` (row has no usable storage).
+- **Client note (load-bearing):** a presigned R2 URL rejects a request that also carries an `Authorization` header ("only one auth mechanism") — the mobile client MUST attach `Authorization: Bearer <accessToken>` only when `requiresAuthHeader` is `true`, never unconditionally.
+- Connected: Yes. `getPlaybackAuthorization(videoId)` in `src/services/videos/video-service.ts` calls `request('videos/${videoId}/playback', { method: 'GET' }, { requiresAuth: true })`. `src/components/drama-feed-item.tsx` requests this ONLY for the item that is currently active — never for off-screen mounted items — and feeds the resolved `playbackUrl`/conditional header to `useVideoPlayer`'s source. The response is held in component state only (never persisted to `AsyncStorage` or any store) and is re-requested once `expiresAt` has passed and the item is active again. A response that arrives after the item is no longer active, or after a newer request for the same item, is discarded. Every failure mode (including 403) folds into the existing "video unavailable" error state — there is no separate mobile-visible error UI per status code. When `EXPO_PUBLIC_USE_MOCK_DATA=true` (or in a demo build), this call is bypassed and an authorization is synthesized from the matching bundled/mock video's own `playbackUrl`, mirroring `getVideoFeed()`/`getVideoById()` above; `requiresAuthHeader` is `false` in a demo build (nothing to authorize for a bundled clip) and `true` otherwise.
 
 ### GET /videos/:id
 

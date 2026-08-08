@@ -63,3 +63,9 @@ The backend should translate internal storage records into mobile-safe response 
 ## Future CDN Option
 
 The backend can start by serving files through a media/static endpoint. Later, the same contract can point `playbackUrl` and `thumbnailUrl` to CDN URLs without changing the mobile app data model.
+
+## Playback authorization (Slice 11M)
+
+The CDN option above is now partially real: some media lives in Cloudflare R2 rather than local disk, with an empty local `storageKey`. `playbackUrl` on `/videos/feed`/`/videos/:id` still exists (and is what the feed item's Share action links to), but it is no longer what the mobile app actually plays — it always points at `/videos/:id/stream`, which 404s for an R2-backed row.
+
+Instead, the mobile app requests a playable URL from a dedicated `GET /videos/:id/playback` endpoint (see `docs/api-contract.md`) for whichever video is currently active. That endpoint answers for both storage kinds behind one shape — `{ playbackUrl, expiresAt, requiresAuthHeader }` — so the mobile app never has to know whether a given video is R2- or local-backed: it attaches `Authorization: Bearer <accessToken>` only when `requiresAuthHeader` is true, and always treats the URL as short-lived (never persisted, re-requested once `expiresAt` has passed). The bucket itself remains private; a presigned R2 URL is the only thing that ever reaches the client, and the mobile app never receives an R2 key, bucket name, or endpoint directly.

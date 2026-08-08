@@ -3,7 +3,7 @@ import { router } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { SymbolView } from 'expo-symbols';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { BrandMark } from '@/components/brand-mark';
@@ -18,9 +18,11 @@ import { useTranslation } from '@/stores/language';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { recordVideoWatched } from '@/services/ads/ad-controller';
 import { getTokens } from '@/services/auth/token-store';
+import { getPlaybackAuthorization } from '@/services/videos/video-service';
 import { useAdsStore } from '@/stores/ads-store';
 import { useEntitlement } from '@/stores/entitlement';
 import type { Episode } from '@/types/series';
+import type { PlaybackAuthorization } from '@/types/playback';
 import type { Video } from '@/types/video';
 
 // How often the player emits a timeUpdate event, used to drive the
@@ -82,6 +84,22 @@ const PROGRESS_WRITE_INTERVAL_MS = 5000;
 // the cumulative threshold (seconds) at which it counts.
 const AD_WATCH_ACCUMULATION_TICK_MS = 1000;
 const AD_WATCHED_THRESHOLD_SECONDS = 5;
+
+// Slice 11M: how long before a playback grant's real expiry to proactively
+// refresh it - a margin, not a poll interval. Scheduled exactly once per
+// grant, so a continuously-active item's URL is swapped for a fresh one
+// before the old one can actually die mid-playback.
+const PLAYBACK_AUTH_REFRESH_MARGIN_MS = 30 * 1000;
+
+// Bounded automatic recovery from a transient authorization failure (e.g. a
+// network blip) for an item that never leaves the active slot - a scroll
+// away and back already retries for free (see the reset alongside
+// `wasActive` below), but a continuously-active item needs its own bounded
+// retry so a single blip doesn't brick it permanently. Capped, not
+// indefinite: hammering a genuinely-permanent failure (e.g. a revoked
+// entitlement) forever would be its own kind of waste.
+const MAX_PLAYBACK_AUTH_AUTO_RETRIES = 3;
+const PLAYBACK_AUTH_RETRY_DELAY_MS = 5000;
 
 // screen-orientation lock is only meaningful where the OS actually exposes
 // it (iOS/Android) - on web, lockAsync always rejects with a
@@ -184,6 +202,13 @@ export function DramaFeedItem({
   // user had already paused themselves.
   const adVisible = useAdsStore((state) => state.adVisible);
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
+  // Slice 11M / MEDIUM-6: counts consecutive automatic playback-authorization
+  // retries for the current active stint. Real state, not a ref: the
+  // scheduled-refresh-or-retry effect further down needs to actually
+  // RE-RUN after each failed retry to decide whether to schedule the next
+  // one, and a ref write cannot trigger that (nor may it be written during
+  // render - see the reset blocks below).
+  const [authRetryAttempt, setAuthRetryAttempt] = useState(0);
   // A tap-to-pause is a choice about the episode in front of the viewer, not
   // a lasting property of that episode. Without this reset it becomes one:
   // `isManuallyPaused` feeds `shouldPlay`, so swiping away from a paused
@@ -198,51 +223,235 @@ export function DramaFeedItem({
 
     if (!isActive) {
       setIsManuallyPaused(false);
+      // A scroll-away is its own fresh start: the next activation gets a
+      // full new budget of automatic authorization retries rather than
+      // inheriting whatever was left over from this stint.
+      setAuthRetryAttempt(0);
     }
   }
   const [isInFullscreen, setIsInFullscreen] = useState(false);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
   const [isIndicatorVisible, setIsIndicatorVisible] = useState(true);
   const [isCaptionExpanded, setIsCaptionExpanded] = useState(false);
-  // Phase 10, work unit 10-B3 (backend) / 10-M2 (mobile): `GET
-  // /videos/:id/stream` now requires `Authorization: Bearer <accessToken>`.
-  // `useVideoPlayer` doesn't go through `services/api/client.ts`'s
-  // `request()` helper (it's the native player, not a fetch call), so the
-  // token has to be attached directly via expo-video's own `headers`
-  // option. Reading `token-store.ts` directly (not `useAuth()`) matches
-  // that module's existing design: it's the shared, React-free source of
-  // truth for the current token pair specifically so non-React callers
-  // like this one don't need to thread the token through props.
+  // Slice 11M: the feed no longer plays `video.playbackUrl` directly. That
+  // field still exists (Share continues to use it), but the backend's
+  // `/videos/:id/stream` 404s for R2-backed media (empty local storageKey)
+  // - see the control workspace `DECISIONS.md`, "Slice 11M approved;
+  // playback contract decided (Option A, dedicated endpoint)", 2026-08-08.
+  // A real, playable URL now comes ONLY from `GET /videos/:id/playback`
+  // (`getPlaybackAuthorization`, requested below), which answers for BOTH
+  // storage kinds so this component stays ignorant of which one it got:
+  // `requiresAuthHeader` says whether to attach the Bearer token, never a
+  // hardcoded assumption. That request is fired ONLY for the active item -
+  // signing (or, in a demo build, resolving) a URL nobody is watching is
+  // pure waste - so `playbackAuth` starts and stays `null` for every
+  // off-screen item.
   //
-  // `hasPlaybackUrl` folds in "do we actually have a token to attach" too
-  // (not just "is the URL string non-empty") — every downstream usage of
-  // this flag (autoplay guard, progress-recording guard, the error-state
-  // UI) already means "is there a real playable source," so a logged-out
-  // guest correctly falls straight into the existing error-state UI
-  // instead of a silently-stuck idle player with no source and no message.
+  // `hasPlaybackUrl` therefore now means "authorization has actually
+  // arrived," not merely "we have a token" - every downstream usage of this
+  // flag (autoplay guard, progress-recording guard, the error-state UI)
+  // already means "is there a real playable source right now."
   const accessToken = getTokens()?.accessToken;
   // A demo build plays clips bundled into the binary, so there is no
   // token-protected endpoint in front of them and nothing to authorise -
   // demanding a token there would hide the whole product behind a login for
-  // no reason. Every other build keeps the Phase 10 contract intact:
-  // `GET /videos/:id/stream` rejects an unauthenticated request, so without a
-  // token there genuinely is nothing playable and the error state is correct.
+  // no reason. Every other build keeps the Phase 10 contract intact: the
+  // real stream/presigned URL this resolves to requires a real session, so
+  // without a token there genuinely is nothing to authorize.
   const requiresAccessToken = !isDemoMode();
-  const hasPlaybackUrl =
-    video.playbackUrl.length > 0 && (!requiresAccessToken || Boolean(accessToken));
+  const [playbackAuth, setPlaybackAuth] = useState<PlaybackAuthorization | null>(null);
+  const [hasPlaybackAuthError, setHasPlaybackAuthError] = useState(false);
+  // A cached grant belongs to the video it was fetched for, never to
+  // whatever video this component instance happens to hold later. Reset
+  // here using the same render-time "reset when a prop changes" pattern as
+  // `wasActive` above (not an effect, for the same avoid-an-extra-render
+  // reason), so a component instance that receives a DIFFERENT video while
+  // holding a still-valid grant never plays the PREVIOUS video's URL under
+  // the NEW video's metadata. Not reachable through today's keyed FlatList
+  // (each mounted instance owns one video id for its whole lifetime), but
+  // cheap insurance against a future caller that recycles instances.
+  const [lastVideoId, setLastVideoId] = useState(video.id);
+
+  if (lastVideoId !== video.id) {
+    setLastVideoId(video.id);
+    setPlaybackAuth(null);
+    setHasPlaybackAuthError(false);
+    setAuthRetryAttempt(0);
+  }
+
+  // Kept in sync via a LAYOUT effect, not a plain `useEffect` (this file's
+  // lint config also disallows writing `ref.current` directly during
+  // render - refs may only be read/written outside of render). A regular
+  // `useEffect` is deferred until after paint, which leaves a narrow
+  // commit -> passive-effect-flush window where an in-flight promise's
+  // `.then` (a microtask, which can run before that deferred flush) would
+  // still read the previous value. `useLayoutEffect` runs synchronously as
+  // part of the same commit, closing that window.
+  const isActiveRef = useRef(isActive);
+
+  useLayoutEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
+  // Distinguishes "the latest authorization request for this item" from
+  // any earlier one still in flight. Bumped every time a new request is
+  // issued; a response is only ever applied when its own id still matches
+  // the current value, which is what makes a superseded (or now-inactive)
+  // response a safe no-op instead of wiring up a stale/dead URL.
+  const playbackRequestIdRef = useRef(0);
+  const hasPlaybackUrl = playbackAuth !== null && playbackAuth.playbackUrl.length > 0;
+  const playbackHeaders = playbackAuth?.requiresAuthHeader
+    ? { Authorization: `Bearer ${accessToken}` }
+    : undefined;
+  const playbackSource =
+    playbackAuth && hasPlaybackUrl ? { uri: playbackAuth.playbackUrl, headers: playbackHeaders } : null;
   const videoViewRef = useRef<VideoView>(null);
   const isInFullscreenRef = useRef(false);
   const hasSeekedToResumeRef = useRef(false);
-  const playbackHeaders = requiresAccessToken
-    ? { Authorization: `Bearer ${accessToken}` }
-    : undefined;
-  const playbackSource = hasPlaybackUrl
-    ? { uri: video.playbackUrl, headers: playbackHeaders }
-    : null;
   const player = useVideoPlayer(playbackSource, (nextPlayer) => {
     nextPlayer.loop = true;
     nextPlayer.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_SECONDS;
   });
+
+  // THE only function that calls `getPlaybackAuthorization`. Both effects
+  // below (initial-activation/reactivation fetch, and the scheduled
+  // refresh-or-retry effect) call this instead of duplicating its
+  // request-issuing/race-guard logic, so there remains exactly one place
+  // that actually issues a request.
+  //
+  // Runs as an async function rather than calling `setXxx` synchronously in
+  // an effect body (matching `stores/entitlement.tsx`'s existing hydration
+  // pattern) - satisfying `react-hooks/set-state-in-effect` ("subscribe/
+  // fire-and-forget, don't set state synchronously in the effect body").
+  const requestAuthorization = useCallback(async () => {
+    // No token yet means the real endpoint would just 401 - skip the
+    // network round trip entirely and fail the same way synchronously,
+    // matching the pre-Slice-11M "logged out -> error state" behavior.
+    // Demo builds need no token at all (requiresAccessToken is false
+    // there).
+    if (requiresAccessToken && !accessToken) {
+      setPlaybackAuth(null);
+      setHasPlaybackAuthError(true);
+      return;
+    }
+
+    playbackRequestIdRef.current += 1;
+    const requestId = playbackRequestIdRef.current;
+    setHasPlaybackAuthError(false);
+
+    try {
+      const authorization = await getPlaybackAuthorization(video.id);
+
+      // Drop the response if a newer request has since been issued for
+      // this item, or if the item is no longer the active one - either
+      // way, this result is stale and must never reach the player.
+      if (playbackRequestIdRef.current !== requestId || !isActiveRef.current) {
+        return;
+      }
+
+      // Defense-in-depth: `video-service.ts` already validates the response
+      // shape and throws on anything malformed, but an empty `playbackUrl`
+      // is a silent, permanent black screen (neither the error state nor a
+      // spinner) if it ever slipped through - treat it as a failure, never
+      // as "nothing to do yet."
+      if (!authorization.playbackUrl) {
+        setPlaybackAuth(null);
+        setHasPlaybackAuthError(true);
+        return;
+      }
+
+      setAuthRetryAttempt(0);
+      setPlaybackAuth(authorization);
+    } catch {
+      if (playbackRequestIdRef.current !== requestId || !isActiveRef.current) {
+        return;
+      }
+
+      setPlaybackAuth(null);
+      setHasPlaybackAuthError(true);
+    }
+  }, [video.id, accessToken, requiresAccessToken]);
+
+  // Fetches on activation (or reactivation, or a video-id change while
+  // already active) whenever there is no still-valid cached grant. Gated on
+  // `isActive` alone (not `isScreenFocused`/`isAppForeground`/etc. - those
+  // only govern whether an already-authorized item plays, not whether it
+  // may fetch authorization at all) so an off-screen item never signs a URL
+  // nobody is about to watch. Reuses a still-valid `playbackAuth` across a
+  // brief deactivation/reactivation instead of re-fetching.
+  useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+
+    const isExpired = playbackAuth ? Date.parse(playbackAuth.expiresAt) <= Date.now() : true;
+
+    if (playbackAuth && !isExpired) {
+      return;
+    }
+
+    void (async () => {
+      await requestAuthorization();
+    })();
+  }, [isActive, playbackAuth, requestAuthorization]);
+
+  // A SINGLE scheduled timer (never a polling loop) that either refreshes
+  // an about-to-expire grant, or retries a failed one, while - and only
+  // while - the item stays active. Without this, `player.loop = true`
+  // means a continuously-active item would keep looping on a dead URL
+  // forever once its 15-minute grant expired, landing in a permanent
+  // "video unavailable" that only leaving and re-entering the active slot
+  // could clear.
+  useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const msUntilExpiry = playbackAuth ? Date.parse(playbackAuth.expiresAt) - Date.now() : null;
+
+    if (msUntilExpiry !== null && msUntilExpiry > 0) {
+      // Scheduled with a safety margin before the real expiry, so the swap
+      // to a freshly-signed URL happens before the old one can actually die
+      // mid-playback, not in a race with it. A grant that is ALREADY
+      // expired by the time this effect runs is deliberately NOT handled
+      // here - the activation effect above's own `isExpired` check already
+      // fires a request for that case, and scheduling a second one here
+      // too (at a clamped 0 ms delay) would double-fire for the exact same
+      // need.
+      const refreshDelayMs = Math.max(0, msUntilExpiry - PLAYBACK_AUTH_REFRESH_MARGIN_MS);
+
+      timeoutId = setTimeout(() => {
+        // The item may have left the active slot while this was pending -
+        // a refresh must never hand a freshly-signed URL to a player that
+        // is no longer the one being watched.
+        if (!isActiveRef.current) {
+          return;
+        }
+
+        void requestAuthorization();
+      }, refreshDelayMs);
+    } else if (!playbackAuth && hasPlaybackAuthError && authRetryAttempt < MAX_PLAYBACK_AUTH_AUTO_RETRIES) {
+      timeoutId = setTimeout(() => {
+        if (!isActiveRef.current) {
+          return;
+        }
+
+        // Real state, not a ref: this MUST cause a re-render so the effect
+        // re-runs and can decide whether to schedule the NEXT retry - a
+        // repeat failure leaves `hasPlaybackAuthError`/`playbackAuth`
+        // unchanged, so a ref bump alone would never re-trigger this effect
+        // again after the first retry.
+        setAuthRetryAttempt((current) => current + 1);
+        void requestAuthorization();
+      }, PLAYBACK_AUTH_RETRY_DELAY_MS);
+    }
+
+    return () => {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [isActive, playbackAuth, hasPlaybackAuthError, requestAuthorization, authRetryAttempt]);
 
   // Stable per-instance label ("p1", "p2", ...) so a reported invariant
   // violation names which players were audible at the same time.
@@ -346,7 +555,12 @@ export function DramaFeedItem({
     return () => reportPlayingState(playerLabel, video.id, false);
   }, [isPlaying, video.id, playerLabel]);
 
-  const hasPlaybackError = !hasPlaybackUrl || status === 'error';
+  // Deliberately NOT `!hasPlaybackUrl` anymore: that's also true for an
+  // off-screen item that has never requested authorization, or an active
+  // item whose request just hasn't resolved yet - neither is a failure.
+  // Only an explicit authorization failure or a player-reported error
+  // counts as "this cannot play."
+  const hasPlaybackError = hasPlaybackAuthError || status === 'error';
   const hasLoggedErrorRef = useRef(false);
 
   // Prefer backend-provided dimensions (instant); fall back to the actual
@@ -462,12 +676,20 @@ export function DramaFeedItem({
     }
 
     hasLoggedErrorRef.current = true;
-    console.warn(
-      `[DramaFeedItem] Unable to play "${video.title}". playbackUrl=${
-        video.playbackUrl || '(empty)'
-      }${error ? ` error=${error.message}` : ''}`
-    );
-  }, [error, hasPlaybackError, video.playbackUrl, video.title]);
+    // Never log the playback URL. A presigned R2 URL carries its signature
+    // in the query string, and even the local-stream URL is a
+    // backend-internal address - both stay out of this log even though
+    // it's __DEV__-only, since it still lands in Metro output, device
+    // logs, CI logs, and screen shares. Log the video id and a sanitized
+    // reason instead.
+    const reason = hasPlaybackAuthError
+      ? 'authorization failed'
+      : error
+        ? `player error: ${error.message}`
+        : 'unknown';
+
+    console.warn(`[DramaFeedItem] Unable to play video ${video.id}. reason=${reason}`);
+  }, [error, hasPlaybackAuthError, hasPlaybackError, video.id]);
 
   useEffect(() => {
     if (!hasPlaybackUrl || isInFullscreen) {

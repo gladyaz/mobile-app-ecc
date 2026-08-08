@@ -7,8 +7,15 @@ import { DramaFeedItem, touchDistance } from '@/components/drama-feed-item';
 import { FeedBottomGap } from '@/constants/theme';
 import { resetPlaybackInvariantForTests } from '@/services/debug/playback-invariant';
 import type { Episode } from '@/types/series';
+import type { PlaybackAuthorization } from '@/types/playback';
 import type { Video } from '@/types/video';
 
+// `render()` in this testing-library version is itself async (it returns a
+// thenable that flushes pending work, including microtask-queued effects,
+// when awaited) - every call site already does `await renderFeedItem(...)`.
+// The active item's mount effect kicks off an async playback-authorization
+// fetch (mocked below); awaiting `render()` is what flushes that fetch's
+// resolution and the resulting setState before control returns to the test.
 function renderFeedItem(ui: ReactElement) {
   return render(ui);
 }
@@ -59,6 +66,17 @@ jest.mock('@/services/analytics/analytics-queue', () => ({
   trackEvent: jest.fn(),
 }));
 
+// Slice 11M: the active item authorizes playback through this call instead
+// of playing `video.playbackUrl` directly. Mocked here (rather than mocking
+// `@/services/api/client`'s `request`) so tests can assert on exactly what
+// this component does with the resolved `{ playbackUrl, requiresAuthHeader,
+// expiresAt }` shape without needing to know it goes over HTTP at all.
+const mockGetPlaybackAuthorization = jest.fn();
+
+jest.mock('@/services/videos/video-service', () => ({
+  getPlaybackAuthorization: (videoId: string) => mockGetPlaybackAuthorization(videoId),
+}));
+
 const mockUseEntitlement = jest.fn();
 
 jest.mock('@/stores/entitlement', () => ({
@@ -79,16 +97,24 @@ jest.mock('expo-video', () => {
   const ReactModule = require('react');
 
   return {
-    // Mirrors expo-video's real contract: useVideoPlayer returns the SAME
-    // player instance across re-renders (it is built on
-    // useReleasingSharedObject). A mock that returned a fresh object per
-    // render would make every effect keyed on `player` re-run on every
-    // render, which hides the bug class where an effect legitimately does
-    // NOT re-run because its dependency values did not change.
-    useVideoPlayer: jest.fn((_source: unknown, configure?: (player: unknown) => void) => {
+    // Mirrors expo-video's real contract (it is built on
+    // useReleasingSharedObject): useVideoPlayer returns the SAME player
+    // instance across re-renders that carry an UNCHANGED source, but hands
+    // back a NEW instance the moment the source actually changes (e.g. a
+    // token refresh, or - Slice 11M - the active item's playback URL
+    // arriving asynchronously / being refreshed). Comparing by value
+    // (`JSON.stringify`), not by reference, matters both ways: every
+    // render builds a fresh `{ uri, headers }` object literal even when
+    // nothing meaningful changed, so reference equality would replace the
+    // player on every render (hiding the bug class where an effect
+    // legitimately does NOT re-run because its dependency values did not
+    // change); only a real value change may replace it.
+    useVideoPlayer: jest.fn((source: unknown, configure?: (player: unknown) => void) => {
       const playerRef = ReactModule.useRef(null);
+      const sourceKeyRef = ReactModule.useRef(undefined);
+      const nextSourceKey = JSON.stringify(source ?? null);
 
-      if (!playerRef.current) {
+      if (!playerRef.current || sourceKeyRef.current !== nextSourceKey) {
         // playbackRate is a tracked property, not a plain field: on iOS the
         // native setter assigns AVPlayer.rate on EVERY write and a non-zero
         // rate STARTS playback, so tests must be able to assert that mounting
@@ -113,6 +139,7 @@ jest.mock('expo-video', () => {
         });
         configure?.(player);
         playerRef.current = player;
+        sourceKeyRef.current = nextSourceKey;
       }
 
       return playerRef.current;
@@ -191,6 +218,81 @@ function buildVideo(overrides: Partial<Video> = {}): Video {
   };
 }
 
+function buildPlaybackAuthorization(
+  overrides: Partial<{
+    playbackUrl: string;
+    expiresAt: string;
+    requiresAuthHeader: boolean;
+  }> = {}
+) {
+  return {
+    playbackUrl: 'https://media.example.com/video-1.mp4',
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    requiresAuthHeader: true,
+    ...overrides,
+  };
+}
+
+/**
+ * A promise whose resolution is controlled by the test, so a race between
+ * two in-flight `getPlaybackAuthorization` calls can be driven to a
+ * specific, deterministic order instead of relying on incidental timing.
+ */
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  return { promise, resolve, reject };
+}
+
+/**
+ * Grabs the most recently created mock player instance. Module-scoped
+ * (unlike the `allPlayers()`/`latestPlayer()` helpers defined inside their
+ * own `describe` blocks below) so the Slice 11M describe block can use it
+ * too without duplicating it.
+ */
+function latestMockPlayer() {
+  const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+  return (useVideoPlayer as jest.Mock).mock.results.at(-1)?.value as {
+    play: jest.Mock;
+    pause: jest.Mock;
+  };
+}
+
+/**
+ * Finds the player instance currently wired to a given source URI - the
+ * LATEST `useVideoPlayer` call whose source had that exact `uri`. Needed
+ * (rather than positionally destructuring `allPlayers()`) now that the
+ * mock replaces a component's player when its source changes: an item that
+ * starts `null` and resolves to a real URL produces TWO distinct instances
+ * (an early, discarded one and the real one), so "the Nth distinct player
+ * ever created" no longer reliably means "the Nth component's current
+ * player."
+ */
+function findPlayerByUri(expectedUri: string) {
+  const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+  const mock = (useVideoPlayer as jest.Mock).mock;
+
+  for (let index = mock.calls.length - 1; index >= 0; index -= 1) {
+    const source = mock.calls[index][0] as { uri?: string } | null;
+
+    if (source?.uri === expectedUri) {
+      return mock.results[index]?.value as {
+        play: jest.Mock;
+        pause: jest.Mock;
+        rateWrites: number[];
+      };
+    }
+  }
+
+  return undefined;
+}
+
 function buildEpisode(overrides: Partial<Episode> = {}): Episode {
   return {
     videoId: 'video-2',
@@ -263,6 +365,15 @@ describe('DramaFeedItem', () => {
       jest.requireMock<typeof import('@/services/auth/token-store')>('@/services/auth/token-store')
         .getTokens as jest.Mock
     ).mockReturnValue({ accessToken: 'test-access-token', refreshToken: 'test-refresh' });
+    // Default: authorize whichever video id was requested, matching this
+    // file's `https://media.example.com/${id}.mp4` convention. Individual
+    // tests override with mockResolvedValueOnce/mockRejectedValueOnce for
+    // specific scenarios (a given URL, an error, an expired grant, ...).
+    mockGetPlaybackAuthorization.mockImplementation((videoId: string) =>
+      Promise.resolve(
+        buildPlaybackAuthorization({ playbackUrl: `https://media.example.com/${videoId}.mp4` })
+      )
+    );
   });
 
   it('clamps title to 2 lines and caption to 1 line by default', async () => {
@@ -496,12 +607,22 @@ describe('DramaFeedItem', () => {
     const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
       '@/services/auth/token-store'
     );
-    (getTokens as jest.Mock).mockReturnValueOnce(null);
+    // A persistent `mockReturnValue` (not `...Once`) matters here: without
+    // a token, the component's authorization effect sets an error state,
+    // which causes a re-render - and that re-render reads `getTokens()`
+    // again. A one-shot `Once` mock would answer that second read with the
+    // logged-in default from `beforeEach`, "fixing" the logged-out state
+    // mid-test and hiding the very case this test exists to cover.
+    (getTokens as jest.Mock).mockReturnValue(null);
 
     const video = buildVideo();
     const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
     expect(getByText('Video unavailable')).toBeTruthy();
+    // Slice 11M: no token means the real `/videos/:id/playback` endpoint
+    // would just 401 - the component must skip that wasted round trip
+    // entirely rather than firing it and discarding the result.
+    expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
   });
 
   it('plays a bundled clip before login in a demo build, where nothing is token-protected', async () => {
@@ -519,6 +640,13 @@ describe('DramaFeedItem', () => {
     (isDemoMode as jest.Mock).mockReturnValue(true);
 
     const video = buildVideo();
+    // A demo build's own playback-authorization path (the mock-data branch
+    // of `getPlaybackAuthorization`, see video-service.ts) resolves the
+    // bundled clip's own URL with no Authorization header - simulated here
+    // directly, since this file mocks `getPlaybackAuthorization` wholesale.
+    mockGetPlaybackAuthorization.mockResolvedValueOnce(
+      buildPlaybackAuthorization({ playbackUrl: video.playbackUrl, requiresAuthHeader: false })
+    );
 
     // Act
     const { queryByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
@@ -852,7 +980,7 @@ describe('DramaFeedItem', () => {
       );
     }
 
-    it('ten mounted items: exactly one player gets play(), the other nine get pause()', async () => {
+    it('ten mounted items: exactly one player gets play(), the other nine never get a source or play()', async () => {
       // Arrange & Act: the shape FlatList produces at cold launch - several
       // mounted items, exactly one active.
       await renderFeedItem(
@@ -868,12 +996,21 @@ describe('DramaFeedItem', () => {
         </>
       );
 
-      // Assert: mounted != playing. One play, nine pauses, zero rate writes.
+      // Assert: mounted != playing. One play, zero rate writes anywhere.
       const players = allPlayers();
 
-      expect(players).toHaveLength(10);
+      // Not asserted as an exact count: the active item's own source starts
+      // `null` and is replaced once its authorization resolves (see the
+      // `useVideoPlayer` mock above), which legitimately produces one extra,
+      // never-played, already-discarded instance beyond the 10 mounted
+      // component slots. What matters is relative, not absolute - exactly
+      // one instance ever played, and every other instance never did.
       expect(players.filter((player) => player.play.mock.calls.length > 0)).toHaveLength(1);
-      expect(players.filter((player) => player.pause.mock.calls.length > 0)).toHaveLength(9);
+      expect(players.filter((player) => player.play.mock.calls.length === 0)).toHaveLength(
+        players.length - 1
+      );
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledWith('video-1');
       expect(players.every((player) => player.rateWrites.length === 0)).toBe(true);
     });
 
@@ -895,13 +1032,15 @@ describe('DramaFeedItem', () => {
       const { rerender } = await renderFeedItem(feedWithActive(0));
 
       // A is legitimately playing at this point, so the transitions are what
-      // this test is about - measure from here, not from mount.
-      const [playerA, playerB, playerC] = allPlayers();
+      // this test is about - measure from here, not from mount. Looked up
+      // by URI, not positionally: A's own activation already replaced its
+      // initial null-sourced instance with its real one (see the
+      // `useVideoPlayer` mock above), so "the Nth distinct player" no
+      // longer reliably lines up with "the Nth item."
+      const playerA = findPlayerByUri('https://media.example.com/video-1.mp4');
 
-      [playerA, playerB, playerC].forEach((player) => {
-        player.play.mockClear();
-        player.pause.mockClear();
-      });
+      playerA?.play.mockClear();
+      playerA?.pause.mockClear();
 
       await act(async () => {
         rerender(feedWithActive(1));
@@ -910,13 +1049,16 @@ describe('DramaFeedItem', () => {
         rerender(feedWithActive(2));
       });
 
+      const playerB = findPlayerByUri('https://media.example.com/video-2.mp4');
+      const playerC = findPlayerByUri('https://media.example.com/video-3.mp4');
+
       // Every item that lost the active slot was paused, and only the final
       // one was ever asked to play.
-      expect(playerA.pause).toHaveBeenCalled();
-      expect(playerA.play).not.toHaveBeenCalled();
-      expect(playerB.pause).toHaveBeenCalled();
-      expect(playerC.play).toHaveBeenCalled();
-      expect(playerC.pause).not.toHaveBeenCalled();
+      expect(playerA?.pause).toHaveBeenCalled();
+      expect(playerA?.play).not.toHaveBeenCalled();
+      expect(playerB?.pause).toHaveBeenCalled();
+      expect(playerC?.play).toHaveBeenCalled();
+      expect(playerC?.pause).not.toHaveBeenCalled();
     });
 
     it('backgrounding pauses the active item and foregrounding resumes it', async () => {
@@ -974,8 +1116,13 @@ describe('DramaFeedItem', () => {
           appStateListeners.forEach((listener) => listener('active'));
         });
 
+        // Slice 11M: this item never became active, so it never requested
+        // playback authorization and never received a player source -
+        // there is nothing for the foreground transition's reconciler pass
+        // to pause. "Never played" is what proves foregrounding didn't
+        // start it.
         expect(allPlayers().at(-1)!.play).not.toHaveBeenCalled();
-        expect(allPlayers().at(-1)!.pause).toHaveBeenCalled();
+        expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
       } finally {
         addListenerSpy.mockRestore();
       }
@@ -1156,6 +1303,389 @@ describe('DramaFeedItem', () => {
       });
 
       expect(allPlayers().at(-1)!.play).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Slice 11M: playback authorization', () => {
+    it('does not attach an Authorization header when the backend says requiresAuthHeader is false (a presigned R2 URL)', async () => {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://r2.example.com/bucket/video-1.mp4?X-Amz-Signature=abc',
+          requiresAuthHeader: false,
+        })
+      );
+
+      await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} />);
+
+      // Attaching a Bearer header to a presigned R2 URL is what breaks it
+      // for real (the storage provider rejects a request carrying two auth
+      // mechanisms) - this is the regression test for that.
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+        uri: 'https://r2.example.com/bucket/video-1.mp4?X-Amz-Signature=abc',
+        headers: undefined,
+      });
+    });
+
+    it('shows the existing "Video unavailable" state, not a crash, when playback authorization fails (e.g. 403 ENTITLEMENT_REQUIRED)', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValueOnce(new Error('403 ENTITLEMENT_REQUIRED'));
+
+      const { getByText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} />
+      );
+
+      expect(getByText('Video unavailable')).toBeTruthy();
+      expect(latestMockPlayer()?.play).not.toHaveBeenCalled();
+    });
+
+    it('ignores an authorization response that arrives after the item is no longer active', async () => {
+      const deferred = createDeferred<PlaybackAuthorization>();
+      mockGetPlaybackAuthorization.mockReturnValueOnce(deferred.promise);
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+      const video = buildVideo();
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+
+      // The item stops being active while its request is still in flight -
+      // exactly the shape of a rapid scroll away from an item before its
+      // authorization has come back.
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+      });
+
+      // The stale response now lands.
+      await act(async () => {
+        deferred.resolve(buildPlaybackAuthorization());
+      });
+
+      // Must never reach the player - a swiped-away item must not start
+      // buffering a URL nobody is watching, let alone play it.
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toBeNull();
+      expect(latestMockPlayer()?.play).not.toHaveBeenCalled();
+    });
+
+    it('ignores a superseded authorization response once a newer request has been issued for the same item', async () => {
+      const deferredFirst = createDeferred<PlaybackAuthorization>();
+      const deferredSecond = createDeferred<PlaybackAuthorization>();
+      mockGetPlaybackAuthorization.mockReturnValueOnce(deferredFirst.promise);
+      mockGetPlaybackAuthorization.mockReturnValueOnce(deferredSecond.promise);
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+      const videoA = buildVideo({ id: 'video-a' });
+      const videoB = buildVideo({ id: 'video-b' });
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={videoA} {...baseProps} isActive />
+      );
+
+      // A second, still-active item takes over the same mounted position
+      // before the first request resolves - the newer request (for
+      // video-b) is now the only one whose response should ever count.
+      await act(async () => {
+        rerender(<DramaFeedItem video={videoB} {...baseProps} isActive />);
+      });
+
+      await act(async () => {
+        deferredFirst.resolve(
+          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-a.mp4' })
+        );
+      });
+
+      // The superseded response must not have been wired up.
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toBeNull();
+
+      await act(async () => {
+        deferredSecond.resolve(
+          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-b.mp4' })
+        );
+      });
+
+      // The latest request's own response is applied normally.
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+        uri: 'https://media.example.com/video-b.mp4',
+        headers: { Authorization: 'Bearer test-access-token' },
+      });
+    });
+
+    it('requests a fresh authorization once the previous grant has expired, for an item that is active again', async () => {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/first-grant.mp4',
+          expiresAt: new Date(Date.now() - 1000).toISOString(),
+        })
+      );
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/second-grant.mp4' })
+      );
+
+      const video = buildVideo();
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+
+      // Deactivate and reactivate: an expired grant must never be reused.
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+      });
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+        uri: 'https://media.example.com/second-grant.mp4',
+        headers: { Authorization: 'Bearer test-access-token' },
+      });
+    });
+
+    it('requests playback authorization only for the active item among several mounted ones', async () => {
+      await renderFeedItem(
+        <>
+          <DramaFeedItem video={buildVideo({ id: 'video-1' })} {...baseProps} isActive />
+          <DramaFeedItem video={buildVideo({ id: 'video-2' })} {...baseProps} isActive={false} />
+          <DramaFeedItem video={buildVideo({ id: 'video-3' })} {...baseProps} isActive={false} />
+        </>
+      );
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledWith('video-1');
+    });
+  });
+
+  describe('Slice 11M review remediation (HIGH-1/HIGH-2/MEDIUM-3/4/5/6)', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('HIGH-1: proactively refreshes a grant while the item stays continuously active, before it actually expires', async () => {
+      jest.useFakeTimers();
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/first-grant.mp4',
+          expiresAt: new Date(Date.now() + 40000).toISOString(),
+        })
+      );
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/second-grant.mp4' })
+      );
+
+      await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive />);
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+      // The grant is valid for 40s; the refresh margin is 30s, so a fresh
+      // one is requested 10s in - well before the old one dies, and without
+      // the item ever leaving the active slot or a re-render forcing it.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+        uri: 'https://media.example.com/second-grant.mp4',
+        headers: { Authorization: 'Bearer test-access-token' },
+      });
+    });
+
+    it('HIGH-1: does not schedule (or fire) a refresh once the item has left the active slot', async () => {
+      jest.useFakeTimers();
+      const video = buildVideo();
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/first-grant.mp4',
+          expiresAt: new Date(Date.now() + 40000).toISOString(),
+        })
+      );
+
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+      });
+
+      // Well past both the refresh margin and the grant's real expiry.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(60000);
+      });
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+    });
+
+    it('HIGH-2: pauses the outgoing player and plays only the incoming one when the source is replaced mid-playback, with no invariant violation', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      jest.useFakeTimers();
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/first-grant.mp4',
+          expiresAt: new Date(Date.now() + 40000).toISOString(),
+        })
+      );
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/second-grant.mp4' })
+      );
+
+      const video = buildVideo();
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+
+      const outgoingPlayer = findPlayerByUri('https://media.example.com/first-grant.mp4');
+
+      expect(outgoingPlayer?.play).toHaveBeenCalled();
+
+      // Simulate the native player actually reporting itself as playing, so
+      // the invariant registry has something to observe - mirrors this
+      // file's existing `player.playing` convention (`useEvent` is mocked
+      // to read it fresh at each render's call site).
+      if (outgoingPlayer) {
+        (outgoingPlayer as unknown as { playing: boolean }).playing = true;
+      }
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      // The scheduled proactive refresh fires (40s grant - 30s margin =
+      // 10s in), replacing the player while it is still "playing".
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(10000);
+      });
+
+      const incomingPlayer = findPlayerByUri('https://media.example.com/second-grant.mp4');
+
+      expect(outgoingPlayer).not.toBe(incomingPlayer);
+      expect(outgoingPlayer?.pause).toHaveBeenCalled();
+      expect(incomingPlayer?.play).toHaveBeenCalled();
+      expect(
+        consoleErrorSpy.mock.calls.some((call) => call[0] === '[PlaybackInvariantViolation]')
+      ).toBe(false);
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('MEDIUM-3: never logs the playback URL on a playback error - only the video id and a sanitized reason', async () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      mockGetPlaybackAuthorization.mockRejectedValueOnce(
+        new Error(
+          'failed for https://r2.example.com/bucket/video-secret.mp4?X-Amz-Signature=super-secret'
+        )
+      );
+
+      const video = buildVideo({ id: 'video-secret-id' });
+
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      const dramaFeedItemLogs = warnSpy.mock.calls
+        .map((call) => call.join(' '))
+        .filter((message) => message.includes('[DramaFeedItem]'));
+
+      expect(dramaFeedItemLogs.length).toBeGreaterThan(0);
+      dramaFeedItemLogs.forEach((message) => {
+        expect(message).not.toMatch(/https?:\/\//);
+        expect(message).not.toContain('X-Amz-Signature');
+      });
+      expect(dramaFeedItemLogs.some((message) => message.includes('video-secret-id'))).toBe(true);
+
+      warnSpy.mockRestore();
+    });
+
+    it('MEDIUM-4: does not reuse a previous video\'s cached grant when the video prop changes on the same instance', async () => {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      const videoA = buildVideo({ id: 'video-a' });
+      const videoB = buildVideo({ id: 'video-b' });
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-a.mp4' })
+      );
+
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={videoA} {...baseProps} isActive />
+      );
+
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+        uri: 'https://media.example.com/video-a.mp4',
+        headers: { Authorization: 'Bearer test-access-token' },
+      });
+
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-b.mp4' })
+      );
+
+      await act(async () => {
+        rerender(<DramaFeedItem video={videoB} {...baseProps} isActive />);
+      });
+
+      // The player must never be handed video A's still-valid grant under
+      // video B's identity - a fresh request for B is required, and B's own
+      // resolved URL is what actually gets wired up.
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledWith('video-b');
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+        uri: 'https://media.example.com/video-b.mp4',
+        headers: { Authorization: 'Bearer test-access-token' },
+      });
+    });
+
+    it('MEDIUM-5: treats a resolved authorization with an empty playbackUrl as a failure, not a silent black screen', async () => {
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({ playbackUrl: '' })
+      );
+
+      const { getByText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} />
+      );
+
+      expect(getByText('Video unavailable')).toBeTruthy();
+    });
+
+    it('MEDIUM-6: automatically retries a transient authorization failure while the item stays continuously active', async () => {
+      jest.useFakeTimers();
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      mockGetPlaybackAuthorization.mockRejectedValueOnce(new Error('network blip'));
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/recovered.mp4' })
+      );
+
+      await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive />);
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+        uri: 'https://media.example.com/recovered.mp4',
+        headers: { Authorization: 'Bearer test-access-token' },
+      });
+    });
+
+    it('MEDIUM-6: bounds automatic retries rather than hammering a permanently-failing endpoint forever', async () => {
+      jest.useFakeTimers();
+      mockGetPlaybackAuthorization.mockRejectedValue(new Error('permanent failure'));
+
+      await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive />);
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+      // Advanced one retry interval at a time (rather than one large jump)
+      // so React gets to actually flush the state update each retry's
+      // failure produces before the next scheduled timer is due - five
+      // steps is comfortably past every retry the bound allows (3 x 5s).
+      for (let step = 0; step < 5; step += 1) {
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(5000);
+        });
+      }
+
+      // 1 initial attempt + at most 3 bounded automatic retries.
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(4);
     });
   });
 });

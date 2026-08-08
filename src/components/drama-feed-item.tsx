@@ -12,11 +12,7 @@ import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { FeedProgressBar } from '@/components/feed-progress-bar';
 import { useAppForeground } from '@/hooks/use-app-foreground';
 import { useFeedBottomAnchor } from '@/hooks/use-feed-bottom-anchor';
-import {
-  logPlaybackDebug,
-  playbackPlayerLabel,
-  reportPlayingState,
-} from '@/services/debug/playback-debug';
+import { playbackPlayerLabel, reportPlayingState } from '@/services/debug/playback-invariant';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { useTranslation } from '@/stores/language';
 import { trackEvent } from '@/services/analytics/analytics-queue';
@@ -188,6 +184,22 @@ export function DramaFeedItem({
   // user had already paused themselves.
   const adVisible = useAdsStore((state) => state.adVisible);
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
+  // A tap-to-pause is a choice about the episode in front of the viewer, not
+  // a lasting property of that episode. Without this reset it becomes one:
+  // `isManuallyPaused` feeds `shouldPlay`, so swiping away from a paused
+  // episode and back would leave it silently refusing to play. Adjusted
+  // during render rather than in an effect - the React-documented pattern for
+  // resetting state when a prop changes, and the one that avoids the extra
+  // render pass an effect would cost.
+  const [wasActive, setWasActive] = useState(isActive);
+
+  if (wasActive !== isActive) {
+    setWasActive(isActive);
+
+    if (!isActive) {
+      setIsManuallyPaused(false);
+    }
+  }
   const [isInFullscreen, setIsInFullscreen] = useState(false);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
   const [isIndicatorVisible, setIsIndicatorVisible] = useState(true);
@@ -232,8 +244,8 @@ export function DramaFeedItem({
     nextPlayer.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_SECONDS;
   });
 
-  // Stable per-instance label ("p1", "p2", ...) so [PlaybackDebug] lines can
-  // tell "the same player kept playing" apart from "a new player was created".
+  // Stable per-instance label ("p1", "p2", ...) so a reported invariant
+  // violation names which players were audible at the same time.
   const playerLabel = playbackPlayerLabel(player);
 
   // THE one authoritative playback rule. Every play()/pause() the feed issues
@@ -259,24 +271,47 @@ export function DramaFeedItem({
   }, [isMuted, player]);
 
   // Same shape as the mute mirror above: the setup callback runs once, so the
-  // rate has to be pushed to the player whenever the choice changes. The
-  // equality guard is load-bearing, not an optimisation: expo-video's iOS
-  // playbackRate setter assigns AVPlayer.rate on EVERY write (its didSet runs
-  // even for an unchanged value), and a non-zero rate STARTS playback - so an
-  // unguarded mount-time write of the default 1 kicked off every mounted
-  // item's player at once, video and audio, active or not.
-  // eslint-disable-next-line react-hooks/immutability
+  // rate has to be pushed to the player whenever the choice changes.
+  //
+  // Both guards are load-bearing, not optimisations. On iOS a rate write IS a
+  // play command: expo-video's setter assigns AVPlayer.rate on every write
+  // (its didSet runs even for an unchanged value), and a non-zero rate starts
+  // playback. An unguarded mount-time write of the default 1 is what started
+  // every mounted item's player at once. So:
+  //   - `shouldPlay` keeps the write inside the window where playback is
+  //     already intended, which is the only place it cannot start anything
+  //     that was meant to stay silent. A rate chosen while the item is
+  //     inactive or paused is remembered in state and applied by this same
+  //     effect when the item becomes eligible again.
+  //   - the equality check keeps a re-render from re-issuing an identical
+  //     write, since even that would restart a paused player.
   useEffect(() => {
+    if (!shouldPlay) {
+      return;
+    }
+
     if (player.playbackRate !== playbackSpeed) {
-      logPlaybackDebug('PLAYBACK_RATE_WRITE', {
-        video: video.id,
-        player: playerLabel,
-        rate: playbackSpeed,
-      });
       // eslint-disable-next-line react-hooks/immutability
       player.playbackRate = playbackSpeed;
     }
-  }, [playbackSpeed, player, playerLabel, video.id]);
+  }, [playbackSpeed, shouldPlay, player]);
+
+  // When expo-video hands back a NEW player for the same item - it re-creates
+  // one whenever the source object changes, e.g. after an access-token
+  // refresh rotates the Authorization header - the outgoing instance is only
+  // release()d, never paused. Pausing it here, as this effect's cleanup, is
+  // what stops a still-audible player from outliving the component that owned
+  // it. Also runs on unmount, where it is harmless: release() follows.
+  useEffect(() => {
+    return () => {
+      try {
+        player.pause();
+      } catch {
+        // On native the shared object can already be released by the time
+        // this runs during teardown; there is nothing left to pause then.
+      }
+    };
+  }, [player]);
 
   useEffect(() => {
     if (!isQuickActionsVisible) {
@@ -302,53 +337,14 @@ export function DramaFeedItem({
   const playbackProgressRatio =
     player.duration > 0 ? Math.min(1, Math.max(0, playbackPositionSeconds / player.duration)) : 0;
 
-  // Dev-only evidence trail. PLAYING_CHANGED with playing=true on an item
-  // whose isActive=false is the double-audio signature, and the registry
-  // turns any two simultaneous playing=true reports into a loud
-  // [PlaybackInvariantViolation] regardless of what started them.
+  // Feeds the development-only single-playing-player check. Reporting the
+  // observed state (rather than the intended one) is what makes it catch a
+  // second player becoming audible no matter which code path started it.
   useEffect(() => {
-    logPlaybackDebug('MOUNT', { video: video.id, player: playerLabel });
-
-    return () => logPlaybackDebug('UNMOUNT', { video: video.id, player: playerLabel });
-  }, [video.id, playerLabel]);
-
-  useEffect(() => {
-    logPlaybackDebug('ACTIVE_CHANGED', { video: video.id, player: playerLabel, isActive });
-  }, [isActive, video.id, playerLabel]);
-
-  useEffect(() => {
-    logPlaybackDebug('FOCUS_CHANGED', {
-      video: video.id,
-      player: playerLabel,
-      focused: isScreenFocused,
-    });
-  }, [isScreenFocused, video.id, playerLabel]);
-
-  useEffect(() => {
-    logPlaybackDebug('APP_STATE_CHANGED', {
-      video: video.id,
-      player: playerLabel,
-      foreground: isAppForeground,
-    });
-  }, [isAppForeground, video.id, playerLabel]);
-
-  useEffect(() => {
-    logPlaybackDebug('PLAYER_STATUS', { video: video.id, player: playerLabel, status });
-  }, [status, video.id, playerLabel]);
-
-  useEffect(() => {
-    logPlaybackDebug('PLAYING_CHANGED', {
-      video: video.id,
-      player: playerLabel,
-      playing: isPlaying,
-      isActive,
-      desired: shouldPlay,
-      muted: isMuted,
-    });
     reportPlayingState(playerLabel, video.id, isPlaying);
 
     return () => reportPlayingState(playerLabel, video.id, false);
-  }, [isPlaying, isActive, shouldPlay, isMuted, video.id, playerLabel]);
+  }, [isPlaying, video.id, playerLabel]);
 
   const hasPlaybackError = !hasPlaybackUrl || status === 'error';
   const hasLoggedErrorRef = useRef(false);
@@ -488,11 +484,6 @@ export function DramaFeedItem({
     // needing a second effect that could otherwise race this one.
     if (shouldPlay) {
       if (!player.playing) {
-        logPlaybackDebug('PLAY_REQUEST', {
-          video: video.id,
-          player: playerLabel,
-          status: player.status,
-        });
         player.play();
       }
       return;
@@ -508,14 +499,8 @@ export function DramaFeedItem({
     // until the item left the render window. pause() on an already-paused
     // player is a native no-op, and JS->native player calls apply in order,
     // so a pause issued after a pending play always wins.
-    logPlaybackDebug('PAUSE_REQUEST', {
-      video: video.id,
-      player: playerLabel,
-      playing: player.playing,
-      status: player.status,
-    });
     player.pause();
-  }, [shouldPlay, hasPlaybackUrl, isInFullscreen, player, playerLabel, video.id]);
+  }, [shouldPlay, hasPlaybackUrl, isInFullscreen, player]);
 
   // Slice 15A-S1: resets the accumulated-watch-time counter whenever this
   // item stops being active, so the NEXT activation starts from zero and
@@ -589,17 +574,15 @@ export function DramaFeedItem({
     setIsIndicatorVisible(true);
 
     if (isPlaying) {
-      logPlaybackDebug('PAUSE_REQUEST', { video: video.id, player: playerLabel, manual: true });
       player.pause();
       setIsManuallyPaused(true);
       flushProgress();
       return;
     }
 
-    logPlaybackDebug('PLAY_REQUEST', { video: video.id, player: playerLabel, manual: true });
     player.play();
     setIsManuallyPaused(false);
-  }, [isActive, isPlaying, player, playerLabel, video.id, flushProgress]);
+  }, [isActive, isPlaying, player, flushProgress]);
 
   const handleEnterFullscreen = useCallback(() => {
     void videoViewRef.current?.enterFullscreen();
@@ -641,17 +624,15 @@ export function DramaFeedItem({
   }, [firstFreeEpisodeInSeries]);
 
   const handleFullscreenEnter = useCallback(() => {
-    logPlaybackDebug('FULLSCREEN', { video: video.id, player: playerLabel, entering: true });
     setIsInFullscreen(true);
     lockOrientation(ScreenOrientation.OrientationLock.LANDSCAPE);
-  }, [video.id, playerLabel]);
+  }, []);
 
   const handleFullscreenExit = useCallback(() => {
-    logPlaybackDebug('FULLSCREEN', { video: video.id, player: playerLabel, entering: false });
     setIsInFullscreen(false);
     lockOrientation(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     flushProgress();
-  }, [video.id, playerLabel, flushProgress]);
+  }, [flushProgress]);
 
   return (
     <View

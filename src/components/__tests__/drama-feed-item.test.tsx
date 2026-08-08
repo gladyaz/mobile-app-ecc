@@ -5,6 +5,7 @@ import { AppState, Platform, StyleSheet } from 'react-native';
 
 import { DramaFeedItem, touchDistance } from '@/components/drama-feed-item';
 import { FeedBottomGap } from '@/constants/theme';
+import { resetPlaybackInvariantForTests } from '@/services/debug/playback-invariant';
 import type { Episode } from '@/types/series';
 import type { Video } from '@/types/video';
 
@@ -78,31 +79,43 @@ jest.mock('expo-video', () => {
   const ReactModule = require('react');
 
   return {
+    // Mirrors expo-video's real contract: useVideoPlayer returns the SAME
+    // player instance across re-renders (it is built on
+    // useReleasingSharedObject). A mock that returned a fresh object per
+    // render would make every effect keyed on `player` re-run on every
+    // render, which hides the bug class where an effect legitimately does
+    // NOT re-run because its dependency values did not change.
     useVideoPlayer: jest.fn((_source: unknown, configure?: (player: unknown) => void) => {
-      // playbackRate is a tracked property, not a plain field: on iOS the
-      // native setter assigns AVPlayer.rate on EVERY write and a non-zero
-      // rate STARTS playback, so tests must be able to assert that mounting
-      // never writes it at all.
-      const rateWrites: number[] = [];
-      let playbackRate = 1;
-      const player = {
-        loop: false,
-        muted: false,
-        playing: false,
-        play: jest.fn(),
-        pause: jest.fn(),
-        rateWrites,
-      };
+      const playerRef = ReactModule.useRef(null);
 
-      Object.defineProperty(player, 'playbackRate', {
-        get: () => playbackRate,
-        set: (nextRate: number) => {
-          rateWrites.push(nextRate);
-          playbackRate = nextRate;
-        },
-      });
-      configure?.(player);
-      return player;
+      if (!playerRef.current) {
+        // playbackRate is a tracked property, not a plain field: on iOS the
+        // native setter assigns AVPlayer.rate on EVERY write and a non-zero
+        // rate STARTS playback, so tests must be able to assert that mounting
+        // never writes it at all.
+        const rateWrites: number[] = [];
+        let playbackRate = 1;
+        const player = {
+          loop: false,
+          muted: false,
+          playing: false,
+          play: jest.fn(),
+          pause: jest.fn(),
+          rateWrites,
+        };
+
+        Object.defineProperty(player, 'playbackRate', {
+          get: () => playbackRate,
+          set: (nextRate: number) => {
+            rateWrites.push(nextRate);
+            playbackRate = nextRate;
+          },
+        });
+        configure?.(player);
+        playerRef.current = player;
+      }
+
+      return playerRef.current;
     }),
     VideoView: ReactModule.forwardRef(
       (
@@ -228,10 +241,9 @@ describe('touchDistance', () => {
 
 describe('DramaFeedItem', () => {
   beforeEach(() => {
-    // The component's dev-only [PlaybackDebug] instrumentation logs on every
-    // play/pause decision (Jest runs with __DEV__ true); silence it so test
-    // output stays readable.
-    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    // The invariant registry is module-level state; without this a test that
+    // ever drives a player to playing=true would leak into the next one.
+    resetPlaybackInvariantForTests();
     // react-native's Jest preset returns undefined from
     // AppState.addEventListener, which breaks useAppForeground's cleanup on
     // unmount - give every test a real subscription shape by default. Tests
@@ -825,11 +837,18 @@ describe('DramaFeedItem', () => {
       rateWrites: number[];
     };
 
+    // useVideoPlayer is called once per render and returns the SAME instance
+    // each time, so the raw results list has one entry per render. Collapsing
+    // to distinct instances gives one entry per feed item, in mount order.
     function allPlayers(): MockPlayer[] {
       const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
 
-      return (useVideoPlayer as jest.Mock).mock.results.map(
-        (mockResult) => mockResult.value as MockPlayer
+      return Array.from(
+        new Set(
+          (useVideoPlayer as jest.Mock).mock.results.map(
+            (mockResult) => mockResult.value as MockPlayer
+          )
+        )
       );
     }
 
@@ -875,6 +894,15 @@ describe('DramaFeedItem', () => {
 
       const { rerender } = await renderFeedItem(feedWithActive(0));
 
+      // A is legitimately playing at this point, so the transitions are what
+      // this test is about - measure from here, not from mount.
+      const [playerA, playerB, playerC] = allPlayers();
+
+      [playerA, playerB, playerC].forEach((player) => {
+        player.play.mockClear();
+        player.pause.mockClear();
+      });
+
       await act(async () => {
         rerender(feedWithActive(1));
       });
@@ -882,12 +910,10 @@ describe('DramaFeedItem', () => {
         rerender(feedWithActive(2));
       });
 
-      // The last render pass produced one player per item, in item order.
-      const [playerA, playerB, playerC] = allPlayers().slice(-3);
-
-      expect(playerA.play).not.toHaveBeenCalled();
+      // Every item that lost the active slot was paused, and only the final
+      // one was ever asked to play.
       expect(playerA.pause).toHaveBeenCalled();
-      expect(playerB.play).not.toHaveBeenCalled();
+      expect(playerA.play).not.toHaveBeenCalled();
       expect(playerB.pause).toHaveBeenCalled();
       expect(playerC.play).toHaveBeenCalled();
       expect(playerC.pause).not.toHaveBeenCalled();
@@ -979,25 +1005,38 @@ describe('DramaFeedItem', () => {
 
       await renderFeedItem(<DramaFeedItem video={video} {...baseProps} isActive />);
 
+      // The active item is already playing before fullscreen is entered, so
+      // ownership has to be measured from this point forward rather than from
+      // the whole call history.
+      const player = allPlayers().at(-1)!;
+
+      player.play.mockClear();
+      player.pause.mockClear();
+
       await act(async () => {
         mockLatestVideoViewProps.onFullscreenEnter?.();
       });
 
       // While native fullscreen owns playback, the reconciler abstains: it
       // must neither pause the fullscreen playback nor issue competing plays.
-      const playerInFullscreen = allPlayers().at(-1)!;
+      expect(player.play).not.toHaveBeenCalled();
+      expect(player.pause).not.toHaveBeenCalled();
 
-      expect(playerInFullscreen.play).not.toHaveBeenCalled();
-      expect(playerInFullscreen.pause).not.toHaveBeenCalled();
+       
+      player.playing = false;
 
       await act(async () => {
         mockLatestVideoViewProps.onFullscreenExit?.();
       });
 
-      expect(allPlayers().at(-1)!.play).toHaveBeenCalled();
+      expect(player.play).toHaveBeenCalled();
     });
 
-    it('the 2x speed control cannot start an inactive player', async () => {
+    it('the 2x speed control never writes a rate to an inactive player', async () => {
+      // On iOS a rate write IS a play command (AVPlayer.rate = 2), so for an
+      // item that is not meant to be playing the only safe number of writes
+      // is zero - asserting "it wrote 2 but did not call play()" would be
+      // asserting the hazard itself.
       const { getByLabelText } = await renderFeedItem(
         <DramaFeedItem video={buildVideo()} {...baseProps} isActive={false} isClearDisplay />
       );
@@ -1008,8 +1047,103 @@ describe('DramaFeedItem', () => {
 
       const player = allPlayers().at(-1)!;
 
-      expect(player.rateWrites).toEqual([2]);
+      expect(player.rateWrites).toEqual([]);
       expect(player.play).not.toHaveBeenCalled();
+    });
+
+    it('applies a rate chosen while inactive once the item becomes the active one', async () => {
+      // Arrange: the viewer picks 2x on an item that is not playing.
+      const video = buildVideo();
+      const { getByLabelText, rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive={false} isClearDisplay />
+      );
+
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 1x'));
+      });
+
+      expect(allPlayers().at(-1)!.rateWrites).toEqual([]);
+
+      // Act: it becomes the active item.
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />);
+      });
+
+      // Assert: the choice was remembered and applied exactly once, now that
+      // a rate write can no longer start something meant to stay silent.
+      expect(allPlayers().at(-1)!.rateWrites).toEqual([2]);
+    });
+
+    it('does not re-issue an identical rate write on a re-render', async () => {
+      // Guards the equality check: even an unchanged value restarts a paused
+      // player on iOS, so a re-render must not re-write the same rate.
+      const video = buildVideo();
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive isLiked />);
+      });
+
+      expect(allPlayers().at(-1)!.rateWrites).toEqual([]);
+    });
+
+    it('forgets a manual pause once the item stops being the active one', async () => {
+      // Arrange: the viewer pauses the active item.
+      const video = buildVideo();
+      const { getByTestId, rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+      const player = allPlayers().at(-1)!;
+
+      // isPlaying reaches the component through the mocked useEvent, which
+      // reads player.playing at render time - so the flag has to be set and
+      // then re-rendered before the tap sees a playing video to pause.
+       
+      player.playing = true;
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+      await act(async () => {
+        fireEvent.press(getByTestId('feed-item-play-pause'));
+      });
+      expect(player.pause).toHaveBeenCalled();
+
+      // Act: swipe away, then back.
+       
+      player.playing = false;
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+      });
+      player.play.mockClear();
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      // Assert: a pause is a choice about the episode in front of you, not a
+      // property the episode keeps forever.
+      expect(player.play).toHaveBeenCalled();
+    });
+
+    it('pauses a player it is about to hand back, so a replaced instance cannot stay audible', async () => {
+      // A token refresh changes the source object and expo-video builds a new
+      // player; the outgoing one is only released, never paused.
+      const video = buildVideo();
+      const { unmount } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+      const player = allPlayers().at(-1)!;
+
+      player.pause.mockClear();
+      // Wrapped in act because React flushes passive-effect cleanups
+      // asynchronously; asserting straight after unmount() reads the state
+      // before the cleanup has run.
+      await act(async () => {
+        unmount();
+      });
+
+      expect(player.pause).toHaveBeenCalled();
     });
 
     it('a tap on an inactive item play/pause target does not start playback', async () => {

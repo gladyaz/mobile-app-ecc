@@ -726,7 +726,14 @@ export function DramaFeedItem({
     // player is a native no-op, and JS->native player calls apply in order,
     // so a pause issued after a pending play always wins.
     player.pause();
-  }, [shouldPlay, hasPlaybackUrl, isInFullscreen, player]);
+    // `status` is a dependency on purpose. play() issued while the source is
+    // still resolving does not always take, and without re-evaluating when
+    // the player reports readyToPlay nothing ever retries - the item just
+    // sits there showing its play icon until the viewer taps it. Local media
+    // mostly hid this because it had a source from mount; an R2 item receives
+    // its URL only after an authorization round trip, which widens the window
+    // enough that the first play() regularly lands too early.
+  }, [shouldPlay, hasPlaybackUrl, isInFullscreen, player, status]);
 
   // Slice 15A-S1: resets the accumulated-watch-time counter whenever this
   // item stops being active, so the NEXT activation starts from zero and

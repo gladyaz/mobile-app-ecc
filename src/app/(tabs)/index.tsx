@@ -183,6 +183,34 @@ export default function HomeScreen() {
     []
   );
 
+  // Re-snap after the item height changes - which is what a rotation does,
+  // most visibly when returning from native fullscreen. `snapToInterval` and
+  // `getItemLayout` are both derived from `feedHeight`, so once it changes the
+  // list's current scroll offset was computed against the OLD height and the
+  // feed comes to rest between two items, showing a slice of each. Scrolling
+  // back to the active index restores the one-item-per-screen invariant the
+  // pager depends on.
+  const previousFeedHeightRef = useRef(feedHeight);
+
+  useEffect(() => {
+    if (previousFeedHeightRef.current === feedHeight) {
+      return;
+    }
+
+    previousFeedHeightRef.current = feedHeight;
+
+    const activeIndex = videos.findIndex((video) => video.id === resolvedActiveVideoId);
+
+    if (activeIndex < 0) {
+      return;
+    }
+
+    flatListRef.current?.scrollToOffset({
+      offset: feedHeight * activeIndex,
+      animated: false,
+    });
+  }, [feedHeight, videos, resolvedActiveVideoId]);
+
   const handleLayout = useCallback((event: LayoutChangeEvent) => {
     const nextHeight = event.nativeEvent.layout.height;
 

@@ -886,6 +886,63 @@ describe('DramaFeedItem', () => {
     warnSpy.mockRestore();
   });
 
+  describe('autoplay once the player is ready (reported from device QA)', () => {
+    it('issues play() when the player reports ready, not only when it became active', async () => {
+      // An R2-backed item receives its URL only after an authorization round
+      // trip, so the first play() regularly lands while the source is still
+      // resolving and does not take. Without re-evaluating on `status`, the
+      // item then sits showing its play icon until the viewer taps it.
+      const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+      (useEvent as jest.Mock).mockImplementation(
+        (_player: unknown, eventName: string, defaultValue: unknown) =>
+          eventName === 'statusChange' ? { status: 'loading', error: undefined } : defaultValue
+      );
+
+      const video = buildVideo();
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      const player = (useVideoPlayer as jest.Mock).mock.results.at(-1)?.value as {
+        play: jest.Mock;
+      };
+
+      player.play.mockClear();
+
+      // The player finishes loading.
+      (useEvent as jest.Mock).mockImplementation(
+        (_player: unknown, eventName: string, defaultValue: unknown) =>
+          eventName === 'statusChange' ? { status: 'readyToPlay', error: undefined } : defaultValue
+      );
+
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      expect(player.play).toHaveBeenCalled();
+    });
+
+    it('does not start an inactive item when its player becomes ready', async () => {
+      const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+      (useEvent as jest.Mock).mockImplementation(
+        (_player: unknown, eventName: string, defaultValue: unknown) =>
+          eventName === 'statusChange' ? { status: 'readyToPlay', error: undefined } : defaultValue
+      );
+
+      const video = buildVideo();
+
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      const player = (useVideoPlayer as jest.Mock).mock.results.at(-1)?.value as {
+        play: jest.Mock;
+      };
+
+      expect(player.play).not.toHaveBeenCalled();
+    });
+  });
+
   describe('fullscreen affordances (reported from device QA)', () => {
     it('keeps the Fullscreen button clear of the feed brand overlay', async () => {
       // The overlay in app/(tabs)/index.tsx starts at top: 64 and is roughly

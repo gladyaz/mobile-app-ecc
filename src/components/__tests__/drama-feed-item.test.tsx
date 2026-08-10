@@ -6,6 +6,7 @@ import { AppState, Platform, StyleSheet } from 'react-native';
 import { DramaFeedItem, touchDistance } from '@/components/drama-feed-item';
 import { FeedBottomGap } from '@/constants/theme';
 import { resetPlaybackInvariantForTests } from '@/services/debug/playback-invariant';
+import { __resetPlaybackSpeedForTests } from '@/stores/playback-speed';
 import type { Episode } from '@/types/series';
 import type { PlaybackAuthorization } from '@/types/playback';
 import type { Video } from '@/types/video';
@@ -347,6 +348,9 @@ describe('DramaFeedItem', () => {
     // The invariant registry is module-level state; without this a test that
     // ever drives a player to playing=true would leak into the next one.
     resetPlaybackInvariantForTests();
+    // The session speed store is module-level too - a test that selects
+    // 1.5x/2x would otherwise leak that speed into every test after it.
+    __resetPlaybackSpeedForTests();
     // react-native's Jest preset returns undefined from
     // AppState.addEventListener, which breaks useAppForeground's cleanup on
     // unmount - give every test a real subscription shape by default. Tests
@@ -457,9 +461,13 @@ describe('DramaFeedItem', () => {
       />
     );
 
-    // Assert: speed toggles between the two supported rates...
-    fireEvent.press(getByLabelText('Kecepatan 1x'));
-    expect(await findByLabelText('Kecepatan 2x')).toBeTruthy();
+    // Assert: all three rates are offered, 1x is the resting default, and a
+    // tap moves the selection...
+    expect(getByLabelText('Kecepatan 1x').props.accessibilityState.selected).toBe(true);
+    fireEvent.press(getByLabelText('Kecepatan 1.5x'));
+    expect((await findByLabelText('Kecepatan 1.5x')).props.accessibilityState.selected).toBe(true);
+    expect(getByLabelText('Kecepatan 1x').props.accessibilityState.selected).toBe(false);
+    expect(getByLabelText('Kecepatan 2x').props.accessibilityState.selected).toBe(false);
 
     // ...and the exit hands control back to the feed that owns the state.
     fireEvent.press(getByLabelText('Keluar dari tampilan bersih'));
@@ -1012,7 +1020,7 @@ describe('DramaFeedItem', () => {
 
       // Act
       await act(async () => {
-        fireEvent.press(getByLabelText('Kecepatan 1x'));
+        fireEvent.press(getByLabelText('Kecepatan 2x'));
       });
 
       // Assert: exactly the one deliberate write, no mount-time write of 1.
@@ -1284,7 +1292,7 @@ describe('DramaFeedItem', () => {
       );
 
       await act(async () => {
-        fireEvent.press(getByLabelText('Kecepatan 1x'));
+        fireEvent.press(getByLabelText('Kecepatan 2x'));
       });
 
       const player = allPlayers().at(-1)!;
@@ -1301,7 +1309,7 @@ describe('DramaFeedItem', () => {
       );
 
       await act(async () => {
-        fireEvent.press(getByLabelText('Kecepatan 1x'));
+        fireEvent.press(getByLabelText('Kecepatan 2x'));
       });
 
       expect(allPlayers().at(-1)!.rateWrites).toEqual([]);
@@ -1781,6 +1789,330 @@ describe('DramaFeedItem', () => {
 
       // 1 initial attempt + at most 3 bounded automatic retries.
       expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(4);
+    });
+  });
+
+  describe('playback speed selector (session speed: 1x / 1.5x / 2x)', () => {
+    type MockPlayer = {
+      playing: boolean;
+      play: jest.Mock;
+      pause: jest.Mock;
+      rateWrites: number[];
+    };
+
+    function latestPlayer(): MockPlayer {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+      return (useVideoPlayer as jest.Mock).mock.results.at(-1)?.value as MockPlayer;
+    }
+
+    function allDistinctPlayers(): MockPlayer[] {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+      return Array.from(
+        new Set(
+          (useVideoPlayer as jest.Mock).mock.results.map(
+            (mockResult) => mockResult.value as MockPlayer
+          )
+        )
+      );
+    }
+
+    it('defaults to 1x, expressed by writing nothing to the player', async () => {
+      const { getByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+      );
+
+      expect(getByLabelText('Kecepatan 1x').props.accessibilityState.selected).toBe(true);
+      expect(getByLabelText('Kecepatan 1.5x').props.accessibilityState.selected).toBe(false);
+      expect(getByLabelText('Kecepatan 2x').props.accessibilityState.selected).toBe(false);
+      // Writing the default 1 would still be a play command on iOS, so the
+      // default must live purely in state - zero writes, even while active.
+      expect(latestPlayer().rateWrites).toEqual([]);
+    });
+
+    it.each([[1.5], [2]])(
+      'selecting %sx writes that rate to the active player exactly once',
+      async (chosenSpeed) => {
+        const { getByLabelText } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+        );
+
+        await act(async () => {
+          fireEvent.press(getByLabelText(`Kecepatan ${chosenSpeed}x`));
+        });
+
+        expect(latestPlayer().rateWrites).toEqual([chosenSpeed]);
+        expect(
+          getByLabelText(`Kecepatan ${chosenSpeed}x`).props.accessibilityState.selected
+        ).toBe(true);
+      }
+    );
+
+    it('re-selecting the already-chosen speed issues no additional write', async () => {
+      const { getByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+      );
+
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 1.5x'));
+      });
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 1.5x'));
+      });
+
+      // Even an unchanged value restarts a paused AVPlayer - one deliberate
+      // write is the only acceptable total.
+      expect(latestPlayer().rateWrites).toEqual([1.5]);
+    });
+
+    it('a speed change touches only the active player even though every mounted item re-renders', async () => {
+      // The speed now lives in a store shared by all mounted items, so a
+      // change re-renders the inactive copies too - this is the test that
+      // their `shouldPlay` gates still keep every one of their players
+      // untouched.
+      const { getAllByLabelText } = await renderFeedItem(
+        <>
+          {[1, 2, 3].map((itemNumber) => (
+            <DramaFeedItem
+              key={itemNumber}
+              video={buildVideo({ id: `video-${itemNumber}` })}
+              {...baseProps}
+              isActive={itemNumber === 1}
+              isClearDisplay
+            />
+          ))}
+        </>
+      );
+
+      await act(async () => {
+        fireEvent.press(getAllByLabelText('Kecepatan 1.5x')[0]);
+      });
+
+      const activePlayer = findPlayerByUri('https://media.example.com/video-1.mp4');
+
+      expect(activePlayer?.rateWrites).toEqual([1.5]);
+      expect(
+        allDistinctPlayers().filter((player) => player.rateWrites.length > 0)
+      ).toEqual([activePlayer]);
+    });
+
+    it('choosing a speed while manually paused does not start playback; it applies on resume', async () => {
+      const video = buildVideo();
+      const { getByLabelText, rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />
+      );
+      const player = latestPlayer();
+
+      // The mocked useEvent reads player.playing at render time, so the flag
+      // has to be set and re-rendered before the tap sees something to pause.
+      player.playing = true;
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />);
+      });
+      await act(async () => {
+        fireEvent.press(getByLabelText('Pause'));
+      });
+
+      expect(player.pause).toHaveBeenCalled();
+
+      player.playing = false;
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />);
+      });
+      player.play.mockClear();
+
+      // The choice while paused is remembered, but the player stays silent -
+      // a rate write here IS the start-while-paused bug on iOS.
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 2x'));
+      });
+
+      expect(player.rateWrites).toEqual([]);
+      expect(player.play).not.toHaveBeenCalled();
+
+      // Resuming re-opens the intended-playback window, and only then does
+      // the remembered choice reach the player.
+      await act(async () => {
+        fireEvent.press(getByLabelText('Play'));
+      });
+
+      expect(player.play).toHaveBeenCalled();
+      expect(player.rateWrites).toEqual([2]);
+    });
+
+    it('rapid A -> B -> C at 2x leaves only C playing, at the session speed', async () => {
+      const videos = [1, 2, 3].map((itemNumber) => buildVideo({ id: `video-${itemNumber}` }));
+      const feedWithActive = (activeIndex: number) => (
+        <>
+          {videos.map((video, index) => (
+            <DramaFeedItem
+              key={video.id}
+              video={video}
+              {...baseProps}
+              isActive={index === activeIndex}
+              isClearDisplay
+            />
+          ))}
+        </>
+      );
+
+      const { getAllByLabelText, rerender } = await renderFeedItem(feedWithActive(0));
+
+      // The viewer picks 2x while A holds the active slot.
+      await act(async () => {
+        fireEvent.press(getAllByLabelText('Kecepatan 2x')[0]);
+      });
+
+      const playerA = findPlayerByUri('https://media.example.com/video-1.mp4');
+
+      expect(playerA?.rateWrites).toEqual([2]);
+
+      await act(async () => {
+        rerender(feedWithActive(1));
+      });
+      await act(async () => {
+        rerender(feedWithActive(2));
+      });
+
+      const playerB = findPlayerByUri('https://media.example.com/video-2.mp4');
+      const playerC = findPlayerByUri('https://media.example.com/video-3.mp4');
+
+      // Every item that lost the active slot was paused; only the final one
+      // is playing, and it inherited the session speed.
+      expect(playerA?.pause).toHaveBeenCalled();
+      expect(playerB?.pause).toHaveBeenCalled();
+      expect(playerC?.play).toHaveBeenCalled();
+      expect(playerC?.pause).not.toHaveBeenCalled();
+      expect(playerC?.rateWrites).toEqual([2]);
+      // No player ever received a rate write beyond the single one its own
+      // active stint justified, and never any value but the chosen 2.
+      [playerA, playerB, playerC].forEach((player) => {
+        expect(player!.rateWrites.length).toBeLessThanOrEqual(1);
+        player!.rateWrites.forEach((writtenRate) => expect(writtenRate).toBe(2));
+      });
+    });
+
+    it('the next active video inherits the session speed chosen on a previous one', async () => {
+      const videoA = buildVideo({ id: 'video-a' });
+      const videoB = buildVideo({ id: 'video-b' });
+      const feed = (activeIndex: number) => (
+        <>
+          <DramaFeedItem
+            video={videoA}
+            {...baseProps}
+            isActive={activeIndex === 0}
+            isClearDisplay
+          />
+          <DramaFeedItem
+            video={videoB}
+            {...baseProps}
+            isActive={activeIndex === 1}
+            isClearDisplay
+          />
+        </>
+      );
+      const { getAllByLabelText, rerender } = await renderFeedItem(feed(0));
+
+      await act(async () => {
+        fireEvent.press(getAllByLabelText('Kecepatan 2x')[0]);
+      });
+
+      await act(async () => {
+        rerender(feed(1));
+      });
+
+      const playerB = findPlayerByUri('https://media.example.com/video-b.mp4');
+
+      expect(playerB?.play).toHaveBeenCalled();
+      expect(playerB?.rateWrites).toEqual([2]);
+    });
+
+    it('keeps the session speed across background/foreground without a duplicate rate write', async () => {
+      const appStateListeners: ((state: string) => void)[] = [];
+      const addListenerSpy = jest.spyOn(AppState, 'addEventListener').mockImplementation(((
+        _event: string,
+        listener: (state: string) => void
+      ) => {
+        appStateListeners.push(listener);
+
+        return { remove: jest.fn() };
+      }) as never);
+
+      try {
+        const { getByLabelText } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+        );
+
+        await act(async () => {
+          fireEvent.press(getByLabelText('Kecepatan 1.5x'));
+        });
+
+        expect(latestPlayer().rateWrites).toEqual([1.5]);
+
+        await act(async () => {
+          appStateListeners.forEach((listener) => listener('background'));
+        });
+
+        expect(latestPlayer().pause).toHaveBeenCalled();
+
+        await act(async () => {
+          appStateListeners.forEach((listener) => listener('active'));
+        });
+
+        // Playback resumes, and the player kept its rate across the pause -
+        // re-issuing the same 1.5 would restart a player that was meant to
+        // stay paused in other interleavings, so the total stays at one.
+        expect(latestPlayer().play).toHaveBeenCalled();
+        expect(latestPlayer().rateWrites).toEqual([1.5]);
+      } finally {
+        addListenerSpy.mockRestore();
+      }
+    });
+
+    it('tab navigation away pauses playback and defers a speed change until the feed regains focus', async () => {
+      const video = buildVideo();
+      const { getByLabelText, rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />
+      );
+
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 1.5x'));
+      });
+
+      expect(latestPlayer().rateWrites).toEqual([1.5]);
+
+      // The viewer opens another tab: the feed screen loses focus.
+      await act(async () => {
+        rerender(
+          <DramaFeedItem
+            video={video}
+            {...baseProps}
+            isActive
+            isScreenFocused={false}
+            isClearDisplay
+          />
+        );
+      });
+
+      expect(latestPlayer().pause).toHaveBeenCalled();
+
+      // A speed change while the feed is not the focused screen must not
+      // touch the player - that write is exactly the ghost-audio bug.
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 2x'));
+      });
+
+      expect(latestPlayer().rateWrites).toEqual([1.5]);
+
+      // Back on the feed tab, the remembered choice applies exactly once.
+      await act(async () => {
+        rerender(
+          <DramaFeedItem video={video} {...baseProps} isActive isScreenFocused isClearDisplay />
+        );
+      });
+
+      expect(latestPlayer().rateWrites).toEqual([1.5, 2]);
     });
   });
 });

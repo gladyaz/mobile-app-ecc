@@ -15,6 +15,7 @@ import { useFeedBottomAnchor } from '@/hooks/use-feed-bottom-anchor';
 import { playbackPlayerLabel, reportPlayingState } from '@/services/debug/playback-invariant';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { useTranslation } from '@/stores/language';
+import { PLAYBACK_SPEEDS, usePlaybackSpeedStore } from '@/stores/playback-speed';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { recordVideoWatched } from '@/services/ads/ad-controller';
 import { getTokens } from '@/services/auth/token-store';
@@ -39,8 +40,6 @@ const PINCH_ACTIVATION_RATIO = 1.25;
 // exactly this much while clear display is on, so it sits directly above the
 // strip rather than behind it.
 const CLEAR_CONTROLS_HEIGHT = 64;
-
-const FAST_PLAYBACK_SPEED = 2;
 
 // The quick-actions bar hides itself again rather than waiting to be
 // dismissed, so a long press that was not meant to open anything costs the
@@ -188,9 +187,15 @@ export function DramaFeedItem({
   // fired so one gesture toggles clear display exactly once, however far the
   // fingers keep travelling.
   const pinchStartDistanceRef = useRef(0);
-  // Deliberately per-item: a speed bump is something you reach for on one
-  // clip, not a setting you expect to follow you through the whole feed.
-  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  // Session-scoped, not per-item (a product decision that reversed the
+  // earlier per-clip design): the chosen speed follows the viewer to the
+  // next active video and only resets on a cold app restart, because the
+  // store is memory-only - deliberately never persisted. Shared state means
+  // a change re-renders every mounted item, so the rate mirror effect below
+  // MUST keep its `shouldPlay` gate: it alone keeps the inactive copies
+  // from touching their players.
+  const playbackSpeed = usePlaybackSpeedStore((state) => state.speed);
+  const setPlaybackSpeed = usePlaybackSpeedStore((state) => state.setSpeed);
   const [isQuickActionsVisible, setIsQuickActionsVisible] = useState(false);
   const { t } = useTranslation();
   const { width: windowWidth } = useWindowDimensions();
@@ -494,8 +499,10 @@ export function DramaFeedItem({
   //   - `shouldPlay` keeps the write inside the window where playback is
   //     already intended, which is the only place it cannot start anything
   //     that was meant to stay silent. A rate chosen while the item is
-  //     inactive or paused is remembered in state and applied by this same
-  //     effect when the item becomes eligible again.
+  //     inactive or paused is remembered in the session store and applied
+  //     by this same effect when the item becomes eligible again - the
+  //     same path that hands the NEXT active item the session speed on
+  //     activation.
   //   - the equality check keeps a re-render from re-issuing an identical
   //     write, since even that would restart a paused player.
   useEffect(() => {
@@ -1196,15 +1203,28 @@ export function DramaFeedItem({
               />
             </Pressable>
             <View style={styles.clearControlDivider} />
-            <Pressable
-              accessibilityLabel={`Kecepatan ${playbackSpeed}x`}
-              accessibilityRole="button"
-              onPress={() =>
-                setPlaybackSpeed((current) => (current === 1 ? FAST_PLAYBACK_SPEED : 1))
-              }
-              style={({ pressed }) => [styles.clearControlButton, pressed && styles.buttonPressed]}>
-              <Text style={styles.clearSpeedText}>{`${playbackSpeed}×`}</Text>
-            </Pressable>
+            {PLAYBACK_SPEEDS.map((speedOption) => {
+              const isSelected = playbackSpeed === speedOption;
+
+              return (
+                <Pressable
+                  key={speedOption}
+                  accessibilityLabel={`Kecepatan ${speedOption}x`}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isSelected }}
+                  onPress={() => setPlaybackSpeed(speedOption)}
+                  style={({ pressed }) => [
+                    styles.clearSpeedOption,
+                    isSelected && styles.clearSpeedOptionSelected,
+                    pressed && styles.buttonPressed,
+                  ]}>
+                  <Text
+                    style={[styles.clearSpeedText, !isSelected && styles.clearSpeedTextDimmed]}>
+                    {`${speedOption}×`}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
       ) : null}
@@ -1382,11 +1402,28 @@ const styles = StyleSheet.create({
     height: 18,
     backgroundColor: 'rgba(255, 255, 255, 0.28)',
   },
+  // The three speed options share the pill with play/pause; the selected
+  // one carries the filled background, so the current rate reads at a
+  // glance without needing a separate label.
+  clearSpeedOption: {
+    minWidth: 44,
+    height: 40,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.pill,
+  },
+  clearSpeedOptionSelected: {
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+  },
   clearSpeedText: {
     fontSize: 15,
     fontFamily: FontFamily.bold,
     color: '#fff',
     fontVariant: ['tabular-nums'],
+  },
+  clearSpeedTextDimmed: {
+    color: 'rgba(255, 255, 255, 0.55)',
   },
   // Clear display is about reading the frame underneath, so the metadata and
   // the action rail step out of the way entirely.

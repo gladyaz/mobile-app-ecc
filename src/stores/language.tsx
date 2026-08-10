@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { PropsWithChildren } from 'react';
 
 import {
@@ -69,11 +69,16 @@ export function LanguageProvider({ children }: PropsWithChildren) {
     void setItem<Language>(STORAGE_KEYS.language, LANGUAGE_STORAGE_VERSION, next);
   }, []);
 
-  return (
-    <LanguageContext.Provider value={{ language, setLanguage, t: buildTranslate(language) }}>
-      {children}
-    </LanguageContext.Provider>
+  // Memoised on purpose. `buildTranslate` returns a fresh closure, and this
+  // value reaches the feed's renderItem dependency list - an unstable identity
+  // there makes FlatList rebuild every row, which can leave two video players
+  // alive at once.
+  const value = useMemo(
+    () => ({ language, setLanguage, t: buildTranslate(language) }),
+    [language, setLanguage]
   );
+
+  return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;
 }
 
 export function useTranslation(): LanguageContextValue {

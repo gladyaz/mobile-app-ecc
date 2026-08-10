@@ -26,6 +26,20 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "2.2.21"
+          }
+        }
+      ],
+      [
+        "./plugins/with-root-kotlin-gradle-plugin",
+        {
+          "version": "2.2.21"
+        }
+      ],
       "expo-router",
       [
         "expo-splash-screen",

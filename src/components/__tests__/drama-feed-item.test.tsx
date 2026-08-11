@@ -8,7 +8,12 @@ import { FeedBottomGap } from '@/constants/theme';
 import { resetPlaybackInvariantForTests } from '@/services/debug/playback-invariant';
 import { __resetPlaybackSpeedForTests } from '@/stores/playback-speed';
 import type { Episode } from '@/types/series';
-import type { PlaybackAuthorization } from '@/types/playback';
+import type {
+  HlsPlaybackAuthorization,
+  Mp4PlaybackAuthorization,
+  PlaybackAuthorization,
+  PlaybackRendition,
+} from '@/types/playback';
 import type { Video } from '@/types/video';
 
 // `render()` in this testing-library version is itself async (it returns a
@@ -70,12 +75,31 @@ jest.mock('@/services/analytics/analytics-queue', () => ({
 // Slice 11M: the active item authorizes playback through this call instead
 // of playing `video.playbackUrl` directly. Mocked here (rather than mocking
 // `@/services/api/client`'s `request`) so tests can assert on exactly what
-// this component does with the resolved `{ playbackUrl, requiresAuthHeader,
-// expiresAt }` shape without needing to know it goes over HTTP at all.
+// this component does with the resolved authorization without needing to
+// know it goes over HTTP at all. `resolvePlaybackSource` is deliberately
+// left as the REAL implementation (via `requireActual`) rather than also
+// mocked - it is the single testable decision point this component now
+// delegates to (Slice 11R), so these component tests exercise it for real
+// rather than re-stubbing its branching.
 const mockGetPlaybackAuthorization = jest.fn();
 
-jest.mock('@/services/videos/video-service', () => ({
-  getPlaybackAuthorization: (videoId: string) => mockGetPlaybackAuthorization(videoId),
+jest.mock('@/services/videos/video-service', () => {
+  const actual = jest.requireActual('@/services/videos/video-service');
+
+  return {
+    ...actual,
+    getPlaybackAuthorization: (videoId: string) => mockGetPlaybackAuthorization(videoId),
+  };
+});
+
+// Slice 11R: the prefer-MP4 rollback flag. Defaults to enabled (HLS
+// preferred) so every pre-existing test in this file - none of which know
+// about this flag - keeps its original behavior; the "prefer-MP4" describe
+// block below overrides the return value for its own cases.
+const mockIsHlsPlaybackEnabled = jest.fn(() => true);
+
+jest.mock('@/services/videos/hls-playback-flag', () => ({
+  isHlsPlaybackEnabled: () => mockIsHlsPlaybackEnabled(),
 }));
 
 const mockUseEntitlement = jest.fn();
@@ -226,11 +250,35 @@ function buildPlaybackAuthorization(
     expiresAt: string;
     requiresAuthHeader: boolean;
   }> = {}
-) {
+): Mp4PlaybackAuthorization {
   return {
+    kind: 'mp4',
     playbackUrl: 'https://media.example.com/video-1.mp4',
     expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     requiresAuthHeader: true,
+    ...overrides,
+  };
+}
+
+// Slice 11R: mirrors `buildPlaybackAuthorization` above, for the HLS-shaped
+// half of the union. `renditions` defaults to a small, valid, non-empty
+// list - individual tests override it only when the rendition content
+// itself is what's under test.
+function buildHlsPlaybackAuthorization(
+  overrides: Partial<{
+    masterUrl: string;
+    expiresAt: string;
+    renditions: readonly PlaybackRendition[];
+  }> = {}
+): HlsPlaybackAuthorization {
+  return {
+    kind: 'hls',
+    masterUrl: 'https://gateway.example.com/videos/video-1/master.m3u8?token=abc',
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    renditions: [
+      { quality: '720p', width: 1280, height: 720, url: 'https://gateway.example.com/videos/video-1/720p.m3u8' },
+      { quality: '480p', width: 854, height: 480, url: 'https://gateway.example.com/videos/video-1/480p.m3u8' },
+    ],
     ...overrides,
   };
 }
@@ -359,6 +407,9 @@ describe('DramaFeedItem', () => {
       .spyOn(AppState, 'addEventListener')
       .mockImplementation((() => ({ remove: jest.fn() })) as never);
     mockUseEntitlement.mockReturnValue({ isPremium: false, refresh: jest.fn() });
+    // Slice 11R: defaults to HLS preferred/enabled; the "prefer-MP4
+    // rollback flag" describe block below overrides this per test.
+    mockIsHlsPlaybackEnabled.mockReturnValue(true);
     // clearMocks only clears calls, not return values, so a case that turns
     // demo mode on (or signs the user out) would otherwise leak into every
     // test after it.
@@ -2113,6 +2164,215 @@ describe('DramaFeedItem', () => {
       });
 
       expect(latestPlayer().rateWrites).toEqual([1.5, 2]);
+    });
+  });
+
+  describe('Slice 11R: AUTO adaptive HLS playback', () => {
+    it('uses the backend-provided masterUrl as the player source for an HLS playback authorization', async () => {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      const masterUrl = 'https://gateway.example.com/videos/video-1/master.m3u8?token=abc';
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildHlsPlaybackAuthorization({ masterUrl })
+      );
+
+      await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} />);
+
+      // No headers either: attaching Authorization to a gateway-token
+      // manifest URL would break it, the same hazard the presigned-R2 MP4
+      // path already documents.
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({ uri: masterUrl });
+    });
+
+    it('keeps playing the legacy MP4 path unchanged when the authorization is not HLS-shaped (fallback preserved)', async () => {
+      // The pre-existing Slice 11M tests above ('attaches the current
+      // access token...', 'does not attach an Authorization header when
+      // requiresAuthHeader is false') already cover both header cases in
+      // depth; this test documents, specifically for the Slice 11R
+      // union-type refactor, that a plain kind: 'mp4' authorization still
+      // plays via its own playbackUrl, untouched.
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/video-1.mp4',
+          requiresAuthHeader: true,
+        })
+      );
+
+      await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} />);
+
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+        uri: 'https://media.example.com/video-1.mp4',
+        headers: { Authorization: 'Bearer test-access-token' },
+      });
+    });
+
+    it('does not start an inactive item even when its authorization would resolve to HLS', async () => {
+      // Deliberately does NOT queue a `mockResolvedValueOnce` here: the
+      // assertion below is that `getPlaybackAuthorization` is never called
+      // at all for an inactive item, so a queued-but-unconsumed response
+      // would otherwise leak into (and corrupt) whichever test runs next.
+
+      await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive={false} />);
+
+      // Mirrors the existing Slice 11M "logged out" test: the active-only
+      // gate must skip the request entirely, HLS or not.
+      expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
+      expect(latestMockPlayer()?.play).not.toHaveBeenCalled();
+    });
+
+    it('ignores an HLS authorization response that arrives after the item is no longer active', async () => {
+      const deferred = createDeferred<PlaybackAuthorization>();
+      mockGetPlaybackAuthorization.mockReturnValueOnce(deferred.promise);
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+      const video = buildVideo();
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+      });
+
+      await act(async () => {
+        deferred.resolve(buildHlsPlaybackAuthorization());
+      });
+
+      // The same playbackRequestIdRef/isActiveRef generation guard that
+      // protects the MP4 path (see the Slice 11M describe block above)
+      // applies identically here - there is no separate HLS request path
+      // for a stale response to slip past.
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toBeNull();
+      expect(latestMockPlayer()?.play).not.toHaveBeenCalled();
+    });
+
+    it('rapid A -> B -> C transitions leave only C playing when the incoming authorization is HLS', async () => {
+      const videos = [1, 2, 3].map((n) => buildVideo({ id: `video-${n}` }));
+      mockGetPlaybackAuthorization.mockImplementation((videoId: string) =>
+        Promise.resolve(
+          buildHlsPlaybackAuthorization({
+            masterUrl: `https://gateway.example.com/videos/${videoId}/master.m3u8`,
+          })
+        )
+      );
+      const feedWithActive = (activeIndex: number) => (
+        <>
+          {videos.map((video, index) => (
+            <DramaFeedItem
+              key={video.id}
+              video={video}
+              {...baseProps}
+              isActive={index === activeIndex}
+            />
+          ))}
+        </>
+      );
+
+      const { rerender } = await renderFeedItem(feedWithActive(0));
+
+      const playerA = findPlayerByUri('https://gateway.example.com/videos/video-1/master.m3u8');
+
+      playerA?.play.mockClear();
+      playerA?.pause.mockClear();
+
+      await act(async () => {
+        rerender(feedWithActive(1));
+      });
+      await act(async () => {
+        rerender(feedWithActive(2));
+      });
+
+      const playerB = findPlayerByUri('https://gateway.example.com/videos/video-2/master.m3u8');
+      const playerC = findPlayerByUri('https://gateway.example.com/videos/video-3/master.m3u8');
+
+      expect(playerA?.pause).toHaveBeenCalled();
+      expect(playerA?.play).not.toHaveBeenCalled();
+      expect(playerB?.pause).toHaveBeenCalled();
+      expect(playerC?.play).toHaveBeenCalled();
+      expect(playerC?.pause).not.toHaveBeenCalled();
+    });
+
+    it('pauses the outgoing MP4 player and plays only the incoming HLS player when the source kind switches mid-session, with no invariant violation', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      try {
+        jest.useFakeTimers();
+        // A refresh (HIGH-1's proactive-refresh effect - see the "Slice 11M
+        // review remediation" describe block above) can legitimately hand
+        // an active item a DIFFERENT authorization kind than it started
+        // with, e.g. a backend rollout that switches a title over to HLS
+        // mid-session. This must go through the exact same
+        // release/pause-outgoing-player cleanup as an MP4-to-MP4 URL
+        // refresh already does - no second, parallel player.
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildPlaybackAuthorization({
+            playbackUrl: 'https://media.example.com/first-grant.mp4',
+            expiresAt: new Date(Date.now() + 40000).toISOString(),
+          })
+        );
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildHlsPlaybackAuthorization({
+            masterUrl: 'https://gateway.example.com/videos/video-1/master.m3u8',
+          })
+        );
+
+        await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive />);
+
+        const mp4Player = findPlayerByUri('https://media.example.com/first-grant.mp4');
+
+        expect(mp4Player?.play).toHaveBeenCalled();
+
+        // 40s grant, 30s refresh margin -> the refresh fires 10s in.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10000);
+        });
+
+        const hlsPlayer = findPlayerByUri(
+          'https://gateway.example.com/videos/video-1/master.m3u8'
+        );
+
+        expect(mp4Player?.pause).toHaveBeenCalled();
+        expect(hlsPlayer?.play).toHaveBeenCalled();
+        expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+          '[PlaybackInvariantViolation]',
+          expect.anything()
+        );
+      } finally {
+        consoleErrorSpy.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    describe('prefer-MP4 rollback flag disabled', () => {
+      it('shows the existing "Video unavailable" state instead of playing when the authorization is HLS and the flag is disabled', async () => {
+        mockIsHlsPlaybackEnabled.mockReturnValue(false);
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(buildHlsPlaybackAuthorization());
+
+        const { getByText } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} />
+        );
+
+        // There is no MP4 URL embedded inside an HLS response to fall back
+        // to, so this - correctly - lands on the same failure UI a genuine
+        // authorization failure does, rather than a stuck spinner.
+        expect(getByText('Video unavailable')).toBeTruthy();
+        expect(latestMockPlayer()?.play).not.toHaveBeenCalled();
+      });
+
+      it('still plays a legacy MP4 authorization exactly as before when the flag is disabled', async () => {
+        mockIsHlsPlaybackEnabled.mockReturnValue(false);
+        const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-1.mp4' })
+        );
+
+        await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} />);
+
+        expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+          uri: 'https://media.example.com/video-1.mp4',
+          headers: { Authorization: 'Bearer test-access-token' },
+        });
+      });
     });
   });
 });

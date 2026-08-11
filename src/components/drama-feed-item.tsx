@@ -3,7 +3,7 @@ import { router } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { SymbolView } from 'expo-symbols';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { BrandMark } from '@/components/brand-mark';
@@ -19,7 +19,8 @@ import { PLAYBACK_SPEEDS, usePlaybackSpeedStore } from '@/stores/playback-speed'
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { recordVideoWatched } from '@/services/ads/ad-controller';
 import { getTokens } from '@/services/auth/token-store';
-import { getPlaybackAuthorization } from '@/services/videos/video-service';
+import { isHlsPlaybackEnabled } from '@/services/videos/hls-playback-flag';
+import { getPlaybackAuthorization, resolvePlaybackSource } from '@/services/videos/video-service';
 import { useAdsStore } from '@/stores/ads-store';
 import { useEntitlement } from '@/stores/entitlement';
 import type { Episode } from '@/types/series';
@@ -248,10 +249,12 @@ export function DramaFeedItem({
   // - see the control workspace `DECISIONS.md`, "Slice 11M approved;
   // playback contract decided (Option A, dedicated endpoint)", 2026-08-08.
   // A real, playable URL now comes ONLY from `GET /videos/:id/playback`
-  // (`getPlaybackAuthorization`, requested below), which answers for BOTH
-  // storage kinds so this component stays ignorant of which one it got:
-  // `requiresAuthHeader` says whether to attach the Bearer token, never a
-  // hardcoded assumption. That request is fired ONLY for the active item -
+  // (`getPlaybackAuthorization`, requested below), which answers for
+  // multiple storage/delivery kinds - legacy local/R2-MP4, and (Slice 11R)
+  // HLS - so this component stays ignorant of which one it got: the
+  // returned union's `kind` and `resolvePlaybackSource` decide the source
+  // and headers, never a hardcoded assumption here. That request is fired
+  // ONLY for the active item -
   // signing (or, in a demo build, resolving) a URL nobody is watching is
   // pure waste - so `playbackAuth` starts and stays `null` for every
   // off-screen item.
@@ -307,12 +310,22 @@ export function DramaFeedItem({
   // the current value, which is what makes a superseded (or now-inactive)
   // response a safe no-op instead of wiring up a stale/dead URL.
   const playbackRequestIdRef = useRef(0);
-  const hasPlaybackUrl = playbackAuth !== null && playbackAuth.playbackUrl.length > 0;
-  const playbackHeaders = playbackAuth?.requiresAuthHeader
-    ? { Authorization: `Bearer ${accessToken}` }
-    : undefined;
-  const playbackSource =
-    playbackAuth && hasPlaybackUrl ? { uri: playbackAuth.playbackUrl, headers: playbackHeaders } : null;
+  // Slice 11R: the ONE call site that turns a resolved playback
+  // authorization (either the HLS or the legacy/MP4 shape - see
+  // `types/playback.ts`) into an `expo-video` source. Routing BOTH shapes
+  // through this same `playbackSource` state + `useVideoPlayer` path (rather
+  // than a second, parallel HLS-only path) is what keeps every existing
+  // active-item-only / single-player guard below applying identically to an
+  // HLS source - there is no separate code path for it to slip past.
+  // `resolvePlaybackSource` returns `null` for an HLS authorization while
+  // the prefer-MP4 rollback flag is disabled; `hasPlaybackUrl` folds that
+  // into the same "no real playable source" state as "authorization hasn't
+  // arrived yet" / "authorization failed" below.
+  const playbackSource = useMemo(
+    () => (playbackAuth ? resolvePlaybackSource(playbackAuth, accessToken, isHlsPlaybackEnabled()) : null),
+    [playbackAuth, accessToken]
+  );
+  const hasPlaybackUrl = playbackSource !== null;
   const videoViewRef = useRef<VideoView>(null);
   const isInFullscreenRef = useRef(false);
   const hasSeekedToResumeRef = useRef(false);
@@ -361,8 +374,23 @@ export function DramaFeedItem({
       // shape and throws on anything malformed, but an empty `playbackUrl`
       // is a silent, permanent black screen (neither the error state nor a
       // spinner) if it ever slipped through - treat it as a failure, never
-      // as "nothing to do yet."
-      if (!authorization.playbackUrl) {
+      // as "nothing to do yet." `resolvePlaybackSource` deliberately does
+      // NOT perform this emptiness check itself (its contract is to echo
+      // the backend-provided URL byte-for-byte, not to re-validate it) so
+      // it stays here, same as before Slice 11R.
+      const hasEmptyMp4Url = authorization.kind === 'mp4' && authorization.playbackUrl.length === 0;
+
+      // Slice 11R: an HLS authorization while the prefer-MP4 rollback flag
+      // is disabled resolves to `null` from the selector - there is no MP4
+      // URL embedded inside an HLS response to fall back to, so that also
+      // lands on the same "video unavailable" state.
+      const resolvedSource = resolvePlaybackSource(
+        authorization,
+        accessToken,
+        isHlsPlaybackEnabled()
+      );
+
+      if (hasEmptyMp4Url || !resolvedSource) {
         setPlaybackAuth(null);
         setHasPlaybackAuthError(true);
         return;

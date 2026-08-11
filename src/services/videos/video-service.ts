@@ -2,7 +2,7 @@ import { mockDramaVideos } from '@/data/mock-drama-videos';
 import { ApiError, request } from '@/services/api/client';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { mapBackendVideoToVideo, type BackendVideoDto } from '@/services/videos/video-mapper';
-import type { PlaybackAuthorization } from '@/types/playback';
+import type { Mp4PlaybackAuthorization, PlaybackAuthorization, PlaybackRendition } from '@/types/playback';
 import type { Video, VideoCategory } from '@/types/video';
 
 // Matches the backend's real presigned-GET/stream-URL expiry window (Slice
@@ -83,30 +83,168 @@ export async function getVideoById(id: string): Promise<Video | undefined> {
 }
 
 /**
- * Validates the shape of a `GET /videos/:id/playback` response at the
- * boundary, instead of trusting a bare generic-typed cast. A malformed or
- * drifted response (a missing/renamed field, a non-string `expiresAt`, an
- * empty `playbackUrl`) would otherwise either throw a render-time
- * TypeError deep inside the player-source logic, or - worse - silently
- * resolve to an unusable "success," neither of which is the designed
- * "video unavailable" failure mode. `mapBackendVideoToVideo`
+ * Validates the legacy/R2-MP4 response shape at the boundary, instead of
+ * trusting a bare generic-typed cast: `{ playbackUrl, expiresAt,
+ * requiresAuthHeader }`. A malformed or drifted response (a missing/renamed
+ * field, a non-string `expiresAt`, an empty `playbackUrl`) would otherwise
+ * either throw a render-time TypeError deep inside the player-source logic,
+ * or - worse - silently resolve to an unusable "success," neither of which
+ * is the designed "video unavailable" failure mode. `mapBackendVideoToVideo`
  * (`video-mapper.ts`) validates its own DTO the same way, for the same
- * reason.
+ * reason. Used both for the real endpoint's legacy branch (via
+ * `parsePlaybackAuthorization` below) and directly by mock-data mode, which
+ * always synthesizes this shape.
+ *
+ * Requires the ABSENCE of a `type` field: a response that carries `type:
+ * 'hls'` but fails HLS validation (e.g. a backend partial-rollout state
+ * where a video is tagged `type: 'hls'` before its `masterUrl` is
+ * populated) must never be allowed to fall through and silently validate
+ * as the legacy shape just because it happens to also carry a legacy
+ * `playbackUrl`/`requiresAuthHeader`/`expiresAt` triple - it must surface
+ * the shape-mismatch throw instead.
  */
-function isValidPlaybackAuthorization(value: unknown): value is PlaybackAuthorization {
+function isValidLegacyPlaybackAuthorization(
+  value: unknown
+): value is Omit<Mp4PlaybackAuthorization, 'kind'> {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
 
-  const candidate = value as Partial<Record<keyof PlaybackAuthorization, unknown>>;
+  const candidate = value as Partial<
+    Record<'type' | 'playbackUrl' | 'expiresAt' | 'requiresAuthHeader', unknown>
+  >;
 
   return (
+    candidate.type === undefined &&
     typeof candidate.playbackUrl === 'string' &&
     candidate.playbackUrl.length > 0 &&
     typeof candidate.expiresAt === 'string' &&
     !Number.isNaN(Date.parse(candidate.expiresAt)) &&
     typeof candidate.requiresAuthHeader === 'boolean'
   );
+}
+
+function isValidPlaybackRendition(value: unknown): value is PlaybackRendition {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<Record<keyof PlaybackRendition, unknown>>;
+
+  return (
+    typeof candidate.quality === 'string' &&
+    candidate.quality.length > 0 &&
+    typeof candidate.width === 'number' &&
+    Number.isFinite(candidate.width) &&
+    typeof candidate.height === 'number' &&
+    Number.isFinite(candidate.height) &&
+    typeof candidate.url === 'string' &&
+    candidate.url.length > 0
+  );
+}
+
+/**
+ * Validates the HLS-ready response shape (Slice 11R): `{ type: 'hls',
+ * masterUrl, renditions, expiresAt }`. Every rendition entry is validated
+ * too - a partially-malformed `renditions` array falls through to the same
+ * shape-mismatch failure as a wholly wrong shape, rather than silently
+ * dropping the bad entries.
+ */
+function isValidHlsWireResponse(
+  value: unknown
+): value is { type: 'hls'; masterUrl: string; renditions: PlaybackRendition[]; expiresAt: string } {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<
+    Record<'type' | 'masterUrl' | 'renditions' | 'expiresAt', unknown>
+  >;
+
+  return (
+    candidate.type === 'hls' &&
+    typeof candidate.masterUrl === 'string' &&
+    candidate.masterUrl.length > 0 &&
+    typeof candidate.expiresAt === 'string' &&
+    !Number.isNaN(Date.parse(candidate.expiresAt)) &&
+    Array.isArray(candidate.renditions) &&
+    candidate.renditions.every(isValidPlaybackRendition)
+  );
+}
+
+const PLAYBACK_SHAPE_MISMATCH_MESSAGE =
+  '[video-service] GET /videos/:id/playback returned a response that did not match the expected shape.';
+
+/**
+ * THE one place a raw `GET /videos/:id/playback` response is turned into
+ * the internal discriminated union (`types/playback.ts`). A `type: 'hls'`
+ * response normalizes to `{ kind: 'hls', ... }`; the legacy shape (no
+ * `type` field) normalizes to `{ kind: 'mp4', ... }`; anything else throws
+ * the same shape-mismatch error as before this slice - never containing the
+ * URL or any other response field, so a signed URL never lands in a thrown
+ * message.
+ */
+function parsePlaybackAuthorization(value: unknown): PlaybackAuthorization {
+  if (isValidHlsWireResponse(value)) {
+    return {
+      kind: 'hls',
+      masterUrl: value.masterUrl,
+      renditions: value.renditions,
+      expiresAt: value.expiresAt,
+    };
+  }
+
+  if (isValidLegacyPlaybackAuthorization(value)) {
+    return {
+      kind: 'mp4',
+      playbackUrl: value.playbackUrl,
+      requiresAuthHeader: value.requiresAuthHeader,
+      expiresAt: value.expiresAt,
+    };
+  }
+
+  throw new Error(PLAYBACK_SHAPE_MISMATCH_MESSAGE);
+}
+
+/**
+ * THE single, testable decision point for turning a resolved playback
+ * authorization into an `expo-video` source - components must call this
+ * rather than re-deriving the branching themselves.
+ *
+ * - `kind: 'hls'` and HLS preference enabled: plays the backend-provided
+ *   `masterUrl` verbatim, with NO headers - the gateway token is
+ *   path-embedded in the manifest URL, so attaching an Authorization header
+ *   would break it the same way one breaks a presigned R2 MP4 URL (see
+ *   `types/playback.ts`).
+ * - `kind: 'mp4'`: byte-identical to the pre-Slice-11R behavior - the
+ *   backend's `playbackUrl`, with an `Authorization: Bearer <token>` header
+ *   attached only when `requiresAuthHeader` is true.
+ * - `kind: 'hls'` and HLS preference disabled (the prefer-MP4 rollback
+ *   flag): returns `null`. There is no MP4 URL embedded inside an HLS
+ *   response to fall back to, so this resolves to the existing "video
+ *   unavailable" state rather than attempting a reconstructed or guessed
+ *   URL.
+ *
+ * Never reconstructs or guesses at a storage/CDN path - the `masterUrl`
+ * and `playbackUrl` values are echoed exactly as the backend provided them.
+ */
+export function resolvePlaybackSource(
+  auth: PlaybackAuthorization,
+  accessToken: string | undefined,
+  hlsEnabled: boolean
+): { uri: string; headers?: Record<string, string> } | null {
+  if (auth.kind === 'hls') {
+    if (!hlsEnabled) {
+      return null;
+    }
+
+    return { uri: auth.masterUrl };
+  }
+
+  return {
+    uri: auth.playbackUrl,
+    headers: auth.requiresAuthHeader ? { Authorization: `Bearer ${accessToken}` } : undefined,
+  };
 }
 
 /**
@@ -122,20 +260,21 @@ function isValidPlaybackAuthorization(value: unknown): value is PlaybackAuthoriz
  * published), 401 (unauthenticated), 403 `ENTITLEMENT_REQUIRED` (premium
  * episode, no entitlement), 409 `MEDIA_PLAYBACK_SOURCE_UNAVAILABLE` (row
  * has no usable storage); a plain `Error` (never containing the URL or any
- * other response field - see `isValidPlaybackAuthorization` above) for a
- * 200 response whose shape doesn't validate. None of these are caught
- * here; callers are expected to fold all of them into the same "video
- * unavailable" error state rather than distinguishing them in the UI.
+ * other response field - see `parsePlaybackAuthorization` above) for a 200
+ * response whose shape doesn't validate as either the HLS (Slice 11R) or
+ * legacy/MP4 (Slice 11M) shape. None of these are caught here; callers are
+ * expected to fold all of them into the same "video unavailable" error
+ * state rather than distinguishing them in the UI.
  *
- * In mock-data mode this never reaches the network: it synthesizes an
- * authorization from the matching mock video's own bundled `playbackUrl`,
- * mirroring how `getVideoFeed`/`getVideoById` above already short-circuit
- * for mock data - and, like the real path, throws (rather than resolving
- * an empty URL) when no mock video matches the id, so an unknown id
- * behaves the same "unavailable" way a real backend's 404 would. A demo
- * build's bundled clips resolve to a local asset URI with nothing to
- * authorize, so `requiresAuthHeader` is false there, matching the
- * pre-Slice-11M "no Authorization header for a bundled clip" contract;
+ * In mock-data mode this never reaches the network: it synthesizes a
+ * `kind: 'mp4'` authorization from the matching mock video's own bundled
+ * `playbackUrl`, mirroring how `getVideoFeed`/`getVideoById` above already
+ * short-circuit for mock data - and, like the real path, throws (rather
+ * than resolving an empty URL) when no mock video matches the id, so an
+ * unknown id behaves the same "unavailable" way a real backend's 404
+ * would. A demo build's bundled clips resolve to a local asset URI with
+ * nothing to authorize, so `requiresAuthHeader` is false there, matching
+ * the pre-Slice-11M "no Authorization header for a bundled clip" contract;
  * non-demo mock-data mode keeps requiring a header, matching the real
  * backend default it stands in for.
  */
@@ -148,11 +287,11 @@ export async function getPlaybackAuthorization(videoId: string): Promise<Playbac
       requiresAuthHeader: !isDemoMode(),
     };
 
-    if (!isValidPlaybackAuthorization(authorization)) {
+    if (!isValidLegacyPlaybackAuthorization(authorization)) {
       throw new Error(`[video-service] No mock video found for id "${videoId}".`);
     }
 
-    return authorization;
+    return { kind: 'mp4', ...authorization };
   }
 
   const response = await request<unknown>(
@@ -161,13 +300,7 @@ export async function getPlaybackAuthorization(videoId: string): Promise<Playbac
     { requiresAuth: true }
   );
 
-  if (!isValidPlaybackAuthorization(response)) {
-    throw new Error(
-      '[video-service] GET /videos/:id/playback returned a response that did not match the expected shape.'
-    );
-  }
-
-  return response;
+  return parsePlaybackAuthorization(response);
 }
 
 export function searchVideos(

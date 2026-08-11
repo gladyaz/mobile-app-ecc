@@ -77,6 +77,7 @@ EXPO_PUBLIC_USE_MOCK_DATA=false
 
 - `EXPO_PUBLIC_API_BASE_URL` - base URL of the NestJS backend.
 - `EXPO_PUBLIC_USE_MOCK_DATA` - set to `true` to force the app to use the bundled mock data instead of the backend, even if the backend URL is set. Useful for UI-only work without the backend running.
+- `EXPO_PUBLIC_HLS_PLAYBACK_ENABLED` - Slice 11R (mobile AUTO adaptive HLS playback) prefer-MP4 client rollback flag. Defaults to HLS enabled when unset; set to `false` to force every playback authorization through the legacy/R2-MP4 path only - an HLS-shaped authorization then resolves to the existing "Video unavailable" state instead of playing, since there is no MP4 URL embedded inside an HLS response to fall back to. See `src/services/videos/hls-playback-flag.ts`.
 
 ### Running Backend and Mobile Together
 

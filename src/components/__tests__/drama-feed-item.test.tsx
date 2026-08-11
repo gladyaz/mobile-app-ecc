@@ -2343,7 +2343,7 @@ describe('DramaFeedItem', () => {
       }
     });
 
-    describe('prefer-MP4 rollback flag disabled', () => {
+    describe('HLS playback disabled (kill switch)', () => {
       it('shows the existing "Video unavailable" state instead of playing when the authorization is HLS and the flag is disabled', async () => {
         mockIsHlsPlaybackEnabled.mockReturnValue(false);
         mockGetPlaybackAuthorization.mockResolvedValueOnce(buildHlsPlaybackAuthorization());

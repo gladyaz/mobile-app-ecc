@@ -352,7 +352,7 @@ describe('resolvePlaybackSource', () => {
     );
   });
 
-  it('kind: "hls" + HLS disabled (prefer-MP4 rollback): returns null - there is no MP4 URL inside an HLS response to fall back to', () => {
+  it('kind: "hls" + HLS disabled (kill switch): returns null - HLS-ready media has no client-side MP4 to fall back to', () => {
     const auth = buildHls();
 
     expect(resolvePlaybackSource(auth, 'token-123', false)).toBeNull();

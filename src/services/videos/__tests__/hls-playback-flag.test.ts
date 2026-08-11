@@ -6,7 +6,7 @@ afterEach(() => {
   process.env.EXPO_PUBLIC_HLS_PLAYBACK_ENABLED = ORIGINAL_ENV;
 });
 
-describe('isHlsPlaybackEnabled (Slice 11R prefer-MP4 rollback flag)', () => {
+describe('isHlsPlaybackEnabled (Slice 11R HLS playback enable/disable flag)', () => {
   it('defaults to enabled when the env var is unset', () => {
     delete process.env.EXPO_PUBLIC_HLS_PLAYBACK_ENABLED;
 

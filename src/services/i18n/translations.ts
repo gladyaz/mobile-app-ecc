@@ -76,8 +76,6 @@ const id = {
   'feed.videoUnavailableHint': 'Check the local media server connection.',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Episode Berikutnya',
-  'feed.more': 'more',
-  'feed.less': 'less',
   'feed.clearDisplay': 'Tampilan bersih',
 
   'login.title': 'Masuk',
@@ -154,8 +152,6 @@ const en: Copy = {
   'feed.videoUnavailableHint': 'Check the local media server connection.',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Next Episode',
-  'feed.more': 'more',
-  'feed.less': 'less',
   'feed.clearDisplay': 'Clear display',
 
   'login.title': 'Sign in',
@@ -227,8 +223,6 @@ const zh: Copy = {
   'feed.videoUnavailableHint': '请检查本地媒体服务器连接。',
   'feed.fullscreen': '全屏',
   'feed.nextEpisode': '下一集',
-  'feed.more': '展开',
-  'feed.less': '收起',
   'feed.clearDisplay': '清屏模式',
 
   'login.title': '登录',

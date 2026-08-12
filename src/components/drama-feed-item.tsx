@@ -5,8 +5,8 @@ import { SymbolView } from 'expo-symbols';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { BrandMark } from '@/components/brand-mark';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { FeedProgressBar } from '@/components/feed-progress-bar';
@@ -65,16 +65,23 @@ export function touchDistance(
 }
 
 
-// Above this length, the 1-line-clamped caption is likely to actually
-// truncate, so it's worth offering a "Lebih banyak" expand affordance.
-// Roughly the number of characters that fit on one line at the caption's size
-// and column width. Above it the single-line caption really does ellipsize, so
-// "more" is honest rather than decorative.
-const CAPTION_EXPAND_THRESHOLD = 40;
+// Mobile UI revision (2026-08-12): distance below the top safe-area inset at
+// which the per-item title block sits. Home renders its brand overlay at
+// `insets.top + 10` (see `(tabs)/index.tsx`); this offset places the title in
+// the same upper-left hierarchy, clearly below that brand line, on every
+// notch/Dynamic-Island/SE-class screen. The next-episode control shares this
+// same band on the right, which is why the title overlay leaves its right
+// edge free (see `titleOverlay`).
+const TITLE_OVERLAY_TOP_OFFSET = 44;
 
-// Caps how tall an expanded caption can grow, so an unusually long caption
-// can't cover most of the video or collide with the action rail.
-const CAPTION_EXPANDED_MAX_LINES = 6;
+// Review fix (cycle 1, Finding 1): the next-episode pill no longer shares
+// the title's vertical band - its Indonesian label ("Episode Berikutnya")
+// renders far wider than the pill's 74px minimum, so a shared band could
+// overlap the title's second line and steal its taps. Anchoring the pill a
+// fixed distance below the title block's maximum extent (2 title lines at
+// 23px line-height + the meta line + breathing room) makes the two
+// deterministically non-overlapping at every title length and locale.
+const NEXT_EPISODE_TOP_OFFSET = TITLE_OVERLAY_TOP_OFFSET + 76;
 
 // How often to persist playback progress while a video is actively
 // playing - a throttle, not a per-frame write.
@@ -158,14 +165,11 @@ function lockOrientation(orientation: ScreenOrientation.OrientationLock) {
   });
 }
 
-// Above this viewport width (tablet-ish portrait), the metadata overlay's
-// details block otherwise stretches to fill the full row width, which lets
-// the title/caption text extend further down/across into the same lower
-// portion of frame where a video's burned-in subtitle typically sits. Capping
-// the block's width on wide screens keeps it compact without touching the
-// bottom anchor or phone-width layout.
+// Above this viewport width (tablet-ish portrait), the title overlay would
+// otherwise stretch most of the way across the frame. Capping its width on
+// wide screens keeps it the same compact upper-left block it is on phones.
 const WIDE_LAYOUT_BREAKPOINT = 700;
-const DETAILS_MAX_WIDTH_WIDE = 440;
+const TITLE_MAX_WIDTH_WIDE = 440;
 
 type DramaFeedItemProps = {
   readonly video: Video;
@@ -240,6 +244,9 @@ export function DramaFeedItem({
   const isWideLayout = windowWidth >= WIDE_LAYOUT_BREAKPOINT;
   // Single source of truth for everything pinned to the bottom of the item.
   const { overlayBottom, progressBottom } = useFeedBottomAnchor();
+  // Top anchor for the upper-left title block and the next-episode control -
+  // inset-aware so neither collides with the status bar/notch.
+  const insets = useSafeAreaInsets();
   const { isPremium } = useEntitlement();
   const isAppForeground = useAppForeground();
   // Slice 15A-S1: whether an interstitial ad is currently on screen.
@@ -293,7 +300,6 @@ export function DramaFeedItem({
   const [isInFullscreen, setIsInFullscreen] = useState(false);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
   const [isIndicatorVisible, setIsIndicatorVisible] = useState(true);
-  const [isCaptionExpanded, setIsCaptionExpanded] = useState(false);
   // Slice 11M: the feed no longer plays `video.playbackUrl` directly. That
   // field still exists (Share continues to use it), but the backend's
   // `/videos/:id/stream` 404s for R2-backed media (empty local storageKey)
@@ -1264,84 +1270,63 @@ export function DramaFeedItem({
         </Pressable>
       )}
 
-      {nextEpisode && !isClearDisplay ? (
-        <Pressable
-          accessibilityRole="button"
-          onPress={handleNextEpisode}
-          style={({ pressed }) => [styles.nextEpisodeButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.nextEpisodeText}>{t('feed.nextEpisode')}</Text>
-        </Pressable>
-      ) : null}
-
+      {/* Mobile UI revision (2026-08-12): the title lives in the upper-left
+          hierarchy, under Home's brand overlay, instead of a bottom metadata
+          block - the feed overlay no longer shows the description/caption or
+          an episode badge, so the video stays the visual focus. The one line
+          of secondary text keeps the current episode identifiable (every
+          episode of a series shares the same title) without re-introducing a
+          badge into any control area. Tapping it keeps the existing
+          navigation path to the series detail screen. */}
       <View
-        testID="feed-item-bottom-overlay"
-        pointerEvents={isClearDisplay ? 'none' : 'auto'}
-        style={[styles.content, { bottom: overlayBottom }, isClearDisplay && styles.contentHidden]}>
+        testID="feed-item-title-overlay"
+        pointerEvents={isClearDisplay ? 'none' : 'box-none'}
+        style={[
+          styles.titleOverlay,
+          { top: insets.top + TITLE_OVERLAY_TOP_OFFSET },
+          isWideLayout && styles.titleOverlayWide,
+          isClearDisplay && styles.contentHidden,
+        ]}>
         <Pressable
           accessibilityRole="button"
           onPress={() =>
             router.push({ pathname: '/series/[id]', params: { id: video.seriesId } })
           }
-          style={({ pressed }) => [
-            styles.details,
-            isWideLayout && styles.detailsWide,
-            pressed && styles.buttonPressed,
-          ]}>
-          <View style={styles.channelRow}>
-            <BrandMark size={26} />
-            <Text style={[styles.channel, styles.textShadow]}>{video.channelName}</Text>
-          </View>
+          style={({ pressed }) => [pressed && styles.buttonPressed]}>
           <Text numberOfLines={2} style={[styles.title, styles.textShadow]}>
             {video.title}
           </Text>
-          <View style={styles.metaRow}>
-            <Text style={[styles.episodeBadge, styles.textShadow]}>
-              EP {video.episodeNumber}
-            </Text>
-            <Text style={[styles.categoryChip, styles.textShadow]}>{video.category}</Text>
-          </View>
-          {/* The toggle cannot be nested inside the caption while collapsed:
-              `numberOfLines={1}` clips everything past the first line, and a
-              trailing child is exactly what gets clipped - which is why the
-              affordance never actually appeared. Sitting beside the caption in
-              a row, it survives the ellipsis. */}
-          {isCaptionExpanded ? (
-            <>
-              <Text
-                numberOfLines={CAPTION_EXPANDED_MAX_LINES}
-                style={[styles.caption, styles.textShadow]}>
-                {video.caption}
-              </Text>
-              <Text
-                onPress={(event) => {
-                  event.stopPropagation();
-                  setIsCaptionExpanded(false);
-                }}
-                style={[styles.captionToggle, styles.captionToggleTrailing, styles.textShadow]}>
-                {t('feed.less')}
-              </Text>
-            </>
-          ) : (
-            <View style={styles.captionRow}>
-              <Text
-                numberOfLines={1}
-                style={[styles.caption, styles.captionCollapsed, styles.textShadow]}>
-                {video.caption}
-              </Text>
-              {video.caption.length > CAPTION_EXPAND_THRESHOLD ? (
-                <Text
-                  onPress={(event) => {
-                    event.stopPropagation();
-                    setIsCaptionExpanded(true);
-                  }}
-                  style={[styles.captionToggle, styles.captionToggleInline, styles.textShadow]}>
-                  {t('feed.more')}
-                </Text>
-              ) : null}
-            </View>
-          )}
+          <Text numberOfLines={1} style={[styles.titleMeta, styles.textShadow]}>
+            {`EP ${video.episodeNumber} · ${video.channelName}`}
+          </Text>
         </Pressable>
+      </View>
 
+      {nextEpisode && !isClearDisplay ? (
+        <Pressable
+          testID="feed-item-next-episode"
+          accessibilityRole="button"
+          onPress={handleNextEpisode}
+          style={({ pressed }) => [
+            styles.nextEpisodeButton,
+            { top: insets.top + NEXT_EPISODE_TOP_OFFSET },
+            pressed && styles.buttonPressed,
+          ]}>
+          <Text numberOfLines={1} style={styles.nextEpisodeText}>
+            {t('feed.nextEpisode')}
+          </Text>
+        </Pressable>
+      ) : null}
+
+      {/* Mobile UI revision (2026-08-12): the bottom overlay now carries the
+          action rail alone - title/channel/episode metadata moved to the
+          upper-left title overlay above, and the caption no longer renders
+          in the feed at all (the data itself is untouched: Discover search
+          and Share still read `video.caption`). */}
+      <View
+        testID="feed-item-bottom-overlay"
+        pointerEvents={isClearDisplay ? 'none' : 'box-none'}
+        style={[styles.content, { bottom: overlayBottom }, isClearDisplay && styles.contentHidden]}>
         <View testID="feed-item-actions-rail" style={styles.actions}>
           {/* Issue 3 (11R physical-QA remediation): fullscreen used to be an
               ad-hoc absolutely-positioned text pill (top-left of the item,
@@ -1365,7 +1350,7 @@ export function DramaFeedItem({
                   android: 'fullscreen',
                   web: 'fullscreen',
                 }}
-                size={22}
+                size={24}
                 tintColor="#fff"
               />
             </Pressable>
@@ -1382,7 +1367,7 @@ export function DramaFeedItem({
                   android: isMuted ? 'volume_off' : 'volume_up',
                   web: isMuted ? 'volume_off' : 'volume_up',
                 }}
-                size={22}
+                size={24}
                 tintColor="#fff"
               />
             </Pressable>
@@ -1399,7 +1384,7 @@ export function DramaFeedItem({
                   android: isLiked ? 'favorite' : 'favorite_border',
                   web: isLiked ? 'favorite' : 'favorite_border',
                 }}
-                size={24}
+                size={26}
                 tintColor={isLiked ? Palette.primary : '#fff'}
               />
             </View>
@@ -1418,7 +1403,7 @@ export function DramaFeedItem({
                 android: isSaved ? 'bookmark' : 'bookmark_border',
                 web: isSaved ? 'bookmark' : 'bookmark_border',
               }}
-              size={22}
+              size={24}
               tintColor={isSaved ? Palette.primary : '#fff'}
             />
           </Pressable>
@@ -1429,7 +1414,7 @@ export function DramaFeedItem({
             style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
             <SymbolView
               name={{ ios: 'square.and.arrow.up', android: 'share', web: 'share' }}
-              size={22}
+              size={24}
               tintColor="#fff"
             />
           </Pressable>
@@ -1592,11 +1577,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // `top` is provided inline (inset-aware, below the title block - see
+  // NEXT_EPISODE_TOP_OFFSET). `maxWidth` is belt-and-suspenders on top of
+  // the vertical separation: even an unexpectedly long localized label can
+  // never grow the pill across the frame (its text ellipsizes instead).
   nextEpisodeButton: {
     position: 'absolute',
-    top: 54,
     right: 18,
     minWidth: 74,
+    maxWidth: 180,
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -1709,96 +1698,39 @@ const styles = StyleSheet.create({
     left: 0,
     flexDirection: 'row',
     alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    gap: 18,
+    justifyContent: 'flex-end',
     paddingHorizontal: 18,
   },
-  details: {
-    flex: 1,
-    paddingRight: 4,
+  // The upper-left title block. Overlap with the next-episode pill is
+  // prevented VERTICALLY (the pill sits below this block's maximum extent -
+  // see NEXT_EPISODE_TOP_OFFSET); `right: 112` is an aesthetic measure so a
+  // long title wraps as a compact block instead of running edge-to-edge.
+  titleOverlay: {
+    position: 'absolute',
+    left: 18,
+    right: 112,
   },
-  detailsWide: {
-    flex: 0,
-    maxWidth: DETAILS_MAX_WIDTH_WIDE,
-  },
-  channelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 9,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 7,
+  titleOverlayWide: {
+    maxWidth: TITLE_MAX_WIDTH_WIDE,
   },
   textShadow: {
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
-  episodeBadge: {
-    fontSize: 10.5,
-    fontFamily: FontFamily.bold,
-    letterSpacing: 0.5,
-    color: Palette.text,
-    backgroundColor: 'rgba(255, 122, 26, 0.92)',
-    borderRadius: Radius.sm - 2,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    overflow: 'hidden',
-  },
-  categoryChip: {
-    fontSize: 11,
-    fontFamily: FontFamily.semiBold,
-    color: Palette.textSecondary,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
-    borderRadius: Radius.sm - 2,
-    paddingHorizontal: 8,
-    paddingVertical: 2.5,
-    overflow: 'hidden',
-  },
   title: {
-    marginTop: 8,
     fontSize: 18,
     lineHeight: 23,
     fontFamily: FontFamily.extraBold,
     color: Palette.text,
   },
-  channel: {
-    fontSize: 13,
-    fontFamily: FontFamily.bold,
-    color: Palette.text,
-  },
-  caption: {
-    marginTop: 6,
-    fontSize: 12.5,
-    lineHeight: 18,
-    fontFamily: FontFamily.regular,
-    color: Palette.textSecondary,
-  },
-  captionRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-  },
-  // Shrinks so the ellipsis lands before the toggle rather than pushing it off
-  // the row.
-  captionCollapsed: {
-    flex: 1,
-  },
-  captionToggle: {
-    fontSize: 12.5,
-    fontFamily: FontFamily.bold,
-    color: Palette.text,
-  },
-  captionToggleInline: {
-    marginLeft: 5,
-  },
-  captionToggleTrailing: {
-    alignSelf: 'flex-end',
+  // "EP n · channel" under the title: plain light text, deliberately not a
+  // badge - it identifies the episode without occupying any control area.
+  titleMeta: {
     marginTop: 4,
+    fontSize: 12.5,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.textSecondary,
   },
   actions: {
     alignItems: 'center',
@@ -1813,15 +1745,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
   },
+  // Mobile UI revision (2026-08-12): TikTok-style floating controls. The
+  // heavy near-opaque pill + border is gone; what remains is a faint scrim
+  // so a white icon stays legible over bright footage. The 48px pressable
+  // is unchanged - the visual got lighter, the hit target did not.
   actionButton: {
     width: 48,
     height: 48,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Radius.pill,
-    backgroundColor: 'rgba(24, 24, 27, 0.9)',
-    borderWidth: 1,
-    borderColor: Palette.border,
+    backgroundColor: 'rgba(13, 13, 15, 0.28)',
   },
   actionValue: {
     fontSize: 12,

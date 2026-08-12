@@ -3,42 +3,82 @@ import { router } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
+import { groupVideosIntoSeries } from '@/services/videos/series-service';
 import {
   getCategories,
   searchVideos,
   type VideoCategoryFilter,
 } from '@/services/videos/video-service';
 import { useTranslation } from '@/stores/language';
-import { useVideoInteractions } from '@/stores/video-interactions';
-import type { Video } from '@/types/video';
+import type { Series } from '@/types/series';
 
 const categoryFilters = getCategories();
 
+// Mobile UI revision (2026-08-12): Discover is a poster GRID of series, not a
+// vertical list of per-episode cards. The grid is built purely from data the
+// catalog already carries (`groupVideosIntoSeries` over the existing feed) -
+// no invented backend sections/categories; the category chips filter on the
+// same client-side `video.category` field they always did.
+
+// 2 poster columns on phones, 3 on tablet-ish widths - the same breakpoint
+// the feed item uses for its wide layout.
+const WIDE_LAYOUT_BREAKPOINT = 700;
+
+// Screen-edge padding and the gap between grid cards, shared by the real
+// grid and the loading skeleton so they line up exactly.
+const GRID_EDGE_PADDING = 16;
+const GRID_CARD_GAP = 12;
+
+// How many placeholder cards the loading skeleton shows - enough to fill a
+// phone's first viewport.
+const SKELETON_CARD_COUNT = 6;
+
+/**
+ * Deterministic card width so a lone card in the grid's last row keeps the
+ * exact same size as every other card, instead of flex-stretching to fill
+ * the row.
+ */
+export function calculateGridCardWidth(windowWidth: number, columnCount: number): number {
+  const usableWidth = windowWidth - GRID_EDGE_PADDING * 2 - GRID_CARD_GAP * (columnCount - 1);
+
+  return Math.floor(usableWidth / columnCount);
+}
+
 export default function DiscoverScreen() {
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<VideoCategoryFilter>('All');
-  const { getLikeCount } = useVideoInteractions();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
 
-  const filteredVideos = useMemo(() => {
-    return searchVideos(videos, searchQuery, selectedCategory);
+  const columnCount = windowWidth >= WIDE_LAYOUT_BREAKPOINT ? 3 : 2;
+  const cardWidth = calculateGridCardWidth(windowWidth, columnCount);
+
+  // Filter on videos first (search matches title/caption/channel/category,
+  // same as before), then collapse the matches into series for the grid -
+  // a series is shown when ANY of its episodes matches.
+  const filteredSeries = useMemo(() => {
+    const filteredVideos = searchVideos(videos, searchQuery, selectedCategory);
+
+    return groupVideosIntoSeries(filteredVideos);
   }, [videos, searchQuery, selectedCategory]);
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
       <Text style={styles.title}>{t('discover.title')}</Text>
       <View style={styles.searchBar}>
         <SymbolView
@@ -99,13 +139,26 @@ export default function DiscoverScreen() {
       </ScrollView>
 
       <FlatList
-        data={filteredVideos}
+        // numColumns cannot change on a mounted FlatList; keying by it
+        // remounts the list on the (rare) phone/tablet-width flip.
+        key={`discover-grid-${columnCount}`}
+        testID="discover-grid"
+        data={filteredSeries}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.resultList}
+        numColumns={columnCount}
+        columnWrapperStyle={styles.gridRow}
+        contentContainerStyle={styles.gridContent}
+        showsVerticalScrollIndicator={false}
         ListEmptyComponent={
           isLoading ? (
-            <View style={styles.emptyState}>
-              <ActivityIndicator color={Palette.primary} size="large" />
+            <View style={styles.skeletonGrid} testID="discover-loading-skeleton">
+              {Array.from({ length: SKELETON_CARD_COUNT }, (_, index) => (
+                <View key={index} style={[styles.skeletonCard, { width: cardWidth }]}>
+                  <View style={styles.skeletonPoster} />
+                  <View style={styles.skeletonLine} />
+                  <View style={styles.skeletonLineShort} />
+                </View>
+              ))}
             </View>
           ) : error ? (
             <View style={styles.emptyState}>
@@ -142,42 +195,40 @@ export default function DiscoverScreen() {
             </View>
           )
         }
-        renderItem={({ item }) => (
-          <DiscoverResultCard video={item} likeCount={getLikeCount(item)} />
-        )}
+        renderItem={({ item }) => <DiscoverSeriesCard series={item} width={cardWidth} />}
       />
     </View>
   );
 }
 
-type DiscoverResultCardProps = {
-  readonly video: Video;
-  readonly likeCount: number;
+type DiscoverSeriesCardProps = {
+  readonly series: Series;
+  /** Fixed width from the grid calculation; unset renders a flexible card. */
+  readonly width?: number;
 };
 
-export function DiscoverResultCard({ video, likeCount: _likeCount }: DiscoverResultCardProps) {
+export function DiscoverSeriesCard({ series, width }: DiscoverSeriesCardProps) {
+  const { t } = useTranslation();
+
   return (
     <Pressable
       accessibilityRole="button"
-      onPress={() => router.push({ pathname: '/series/[id]', params: { id: video.seriesId } })}
-      style={({ pressed }) => [styles.resultCard, pressed && styles.buttonPressed]}>
-      <View style={styles.thumbnail}>
-        <Image contentFit="cover" source={{ uri: video.thumbnailUrl }} style={styles.thumbnailImage} />
-        <Text style={styles.thumbnailBadge}>EP {video.episodeNumber}</Text>
+      testID={`discover-series-card-${series.id}`}
+      onPress={() => router.push({ pathname: '/series/[id]', params: { id: series.id } })}
+      style={({ pressed }) => [
+        styles.card,
+        width != null && { width },
+        pressed && styles.buttonPressed,
+      ]}>
+      <View style={styles.posterFrame}>
+        <Image contentFit="cover" source={{ uri: series.coverUrl }} style={styles.posterImage} />
       </View>
-      <View style={styles.resultBody}>
-        <Text numberOfLines={2} style={styles.resultTitle}>
-          {video.title}
-        </Text>
-        <View style={styles.resultMetaRow}>
-          <Text style={styles.episodeBadge}>EP {video.episodeNumber}</Text>
-          <Text style={styles.categoryPill}>{video.category}</Text>
-        </View>
-        <Text style={styles.channel}>{video.channelName}</Text>
-        <Text numberOfLines={2} style={styles.preview}>
-          {video.caption}
-        </Text>
-      </View>
+      <Text numberOfLines={2} style={styles.cardTitle}>
+        {series.title}
+      </Text>
+      <Text numberOfLines={1} style={styles.cardMeta}>
+        {`${series.category} · ${t('series.episodeCount', { count: series.episodeCount })}`}
+      </Text>
     </Pressable>
   );
 }
@@ -185,8 +236,7 @@ export function DiscoverResultCard({ video, likeCount: _likeCount }: DiscoverRes
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 70,
+    paddingHorizontal: GRID_EDGE_PADDING,
     backgroundColor: Palette.background,
   },
   title: {
@@ -254,92 +304,69 @@ const styles = StyleSheet.create({
   categoryTextSelected: {
     color: Palette.text,
   },
-  resultList: {
-    gap: 12,
-    paddingTop: 2,
+  gridRow: {
+    gap: GRID_CARD_GAP,
+  },
+  gridContent: {
+    gap: 18,
+    paddingTop: 4,
     paddingBottom: 120,
   },
-  resultCard: {
-    flexDirection: 'row',
-    gap: 12,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: Palette.border,
-    borderRadius: Radius.xl,
+  card: {
+    // Text under the poster gets its own vertical rhythm from these gaps -
+    // no inner padding, so the poster runs edge-to-edge within the card.
+    gap: 3,
+  },
+  posterFrame: {
+    // 2:3 portrait poster - the standard drama/streaming cover ratio and
+    // close to the 720x1280 thumbnails' own shape, so covers crop minimally.
+    aspectRatio: 2 / 3,
+    width: '100%',
+    borderRadius: Radius.lg,
     backgroundColor: Palette.surface,
-  },
-  thumbnail: {
-    width: 78,
-    height: 104,
-    borderRadius: Radius.md,
-    backgroundColor: Palette.backgroundElevated,
     overflow: 'hidden',
+    marginBottom: 5,
   },
-  thumbnailImage: {
+  posterImage: {
     width: '100%',
     height: '100%',
   },
-  thumbnailBadge: {
-    position: 'absolute',
-    left: 6,
-    bottom: 6,
-    fontSize: 9,
-    fontFamily: FontFamily.extraBold,
-    color: Palette.text,
-    backgroundColor: 'rgba(13, 13, 15, 0.75)',
-    borderRadius: 5,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    overflow: 'hidden',
-  },
-  resultBody: {
-    flex: 1,
-    minWidth: 0,
-    justifyContent: 'center',
-    gap: 5,
-  },
-  resultTitle: {
-    fontSize: 14.5,
-    lineHeight: 19,
-    fontFamily: FontFamily.extraBold,
+  cardTitle: {
+    fontSize: 13.5,
+    lineHeight: 18,
+    fontFamily: FontFamily.bold,
     color: Palette.text,
   },
-  resultMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  episodeBadge: {
-    fontSize: 10,
-    fontFamily: FontFamily.bold,
-    color: Palette.primaryHover,
-    backgroundColor: 'rgba(255, 122, 26, 0.14)',
-    borderRadius: 5,
-    paddingHorizontal: 7,
-    paddingVertical: 2.5,
-    overflow: 'hidden',
-  },
-  categoryPill: {
-    fontSize: 10.5,
-    fontFamily: FontFamily.semiBold,
-    color: Palette.textSecondary,
-    borderWidth: 1,
-    borderColor: Palette.border,
-    borderRadius: 5,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    overflow: 'hidden',
-  },
-  channel: {
-    fontSize: 11,
-    fontFamily: FontFamily.bold,
+  cardMeta: {
+    fontSize: 11.5,
+    fontFamily: FontFamily.medium,
     color: Palette.textMuted,
   },
-  preview: {
-    fontSize: 11.5,
-    lineHeight: 16,
-    fontFamily: FontFamily.regular,
-    color: Palette.textSecondary,
+  skeletonGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: GRID_CARD_GAP,
+  },
+  skeletonCard: {
+    gap: 6,
+  },
+  skeletonPoster: {
+    aspectRatio: 2 / 3,
+    width: '100%',
+    borderRadius: Radius.lg,
+    backgroundColor: Palette.surface,
+  },
+  skeletonLine: {
+    height: 12,
+    width: '82%',
+    borderRadius: Radius.sm,
+    backgroundColor: Palette.surface,
+  },
+  skeletonLineShort: {
+    height: 10,
+    width: '52%',
+    borderRadius: Radius.sm,
+    backgroundColor: Palette.surfaceMuted,
   },
   emptyState: {
     alignItems: 'center',

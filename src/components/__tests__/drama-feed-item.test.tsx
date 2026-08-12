@@ -446,12 +446,75 @@ describe('DramaFeedItem', () => {
     );
   });
 
-  it('clamps title to 2 lines and caption to 1 line by default', async () => {
+  it('clamps the title to 2 lines and no longer renders the caption in the feed overlay', async () => {
+    // Mobile UI revision (2026-08-12): the description/caption left the feed
+    // overlay entirely (the data itself is untouched - Share and Discover
+    // search still read it).
+    const video = buildVideo();
+    const { getByText, queryByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
+
+    expect(getByText(video.title).props.numberOfLines).toBe(2);
+    expect(queryByText(video.caption)).toBeNull();
+  });
+
+  it('renders the title in the upper-left title overlay with a light episode meta line', async () => {
+    const video = buildVideo();
+    const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    const titleOverlay = getByTestId('feed-item-title-overlay');
+
+    expect(within(titleOverlay).getByText(video.title)).toBeTruthy();
+    // Episode context survives as plain text under the title - not a badge
+    // occupying a control area.
+    expect(within(titleOverlay).getByText('EP 1 · Mandarin Drama ID')).toBeTruthy();
+  });
+
+  it('navigates to the series detail when the title overlay is pressed', async () => {
     const video = buildVideo();
     const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
-    expect(getByText(video.title).props.numberOfLines).toBe(2);
-    expect(getByText(video.caption).props.numberOfLines).toBe(1);
+    await fireEvent.press(getByText(video.title));
+
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/series/[id]',
+      params: { id: video.seriesId },
+    });
+  });
+
+  it('anchors the next-episode pill below the title block so the two can never overlap', async () => {
+    // Review fix (cycle 1, Finding 1): "Episode Berikutnya" renders far
+    // wider than the pill's 74px minimum, so the pill must not share the
+    // title's vertical band. Insets are mocked to 0, so the offsets below
+    // are the raw constants from drama-feed-item.tsx.
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
+    const { getByTestId, getByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    const titleOverlayStyle = StyleSheet.flatten(getByTestId('feed-item-title-overlay').props.style);
+    const pillStyle = StyleSheet.flatten(getByTestId('feed-item-next-episode').props.style);
+
+    // The pill starts below the title block's maximum extent (2 title lines
+    // + meta line), and its label is single-line + width-capped so no
+    // locale can grow it back across the frame.
+    expect(titleOverlayStyle.top).toBe(44);
+    expect(getByText('Episode Berikutnya').props.numberOfLines).toBe(1);
+    expect(pillStyle.maxWidth).toBe(180);
+    expect(pillStyle.top).toBe(120);
+  });
+
+  it('renders no standalone episode badge or category chip in the overlay', async () => {
+    const video = buildVideo();
+    const { queryByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    // The old orange "EP 1" badge and the "CEO" category chip are gone from
+    // the feed presentation - episode context lives in the title meta line
+    // and the next-episode control instead.
+    expect(queryByText('EP 1')).toBeNull();
+    expect(queryByText(video.category)).toBeNull();
   });
 
   it('anchors the bottom overlay one gap above the navbar without re-adding the tab bar height', async () => {
@@ -483,9 +546,13 @@ describe('DramaFeedItem', () => {
     // Assert: the metadata and action rail are both invisible and untappable,
     // while the progress bar survives - that pairing is the whole feature.
     const overlay = getByTestId('feed-item-bottom-overlay');
+    const titleOverlay = getByTestId('feed-item-title-overlay');
 
     expect(StyleSheet.flatten(overlay.props.style).opacity).toBe(0);
     expect(overlay.props.pointerEvents).toBe('none');
+    // The upper-left title block steps aside the same way.
+    expect(StyleSheet.flatten(titleOverlay.props.style).opacity).toBe(0);
+    expect(titleOverlay.props.pointerEvents).toBe('none');
     expect(getByTestId('feed-item-progress-track')).toBeTruthy();
   });
 
@@ -539,61 +606,41 @@ describe('DramaFeedItem', () => {
     expect(onToggleClearDisplay).toHaveBeenCalledWith(false);
   });
 
-  it('keeps the metadata and the action rail on one shared bottom anchor', async () => {
-    // Arrange
-    const video = buildVideo();
+  it('keeps every action-rail control inside the bottom anchor, in a stable order', async () => {
+    // Arrange: a horizontal video so the rail carries its full set,
+    // fullscreen included.
+    const video = buildVideo({ width: 1280, height: 720 });
 
     // Act
     const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
     const overlay = getByTestId('feed-item-bottom-overlay');
+    const rail = within(overlay).getByTestId('feed-item-actions-rail');
 
-    // Assert: both the metadata text and every action-rail button live inside
-    // the single element that carries the anchor, so they cannot drift apart.
-    expect(within(overlay).getByText(video.title)).toBeTruthy();
-    expect(within(overlay).getByLabelText('Like')).toBeTruthy();
-    expect(within(overlay).getByLabelText('Save')).toBeTruthy();
-    expect(within(overlay).getByLabelText('Share')).toBeTruthy();
+    // Assert: all five controls exist inside the single anchored rail, in
+    // distinct positions and the established top-to-bottom order.
+    const railButtonLabels = within(rail)
+      .getAllByRole('button')
+      .map((button) => button.props.accessibilityLabel);
+
+    expect(railButtonLabels).toEqual(['Fullscreen', 'Mute', 'Like', 'Save', 'Share']);
   });
 
-  it('expands a long caption when "more" is pressed, and offers "less" to close it', async () => {
-    const longCaption =
-      'Sebuah rahasia besar terungkap ketika keluarga itu kembali ke kampung halaman setelah bertahun-tahun pergi.';
-    const video = buildVideo({ caption: longCaption });
-    const { getByText, queryByText } = await renderFeedItem(
-      <DramaFeedItem video={video} {...baseProps} />
-    );
+  it('keeps 48px hit targets on the transparent action rail (no heavy opaque pill)', async () => {
+    // Mobile UI revision (2026-08-12): the rail's visible treatment got
+    // lighter, but the pressable area must not shrink with it.
+    const video = buildVideo({ width: 1280, height: 720 });
+    const { getByLabelText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
-    // The toggle has to sit beside the caption rather than inside it: a child
-    // at the end of a `numberOfLines={1}` text is clipped away with the
-    // overflow, which is what used to hide it completely.
-    expect(getByText('more')).toBeTruthy();
+    for (const label of ['Fullscreen', 'Mute', 'Save', 'Share']) {
+      const buttonStyle = StyleSheet.flatten(getByLabelText(label).props.style);
 
-    await fireEvent.press(getByText('more'));
-
-    expect(queryByText('more')).toBeNull();
-    expect(getByText('less')).toBeTruthy();
-
-    await fireEvent.press(getByText('less'));
-
-    expect(getByText('more')).toBeTruthy();
-  });
-
-  it('leaves a caption that fits on one line without a "more" affordance', async () => {
-    const video = buildVideo({ caption: 'Pendek saja.' });
-    const { queryByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
-
-    expect(queryByText('more')).toBeNull();
-  });
-
-  it('caps an expanded caption to a maximum number of lines', async () => {
-    const longCaption =
-      'Sebuah rahasia besar terungkap ketika keluarga itu kembali ke kampung halaman setelah bertahun-tahun pergi.';
-    const video = buildVideo({ caption: longCaption });
-    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
-
-    await fireEvent.press(getByText('more'));
-
-    expect(getByText(longCaption, { exact: false }).props.numberOfLines).toBe(6);
+      expect(buttonStyle.width).toBe(48);
+      expect(buttonStyle.height).toBe(48);
+      // The old near-opaque bordered pill is gone - what remains is a faint
+      // scrim with no border.
+      expect(buttonStyle.backgroundColor).not.toBe('rgba(24, 24, 27, 0.9)');
+      expect(buttonStyle.borderWidth).toBeUndefined();
+    }
   });
 
   it('calls the provided handlers when Like, Save, and Share are pressed', async () => {

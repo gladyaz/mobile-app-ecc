@@ -16,6 +16,7 @@ import {
   ViewToken,
   ViewabilityConfig,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DramaFeedItem } from '@/components/drama-feed-item';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
@@ -41,9 +42,17 @@ const VIEWABILITY_CONFIG: ViewabilityConfig = {
   itemVisiblePercentThreshold: 80,
 };
 
+// Mobile UI revision (2026-08-12): distance below the top safe-area inset at
+// which the brand overlay sits. The per-item title block renders 44px below
+// the same inset (see `drama-feed-item.tsx`, TITLE_OVERLAY_TOP_OFFSET), so
+// brand and title form one upper-left hierarchy that clears the
+// notch/Dynamic Island on every screen instead of relying on a fixed 64px.
+const BRAND_OVERLAY_TOP_OFFSET = 10;
+
 export default function HomeScreen() {
   const { t } = useTranslation();
   const { height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const isScreenFocused = useIsFocused();
 
   // Phase 11 (11-M3): one feed_view event per time the Home feed gains
@@ -412,7 +421,11 @@ export default function HomeScreen() {
       />
       <View
         pointerEvents="none"
-        style={[styles.brandOverlay, isClearDisplay && styles.brandOverlayHidden]}>
+        style={[
+          styles.brandOverlay,
+          { top: insets.top + BRAND_OVERLAY_TOP_OFFSET },
+          isClearDisplay && styles.brandOverlayHidden,
+        ]}>
         <Text style={styles.brandOverlayText}>Red Panda</Text>
         <View style={styles.brandOverlayDot} />
       </View>
@@ -464,8 +477,7 @@ const styles = StyleSheet.create({
   },
   brandOverlay: {
     position: 'absolute',
-    top: 64,
-    left: 16,
+    left: 18,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,

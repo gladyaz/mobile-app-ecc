@@ -74,3 +74,39 @@ export function reportPlayingState(playerLabel: string, videoId: string, isPlayi
 export function resetPlaybackInvariantForTests(): void {
   playingPlayers.clear();
 }
+
+// 11R PLAYBACK-STABILITY REMEDIATION: a lean, __DEV__-only audit trail for
+// every play()/pause()/source-replace decision the feed's single
+// reconciler (and its few other legitimate call sites - a user tap, the
+// outgoing-player-on-swap cleanup) makes, WITH the reason it made it. This
+// is what turned the reported "black screen / visibly paused / self-pause"
+// symptoms into file:line-anchored root causes instead of guesses: every
+// entry names the player, the video, what it did, and why. A no-op outside
+// __DEV__, so release builds carry no behaviour and no bookkeeping - same
+// contract as `reportPlayingState` above. Never logs a token, URL, or
+// header - only ids/enums/booleans, for the same reason `reportPlayingState`
+// and `drama-feed-item.tsx`'s own error logging never do either.
+export type PlaybackDecisionAction = 'play' | 'pause' | 'source-replace';
+
+export type PlaybackDecisionContext = {
+  readonly isActive: boolean;
+  readonly isScreenFocused: boolean;
+  readonly isAppForeground: boolean;
+  readonly isManuallyPaused: boolean;
+  readonly sourceKind: 'none' | 'mp4' | 'hls';
+  readonly playerStatus: string | undefined;
+};
+
+export function reportPlaybackDecision(
+  playerLabel: string,
+  videoId: string,
+  action: PlaybackDecisionAction,
+  reason: string,
+  context: PlaybackDecisionContext
+): void {
+  if (!__DEV__) {
+    return;
+  }
+
+  console.log(`[PlaybackDecision] ${playerLabel} ${videoId} ${action} reason=${reason}`, context);
+}

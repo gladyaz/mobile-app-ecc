@@ -1,3 +1,4 @@
+import { Image } from 'expo-image';
 import { useEvent } from 'expo';
 import { router } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -12,7 +13,11 @@ import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { FeedProgressBar } from '@/components/feed-progress-bar';
 import { useAppForeground } from '@/hooks/use-app-foreground';
 import { useFeedBottomAnchor } from '@/hooks/use-feed-bottom-anchor';
-import { playbackPlayerLabel, reportPlayingState } from '@/services/debug/playback-invariant';
+import {
+  playbackPlayerLabel,
+  reportPlaybackDecision,
+  reportPlayingState,
+} from '@/services/debug/playback-invariant';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { useTranslation } from '@/stores/language';
 import { PLAYBACK_SPEEDS, usePlaybackSpeedStore } from '@/stores/playback-speed';
@@ -147,6 +152,50 @@ const MAX_PLAYBACK_AUTH_AUTO_RETRIES = PLAYBACK_AUTH_RETRY_DELAYS_MS.length;
  */
 function isRetryablePlaybackAuthError(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 429 || error.code === 'NETWORK_ERROR');
+}
+
+/**
+ * 11R PLAYBACK-STABILITY REMEDIATION: the single-sentence "why" behind a
+ * reconciler pause() call, for the dev-only decision log
+ * (`reportPlaybackDecision`) - names the FIRST of `shouldPlay`'s inputs
+ * that is false, in the same priority order `shouldPlay` itself is written
+ * in, so the trace always matches the actual short-circuit that produced
+ * the pause instead of guessing at which of several simultaneously-false
+ * flags was the real cause.
+ */
+function describeNotPlayingReason(flags: {
+  readonly hasPlaybackUrl: boolean;
+  readonly isActive: boolean;
+  readonly isScreenFocused: boolean;
+  readonly isAppForeground: boolean;
+  readonly isManuallyPaused: boolean;
+  readonly adVisible: boolean;
+}): string {
+  if (!flags.hasPlaybackUrl) {
+    return 'no-source';
+  }
+
+  if (!flags.isActive) {
+    return 'inactive';
+  }
+
+  if (!flags.isScreenFocused) {
+    return 'screen-unfocused';
+  }
+
+  if (!flags.isAppForeground) {
+    return 'app-backgrounded';
+  }
+
+  if (flags.isManuallyPaused) {
+    return 'user-paused';
+  }
+
+  if (flags.adVisible) {
+    return 'ad-visible';
+  }
+
+  return 'unknown';
 }
 
 // screen-orientation lock is only meaningful where the OS actually exposes
@@ -346,6 +395,18 @@ export function DramaFeedItem({
   // (each mounted instance owns one video id for its whole lifetime), but
   // cheap insurance against a future caller that recycles instances.
   const [lastVideoId, setLastVideoId] = useState(video.id);
+  // 11R PLAYBACK-STABILITY REMEDIATION: whether THIS video has ever actually
+  // rendered a real playing frame (a genuine `playingChange` event, not
+  // merely "a play() was issued") - the one real-readiness signal the
+  // poster overlay below is driven by. Reset on a video-id change using the
+  // same render-time pattern as the grant reset just above, so a freshly
+  // assigned video always starts poster-first even if a PREVIOUS video on
+  // this same mounted instance had already started playing. Deliberately
+  // NOT reset on deactivation/manual-pause/a player-generation swap (see
+  // the reseek effect below) - a frame that has already been shown must
+  // never be replaced by the poster again for the same video, or the
+  // poster would flicker back in on every pause/swipe-away.
+  const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
 
   if (lastVideoId !== video.id) {
     setLastVideoId(video.id);
@@ -353,6 +414,7 @@ export function DramaFeedItem({
     setHasPlaybackAuthError(false);
     setAuthRetryAttempt(0);
     setIsAuthErrorRetryable(false);
+    setHasStartedPlaying(false);
   }
 
   // Kept in sync via a LAYOUT effect, not a plain `useEffect` (this file's
@@ -767,12 +829,26 @@ export function DramaFeedItem({
   useEffect(() => {
     return () => {
       try {
+        // `player.status` (the player's own synchronous property), not the
+        // `status` returned by the `statusChange` useEvent hook below - that
+        // hook is declared after this effect, and its live value is more
+        // accurate here anyway (this cleanup can fire asynchronously, well
+        // after the render that closed over the React-state value).
+        reportPlaybackDecision(playerLabel, video.id, 'pause', 'outgoing-player-generation-replaced', {
+          isActive,
+          isScreenFocused,
+          isAppForeground,
+          isManuallyPaused,
+          sourceKind: playbackAuth?.kind ?? 'none',
+          playerStatus: player.status,
+        });
         player.pause();
       } catch {
         // On native the shared object can already be released by the time
         // this runs during teardown; there is nothing left to pause then.
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player]);
 
   useEffect(() => {
@@ -789,6 +865,42 @@ export function DramaFeedItem({
     status: player.status,
     error: undefined,
   });
+
+  // 11R PLAYBACK-STABILITY REMEDIATION: the reconciler above already commits
+  // to playing (issues play()) the instant `shouldPlay` turns true, but the
+  // native player does not report `isPlaying: true` until it has actually
+  // started decoding frames - buffering, the cold-open authorization round
+  // trip, and a first-frame decode all sit inside this gap. Without this
+  // distinction the tap-to-play indicator below rendered its PLAY glyph
+  // (built to mean "paused, tap to resume") for the ENTIRE gap, which is
+  // exactly the "frame appears but the player is visibly PAUSED" / "delayed
+  // autoplay" field report - the system had already committed to playing;
+  // nothing was actually paused, and nothing needed a tap. `shouldPlay` (not
+  // e.g. `status === 'loading'`) is the right predicate: it is already the
+  // one true "the system intends to play this" signal, and it flips back to
+  // false the instant a real reason to stop exists (inactive, backgrounded,
+  // unfocused, an ad, or an explicit user pause) - at which point this
+  // correctly stops representing "buffering" and the indicator is once again
+  // the genuine "tap to resume" affordance.
+  const isWaitingToStartPlayback = shouldPlay && !isPlaying;
+
+  // 11R PLAYBACK-STABILITY REMEDIATION: flips exactly once per video (see
+  // the `hasStartedPlaying` reset above) the first time a real
+  // `playingChange` event confirms frames are actually advancing - the
+  // poster overlay below is removed on this transition and never shown
+  // again for the same video, so a later manual pause, deactivation, or
+  // player-generation swap (the proactive-refresh reseek effect above)
+  // leaves the last real frame on screen instead of replacing it with the
+  // poster. Adjusted during render, the same "reset/derive state from a
+  // changed input" pattern `wasActive`/`lastVideoId` already use above (not
+  // a `useEffect`, which would call `setXxx` synchronously in the effect
+  // body - `react-hooks/set-state-in-effect`) - and self-terminating: once
+  // `hasStartedPlaying` is true this condition is false on every later
+  // render until `video.id` resets it, so it can never loop.
+  if (isPlaying && !hasStartedPlaying) {
+    setHasStartedPlaying(true);
+  }
+
   const { videoTrack } = useEvent(player, 'videoTrackChange', { videoTrack: null });
   const { currentTime: playbackPositionSeconds } = useEvent(player, 'timeUpdate', {
     currentTime: player.currentTime,
@@ -870,6 +982,88 @@ export function DramaFeedItem({
     // resume position lands at the right absolute spot.
     player.seekBy(resumePositionSeconds - player.currentTime);
   }, [status, resumePositionSeconds, player]);
+
+  // 11R PLAYBACK-STABILITY REMEDIATION: continuously mirrors the player's
+  // own reported position into a ref (cheap, no re-render) so the
+  // generation-swap effect just below always has a fresh "where was this
+  // video, a moment ago" value to restore, without itself depending on
+  // `playbackPositionSeconds` (which would re-run that effect on every
+  // ~250ms timeUpdate tick for no reason).
+  const lastKnownPositionRef = useRef(0);
+
+  useEffect(() => {
+    lastKnownPositionRef.current = playbackPositionSeconds;
+  }, [playbackPositionSeconds]);
+
+  // Root cause of the "while playing calmly, video sometimes pauses by
+  // itself then resumes" field report: `useVideoPlayer` (expo-video) hands
+  // back a BRAND NEW native player - starting at position 0 - the moment its
+  // resolved source's bytes actually differ, which happens on every
+  // legitimate mid-playback authorization refresh (HIGH-1's proactive
+  // pre-expiry refresh above; a background access-token rotation changing
+  // the `Authorization` header on a `requiresAuthHeader` source has the same
+  // effect). The existing outgoing-player cleanup effect already pauses the
+  // OLD instance correctly (see below), but nothing seeded the NEW one with
+  // the OLD one's position - so a viewer watching calmly saw their clip
+  // silently jump back to 0 and re-buffer mid-scene, reading exactly like an
+  // unprompted pause/restart.
+  //
+  // Generation-safe by construction: `previousPlayerRef` only ever advances
+  // to a real, already-`readyToPlay` player (see the early return below), so
+  // this can never fire twice for the same swap, never fires for the FIRST
+  // real player a video ever gets (nothing to restore yet - `current` is
+  // still `null`), and is reset to a clean slate on every `video.id` change
+  // (the effect immediately below) so a genuinely NEW video can never be
+  // seeded with the PREVIOUS video's position.
+  const previousPlayerRef = useRef<typeof player | null>(null);
+
+  // A genuinely NEW video must never inherit the PREVIOUS video's last known
+  // position or player identity - only a player swap for the SAME video
+  // (the effect below) is a restore-position case. Declared BEFORE that
+  // effect on purpose: `video.id` changing and a player-identity change both
+  // land in the SAME commit (a new video's grant reset already nulls the
+  // source in the same render pass - see the `lastVideoId` reset above), and
+  // React fires same-commit effects in declaration order, so this reset must
+  // run first or the swap-check below would still see the PREVIOUS video's
+  // now-stale `previousPlayerRef`/`lastKnownPositionRef` and misfire a seek
+  // on the new video's own transient placeholder player.
+  useEffect(() => {
+    previousPlayerRef.current = null;
+    lastKnownPositionRef.current = 0;
+  }, [video.id]);
+
+  useEffect(() => {
+    if (status !== 'readyToPlay') {
+      return;
+    }
+
+    const isGenerationSwapForSameVideo =
+      previousPlayerRef.current !== null && previousPlayerRef.current !== player;
+
+    if (isGenerationSwapForSameVideo && lastKnownPositionRef.current > 0) {
+      reportPlaybackDecision(playerLabel, video.id, 'source-replace', 'generation-swap-reseek', {
+        isActive,
+        isScreenFocused,
+        isAppForeground,
+        isManuallyPaused,
+        sourceKind: playbackAuth?.kind ?? 'none',
+        playerStatus: status,
+      });
+      player.seekBy(lastKnownPositionRef.current - player.currentTime);
+    }
+
+    previousPlayerRef.current = player;
+  }, [
+    player,
+    status,
+    playerLabel,
+    video.id,
+    isActive,
+    isScreenFocused,
+    isAppForeground,
+    isManuallyPaused,
+    playbackAuth,
+  ]);
 
   // Throttled progress write while this item is the one actually playing -
   // not on every frame, and cleared whenever it stops being active/playing.
@@ -959,11 +1153,40 @@ export function DramaFeedItem({
     // needing a second effect that could otherwise race this one.
     if (shouldPlay) {
       if (!player.playing) {
+        reportPlaybackDecision(playerLabel, video.id, 'play', 'shouldPlay:true', {
+          isActive,
+          isScreenFocused,
+          isAppForeground,
+          isManuallyPaused,
+          sourceKind: playbackAuth?.kind ?? 'none',
+          playerStatus: status,
+        });
         player.play();
       }
       return;
     }
 
+    reportPlaybackDecision(
+      playerLabel,
+      video.id,
+      'pause',
+      describeNotPlayingReason({
+        hasPlaybackUrl,
+        isActive,
+        isScreenFocused,
+        isAppForeground,
+        isManuallyPaused,
+        adVisible,
+      }),
+      {
+        isActive,
+        isScreenFocused,
+        isAppForeground,
+        isManuallyPaused,
+        sourceKind: playbackAuth?.kind ?? 'none',
+        playerStatus: status,
+      }
+    );
     // The pause is deliberately NOT guarded by `player.playing`: that
     // property mirrors the native player's actual state, and it stays false
     // the whole time a play() is still pending or the clip is buffering (iOS
@@ -982,6 +1205,18 @@ export function DramaFeedItem({
     // mostly hid this because it had a source from mount; an R2 item receives
     // its URL only after an authorization round trip, which widens the window
     // enough that the first play() regularly lands too early.
+    //
+    // 11R PLAYBACK-STABILITY REMEDIATION: `describeNotPlayingReason`'s inputs
+    // (isActive/isScreenFocused/isAppForeground/isManuallyPaused/adVisible)
+    // and the extra `reportPlaybackDecision` context fields
+    // (playerLabel/video.id/playbackAuth) are read here ONLY to label the
+    // dev-only decision log - they are already folded into `shouldPlay`
+    // itself, which IS a dependency. Listing them again would make this,
+    // the one authoritative reconciler, re-run on every log-only change
+    // (e.g. a `playbackAuth` object identity change that does not actually
+    // change `shouldPlay`), which is exactly the "additional churn" this
+    // remediation exists to remove, not add.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldPlay, hasPlaybackUrl, isInFullscreen, player, status]);
 
   // Slice 15A-S1: resets the accumulated-watch-time counter whenever this
@@ -1079,22 +1314,43 @@ export function DramaFeedItem({
     setIsIndicatorVisible(true);
 
     if (isPlaying) {
+      reportPlaybackDecision(playerLabel, video.id, 'pause', 'user-tap', {
+        isActive,
+        isScreenFocused,
+        isAppForeground,
+        isManuallyPaused: true,
+        sourceKind: playbackAuth?.kind ?? 'none',
+        playerStatus: status,
+      });
       player.pause();
       setIsManuallyPaused(true);
       flushProgress();
       return;
     }
 
+    reportPlaybackDecision(playerLabel, video.id, 'play', 'user-tap', {
+      isActive,
+      isScreenFocused,
+      isAppForeground,
+      isManuallyPaused: false,
+      sourceKind: playbackAuth?.kind ?? 'none',
+      playerStatus: status,
+    });
     player.play();
     setIsManuallyPaused(false);
   }, [
     isActive,
+    isScreenFocused,
+    isAppForeground,
     hasPlaybackAuthError,
     playbackAuth,
     isPlaybackAuthRequestInFlight,
     requestAuthorization,
     isPlaying,
     player,
+    playerLabel,
+    video.id,
+    status,
     flushProgress,
   ]);
 
@@ -1222,28 +1478,49 @@ export function DramaFeedItem({
             <Text style={styles.errorHint}>{t('feed.videoUnavailableHint')}</Text>
           </Pressable>
         ) : (
-          <VideoView
-            contentFit={isHorizontal ? 'contain' : 'cover'}
-            fullscreenOptions={{
-              enable: isHorizontal,
-              orientation: 'landscape',
-              autoExitOnRotate: true,
-            }}
-            // The feed itself keeps its custom chrome, but native fullscreen
-            // had `nativeControls={false}` too - which left it with no
-            // controls at all, so a viewer who entered fullscreen had no
-            // visible way back out and had to guess (rotating the device was
-            // the only exit). Enabling the platform controls while, and only
-            // while, fullscreen is active restores the standard Done/collapse
-            // affordance people already know, without touching the in-feed UI.
-            nativeControls={isInFullscreen}
-            onFullscreenEnter={handleFullscreenEnter}
-            onFullscreenExit={handleFullscreenExit}
-            player={player}
-            playsInline
-            ref={videoViewRef}
-            style={styles.video}
-          />
+          <>
+            <VideoView
+              contentFit={isHorizontal ? 'contain' : 'cover'}
+              fullscreenOptions={{
+                enable: isHorizontal,
+                orientation: 'landscape',
+                autoExitOnRotate: true,
+              }}
+              // The feed itself keeps its custom chrome, but native fullscreen
+              // had `nativeControls={false}` too - which left it with no
+              // controls at all, so a viewer who entered fullscreen had no
+              // visible way back out and had to guess (rotating the device
+              // was the only exit). Enabling the platform controls while,
+              // and only while, fullscreen is active restores the standard
+              // Done/collapse affordance people already know, without
+              // touching the in-feed UI.
+              nativeControls={isInFullscreen}
+              onFullscreenEnter={handleFullscreenEnter}
+              onFullscreenExit={handleFullscreenExit}
+              player={player}
+              playsInline
+              ref={videoViewRef}
+              style={styles.video}
+            />
+            {/* 11R PLAYBACK-STABILITY REMEDIATION: replaces the cold-open
+                black screen with the video's own thumbnail - real content,
+                not an empty frame - for exactly as long as no real frame has
+                ever been shown for THIS video (`hasStartedPlaying`, flipped
+                by a genuine `playingChange` event, never a timer). Sits on
+                top of the VideoView (declared after it, RN's default paint
+                order) so it disappears in a single step the instant real
+                playback is confirmed, rather than the two of them racing to
+                paint over each other. */}
+            {hasStartedPlaying ? null : (
+              <Image
+                testID="feed-item-poster"
+                contentFit={isHorizontal ? 'contain' : 'cover'}
+                pointerEvents="none"
+                source={{ uri: video.thumbnailUrl }}
+                style={styles.poster}
+              />
+            )}
+          </>
         )}
       </View>
 
@@ -1258,8 +1535,22 @@ export function DramaFeedItem({
           onLongPress={() => setIsQuickActionsVisible(true)}
           delayLongPress={400}
           style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
-          {isIndicatorVisible ? (
-            <View style={styles.playPauseCircle}>
+          {/* 11R PLAYBACK-STABILITY REMEDIATION: `!isWaitingToStartPlayback`
+              is what stops this glyph - built to mean "paused, tap to
+              resume" - from rendering while the system has already
+              committed to playing and is merely buffering/starting (the
+              "frame appears but the player is visibly PAUSED" / "delayed
+              autoplay" field report). The poster above already carries the
+              screen during that window; once real playback is confirmed
+              (`isPlaying`), this briefly shows the pause glyph as
+              confirmation and auto-hides (unchanged, below). Whenever
+              playback is genuinely NOT intended (inactive, unfocused,
+              backgrounded, an ad, or an explicit user pause -
+              `isWaitingToStartPlayback` is false in every one of those
+              states because `shouldPlay` is already false), this still
+              shows the real "tap to resume" affordance exactly as before. */}
+          {isIndicatorVisible && !isWaitingToStartPlayback ? (
+            <View testID="feed-item-play-pause-indicator" style={styles.playPauseCircle}>
               <SymbolView
                 name={{ ios: isPlaying ? 'pause.fill' : 'play.fill', android: isPlaying ? 'pause' : 'play_arrow', web: isPlaying ? 'pause' : 'play_arrow' }}
                 size={30}
@@ -1551,6 +1842,19 @@ const styles = StyleSheet.create({
     left: 0,
     width: '100%',
     height: '100%',
+  },
+  // 11R PLAYBACK-STABILITY REMEDIATION: identical geometry to `video` above
+  // (it sits directly on top of the VideoView) - real content instead of a
+  // black frame for exactly as long as no real frame has been shown yet.
+  poster: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
   },
   errorState: {
     alignItems: 'center',

@@ -1,5 +1,6 @@
 import {
   playbackPlayerLabel,
+  reportPlaybackDecision,
   reportPlayingState,
   resetPlaybackInvariantForTests,
 } from '@/services/debug/playback-invariant';
@@ -92,5 +93,59 @@ describe('playback invariant check', () => {
 
     // Assert
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('11R PLAYBACK-STABILITY REMEDIATION: reportPlaybackDecision', () => {
+  const baseContext = {
+    isActive: true,
+    isScreenFocused: true,
+    isAppForeground: true,
+    isManuallyPaused: false,
+    sourceKind: 'mp4' as const,
+    playerStatus: 'readyToPlay',
+  };
+
+  let logSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('logs the player, video, action, and reason together, in development', () => {
+    reportPlaybackDecision('p1', 'video-1', 'play', 'shouldPlay:true', baseContext);
+
+    expect(logSpy).toHaveBeenCalledWith(
+      '[PlaybackDecision] p1 video-1 play reason=shouldPlay:true',
+      baseContext
+    );
+  });
+
+  it('is inert in a release build - no log, no matter the action', () => {
+    const globalWithDev = globalThis as typeof globalThis & { __DEV__: boolean };
+    const originalDev = globalWithDev.__DEV__;
+    globalWithDev.__DEV__ = false;
+
+    try {
+      reportPlaybackDecision('p1', 'video-1', 'pause', 'user-tap', baseContext);
+      reportPlaybackDecision('p1', 'video-1', 'source-replace', 'generation-swap-reseek', baseContext);
+
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      globalWithDev.__DEV__ = originalDev;
+    }
+  });
+
+  it('never includes a URL, token, or header in the logged context - ids/enums/booleans only', () => {
+    reportPlaybackDecision('p1', 'video-1', 'play', 'shouldPlay:true', baseContext);
+
+    const loggedContext = logSpy.mock.calls.at(-1)?.[1];
+
+    expect(JSON.stringify(loggedContext)).not.toMatch(/https?:\/\//);
+    expect(JSON.stringify(loggedContext)).not.toMatch(/bearer/i);
   });
 });

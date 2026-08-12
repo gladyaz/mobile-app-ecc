@@ -52,6 +52,18 @@ jest.mock('expo-symbols', () => ({
   SymbolView: 'SymbolView',
 }));
 
+// 11R PLAYBACK-STABILITY REMEDIATION: the poster overlay's `expo-image`
+// import needs its own explicit stub here - the real module's
+// `ImageModule.ts` pulls `requireNativeModule` from the 'expo' package,
+// which this file's own `jest.mock('expo', ...)` above already replaces
+// wholesale (with an object carrying only `useEvent`), breaking the real
+// import. A bare host-component-tag string (matching the `SymbolView` stub
+// immediately above) is enough for React Testing Library to render and
+// query it.
+jest.mock('expo-image', () => ({
+  Image: 'Image',
+}));
+
 // Phase 10, work unit 10-M2: the player now attaches an access token to the
 // video source's headers (see drama-feed-item.tsx), and the "next episode"
 // premium gate now also consults `useEntitlement()`. Both are mocked here
@@ -157,8 +169,19 @@ jest.mock('expo-video', () => {
           loop: false,
           muted: false,
           playing: false,
+          // 11R PLAYBACK-STABILITY REMEDIATION: `currentTime`/`duration` are
+          // plain, test-settable fields (not tracked like `playbackRate`
+          // above - nothing in the component treats a `currentTime`/
+          // `duration` write as a play/pause command) so a test can arrange
+          // "this player has been playing for N seconds." `seekBy` is a
+          // spy so a test can assert exactly what position a
+          // generation-swap reseek requested.
+          currentTime: 0,
+          duration: 0,
+          status: 'idle',
           play: jest.fn(),
           pause: jest.fn(),
+          seekBy: jest.fn(),
           rateWrites,
         };
 
@@ -3086,6 +3109,572 @@ describe('DramaFeedItem', () => {
           uri: 'https://media.example.com/video-1.mp4',
           headers: { Authorization: 'Bearer test-access-token' },
         });
+      });
+    });
+  });
+
+  // 11R PLAYBACK-STABILITY REMEDIATION: physical-iPhone field report - open
+  // Home -> black screen -> delayed first frame -> visibly PAUSED ->
+  // delayed autoplay -> and, while playing calmly, an unexplained
+  // self-pause. Every describe block below is anchored to one of the root
+  // causes this remediation found and fixed.
+  describe('11R PLAYBACK-STABILITY REMEDIATION', () => {
+    beforeEach(() => {
+      // Isolates this describe block from any lingering `useEvent`
+      // mockImplementation override left by an earlier test elsewhere in
+      // this file. This file's jest config sets `clearMocks: true`, which
+      // clears call history before every test but does NOT reset a
+      // `mockImplementation` override already installed on a shared mock -
+      // without this reset, a test above that permanently overrode e.g.
+      // 'statusChange' would leak into every test below it.
+      const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+      (useEvent as jest.Mock).mockImplementation(
+        (_player: unknown, _eventName: string, defaultValue: unknown) => defaultValue
+      );
+    });
+
+    // `latestMockPlayer()` is typed narrowly (`play`/`pause` only, matching
+    // its original callers); this describe block's tests also need to
+    // arrange `playing`/`seekBy` on the same mock instance, so this widens
+    // the type rather than redeclaring the whole lookup.
+    function latestPlayer() {
+      return latestMockPlayer() as unknown as {
+        playing: boolean;
+        play: jest.Mock;
+        pause: jest.Mock;
+        seekBy: jest.Mock;
+      };
+    }
+
+    describe('poster/thumbnail UX (fixes the cold-open black screen)', () => {
+      it('shows the video\'s own poster instead of a black frame before playback has ever started', async () => {
+        const video = buildVideo({ thumbnailUrl: 'https://cdn.example.com/poster-1.jpg' });
+        const { getByTestId } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        // isPlaying defaults to false in this file's mocked useEvent (a
+        // static default, never a real event) - exactly the cold-open gap
+        // between "play() was issued" and "a real frame is confirmed."
+        expect(getByTestId('feed-item-poster').props.source).toEqual({
+          uri: 'https://cdn.example.com/poster-1.jpg',
+        });
+      });
+
+      it('renders the poster for a mounted-but-inactive item too, instead of a black frame', async () => {
+        const video = buildVideo({ thumbnailUrl: 'https://cdn.example.com/poster-1.jpg' });
+        const { getByTestId } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive={false} />
+        );
+
+        expect(getByTestId('feed-item-poster')).toBeTruthy();
+      });
+
+      it('hides the poster once a real playingChange event confirms playback has started, and never brings it back for the same video (no poster/video flicker)', async () => {
+        const video = buildVideo();
+        const { getByTestId, queryByTestId, rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        expect(getByTestId('feed-item-poster')).toBeTruthy();
+
+        const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+        (useEvent as jest.Mock).mockImplementation(
+          (_player: unknown, eventName: string, defaultValue: unknown) =>
+            eventName === 'playingChange' ? { isPlaying: true } : defaultValue
+        );
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+
+        expect(queryByTestId('feed-item-poster')).toBeNull();
+
+        // A later buffering blip (a real native player reporting
+        // isPlaying: false again mid-stream) must NOT bring the poster
+        // back over the last real frame.
+        (useEvent as jest.Mock).mockImplementation(
+          (_player: unknown, eventName: string, defaultValue: unknown) =>
+            eventName === 'playingChange' ? { isPlaying: false } : defaultValue
+        );
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+
+        expect(queryByTestId('feed-item-poster')).toBeNull();
+
+        // Nor does an explicit user pause.
+        await act(async () => {
+          fireEvent.press(getByTestId('feed-item-play-pause'));
+        });
+
+        expect(queryByTestId('feed-item-poster')).toBeNull();
+      });
+
+      it('shows a fresh poster for a newly assigned video, even if the previous video had already started playing', async () => {
+        const videoA = buildVideo({ id: 'video-a', thumbnailUrl: 'https://cdn.example.com/a.jpg' });
+        const videoB = buildVideo({ id: 'video-b', thumbnailUrl: 'https://cdn.example.com/b.jpg' });
+
+        const { getByTestId, queryByTestId, rerender } = await renderFeedItem(
+          <DramaFeedItem video={videoA} {...baseProps} isActive />
+        );
+
+        expect(getByTestId('feed-item-poster').props.source).toEqual({
+          uri: 'https://cdn.example.com/a.jpg',
+        });
+
+        // Video A starts playing - its poster is dismissed.
+        const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+        (useEvent as jest.Mock).mockImplementation(
+          (_player: unknown, eventName: string, defaultValue: unknown) =>
+            eventName === 'playingChange' ? { isPlaying: true } : defaultValue
+        );
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={videoA} {...baseProps} isActive />);
+        });
+
+        expect(queryByTestId('feed-item-poster')).toBeNull();
+
+        // Video B is a BRAND NEW player that has genuinely not started
+        // playing yet - restore the default (isPlaying: false) before
+        // assigning it, the same as any freshly created player's real
+        // starting state.
+        (useEvent as jest.Mock).mockImplementation(
+          (_player: unknown, _eventName: string, defaultValue: unknown) => defaultValue
+        );
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={videoB} {...baseProps} isActive />);
+        });
+
+        expect(getByTestId('feed-item-poster').props.source).toEqual({
+          uri: 'https://cdn.example.com/b.jpg',
+        });
+      });
+
+      it('never shows the poster over the "Video unavailable" error state', async () => {
+        mockGetPlaybackAuthorization.mockRejectedValueOnce(new Error('boom'));
+
+        const { queryByTestId, getByText } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+        );
+
+        expect(getByText('Video unavailable')).toBeTruthy();
+        expect(queryByTestId('feed-item-poster')).toBeNull();
+      });
+    });
+
+    describe('buffering is not shown as "paused" (fixes the visibly-paused / delayed-autoplay gap)', () => {
+      it('does not show the tap-to-resume affordance while autoplay is starting - the system already committed to playing', async () => {
+        const { queryByTestId } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+        );
+
+        // play() has already been issued (see "plays when it is the
+        // active, focused item"), but isPlaying's static mock default
+        // stays false - the exact buffering/starting gap that used to
+        // render a misleading "paused, tap to resume" glyph.
+        expect(queryByTestId('feed-item-play-pause-indicator')).toBeNull();
+      });
+
+      it('shows the tap-to-resume affordance when genuinely inactive', async () => {
+        const { getByTestId } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive={false} />
+        );
+
+        expect(getByTestId('feed-item-play-pause-indicator')).toBeTruthy();
+      });
+
+      it('shows the tap-to-resume affordance after an explicit user pause', async () => {
+        const video = buildVideo();
+        const { getByTestId, rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        const player = latestPlayer();
+
+        player.playing = true;
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+
+        await act(async () => {
+          fireEvent.press(getByTestId('feed-item-play-pause'));
+        });
+
+        expect(getByTestId('feed-item-play-pause-indicator')).toBeTruthy();
+      });
+
+      it('briefly confirms playback with the pause glyph once real playback starts, then auto-hides (unchanged confirmation behaviour)', async () => {
+        jest.useFakeTimers();
+        try {
+          const video = buildVideo();
+          const { getByTestId, queryByTestId, rerender } = await renderFeedItem(
+            <DramaFeedItem video={video} {...baseProps} isActive />
+          );
+
+          expect(queryByTestId('feed-item-play-pause-indicator')).toBeNull();
+
+          const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+          (useEvent as jest.Mock).mockImplementation(
+            (_player: unknown, eventName: string, defaultValue: unknown) =>
+              eventName === 'playingChange' ? { isPlaying: true } : defaultValue
+          );
+
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+
+          expect(getByTestId('feed-item-play-pause-indicator')).toBeTruthy();
+
+          await act(async () => {
+            jest.advanceTimersByTime(900);
+          });
+
+          expect(queryByTestId('feed-item-play-pause-indicator')).toBeNull();
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+    });
+
+    describe('generation-safe reseek across a mid-playback source replace (fixes the calm-viewing self-pause)', () => {
+      it('preserves the current playback position when the source is replaced mid-playback for the same video, instead of restarting from 0', async () => {
+        jest.useFakeTimers();
+        try {
+          mockGetPlaybackAuthorization.mockResolvedValueOnce(
+            buildPlaybackAuthorization({
+              playbackUrl: 'https://media.example.com/first-grant.mp4',
+              expiresAt: new Date(Date.now() + 40000).toISOString(),
+            })
+          );
+          mockGetPlaybackAuthorization.mockResolvedValueOnce(
+            buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/second-grant.mp4' })
+          );
+
+          const video = buildVideo();
+          const { rerender } = await renderFeedItem(
+            <DramaFeedItem video={video} {...baseProps} isActive />
+          );
+
+          const outgoingPlayer = findPlayerByUri('https://media.example.com/first-grant.mp4') as
+            | { seekBy: jest.Mock }
+            | undefined;
+
+          expect(outgoingPlayer).toBeTruthy();
+
+          // The item has been playing for 123.4s, with its player already
+          // confirmed readyToPlay, by the time the proactive refresh fires.
+          const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+          (useEvent as jest.Mock).mockImplementation(
+            (_player: unknown, eventName: string, defaultValue: unknown) => {
+              if (eventName === 'statusChange') {
+                return { status: 'readyToPlay', error: undefined };
+              }
+              if (eventName === 'timeUpdate') {
+                return {
+                  currentTime: 123.4,
+                  currentLiveTimestamp: null,
+                  currentOffsetFromLive: null,
+                  bufferedPosition: 0,
+                };
+              }
+              return defaultValue;
+            }
+          );
+
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+
+          // The scheduled proactive refresh fires (40s grant - 30s margin =
+          // 10s in), replacing the player mid-playback.
+          await act(async () => {
+            await jest.advanceTimersByTimeAsync(10000);
+          });
+
+          const incomingPlayer = findPlayerByUri('https://media.example.com/second-grant.mp4') as
+            | { seekBy: jest.Mock; currentTime: number }
+            | undefined;
+
+          expect(incomingPlayer).not.toBe(outgoingPlayer);
+          // seekBy is relative: seeking forward by (last known position -
+          // the new player's own currentTime, which starts at 0) lands the
+          // new player at 123.4s instead of restarting from the beginning.
+          expect(incomingPlayer?.seekBy).toHaveBeenCalledWith(
+            123.4 - (incomingPlayer?.currentTime ?? 0)
+          );
+          // The OUTGOING player is only paused (see the existing HIGH-2
+          // test) - it is never the one seeked.
+          expect(outgoingPlayer?.seekBy).not.toHaveBeenCalled();
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it('does not seed a brand-new video\'s freshly-started player with the previous video\'s position', async () => {
+        jest.useFakeTimers();
+        try {
+          const videoA = buildVideo({ id: 'video-a' });
+          const videoB = buildVideo({ id: 'video-b' });
+
+          mockGetPlaybackAuthorization.mockResolvedValueOnce(
+            buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-a.mp4' })
+          );
+
+          const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+          (useEvent as jest.Mock).mockImplementation(
+            (_player: unknown, eventName: string, defaultValue: unknown) => {
+              if (eventName === 'statusChange') {
+                return { status: 'readyToPlay', error: undefined };
+              }
+              if (eventName === 'timeUpdate') {
+                return {
+                  currentTime: 88,
+                  currentLiveTimestamp: null,
+                  currentOffsetFromLive: null,
+                  bufferedPosition: 0,
+                };
+              }
+              return defaultValue;
+            }
+          );
+
+          const { rerender } = await renderFeedItem(
+            <DramaFeedItem video={videoA} {...baseProps} isActive />
+          );
+
+          mockGetPlaybackAuthorization.mockResolvedValueOnce(
+            buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-b.mp4' })
+          );
+
+          await act(async () => {
+            rerender(<DramaFeedItem video={videoB} {...baseProps} isActive />);
+          });
+          await act(async () => {
+            await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+          });
+
+          const videoBPlayer = findPlayerByUri('https://media.example.com/video-b.mp4') as
+            | { seekBy: jest.Mock }
+            | undefined;
+
+          expect(videoBPlayer).toBeTruthy();
+          expect(videoBPlayer?.seekBy).not.toHaveBeenCalled();
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it('does not seek when the player identity is unchanged (status re-confirming readyToPlay is not a swap)', async () => {
+        const video = buildVideo();
+        const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+        (useEvent as jest.Mock).mockImplementation(
+          (_player: unknown, eventName: string, defaultValue: unknown) => {
+            if (eventName === 'statusChange') {
+              return { status: 'readyToPlay', error: undefined };
+            }
+            if (eventName === 'timeUpdate') {
+              return {
+                currentTime: 42,
+                currentLiveTimestamp: null,
+                currentOffsetFromLive: null,
+                bufferedPosition: 0,
+              };
+            }
+            return defaultValue;
+          }
+        );
+
+        const { rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        const player = latestMockPlayer() as unknown as { seekBy: jest.Mock };
+
+        // An unrelated re-render (e.g. a like-count change) with status
+        // re-reporting readyToPlay for the SAME player must never re-seek.
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive isLiked />);
+        });
+
+        expect(player.seekBy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('stress sequences (self-heals to playing, never leaves the settled item stuck paused)', () => {
+      it('A: cold open with async auth - poster is visible immediately, no permanent paused gap once ready', async () => {
+        jest.useFakeTimers();
+        try {
+          const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+          (useEvent as jest.Mock).mockImplementation(
+            (_player: unknown, eventName: string, defaultValue: unknown) =>
+              eventName === 'statusChange'
+                ? { status: 'loading', error: undefined }
+                : defaultValue
+          );
+
+          const video = buildVideo();
+          const { getByTestId, queryByTestId, rerender } = await renderFeedItem(
+            <DramaFeedItem video={video} {...baseProps} isActive />
+          );
+
+          // Black-screen fix: a real poster, not a black frame, from the
+          // very first render.
+          expect(getByTestId('feed-item-poster')).toBeTruthy();
+          // Visibly-paused fix: no false "tap to resume" affordance while
+          // starting.
+          expect(queryByTestId('feed-item-play-pause-indicator')).toBeNull();
+
+          const player = latestPlayer();
+
+          player.play.mockClear();
+
+          (useEvent as jest.Mock).mockImplementation(
+            (_player: unknown, eventName: string, defaultValue: unknown) =>
+              eventName === 'statusChange'
+                ? { status: 'readyToPlay', error: undefined }
+                : defaultValue
+          );
+
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+
+          expect(player.play).toHaveBeenCalled();
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it('C: an unrelated feed rerender (e.g. a like-count change) while playing does not pause the active player', async () => {
+        const video = buildVideo();
+        const { rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        const player = latestPlayer();
+
+        player.playing = true;
+        player.pause.mockClear();
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive likeCount={99999} />);
+        });
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive isMuted />);
+        });
+
+        expect(player.pause).not.toHaveBeenCalled();
+      });
+
+      it('D: a transient active flip (paging momentum) never leaves the settled item stuck paused, and never plays two players at once', async () => {
+        const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        try {
+          const video = buildVideo();
+          const { rerender } = await renderFeedItem(
+            <DramaFeedItem video={video} {...baseProps} isActive />
+          );
+
+          const player = latestPlayer();
+
+          expect(player.play).toHaveBeenCalled();
+          player.playing = true;
+          player.play.mockClear();
+
+          // A corrective scrollToOffset transiently flips this item out of
+          // (and back into) the active slot.
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+          });
+
+          expect(player.pause).toHaveBeenCalled();
+          player.playing = false;
+
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+
+          // Self-heals: the settled state is playing again, not stuck.
+          expect(player.play).toHaveBeenCalled();
+          expect(
+            consoleErrorSpy.mock.calls.some((call) => call[0] === '[PlaybackInvariantViolation]')
+          ).toBe(false);
+        } finally {
+          consoleErrorSpy.mockRestore();
+        }
+      });
+
+      it('E: backgrounding while manually paused does not resume on foreground - user intent survives the app lifecycle', async () => {
+        const appStateListeners: ((state: string) => void)[] = [];
+        const addListenerSpy = jest
+          .spyOn(AppState, 'addEventListener')
+          .mockImplementation(((_event: string, listener: (state: string) => void) => {
+            appStateListeners.push(listener);
+            return { remove: jest.fn() };
+          }) as never);
+
+        try {
+          const video = buildVideo();
+          const { getByTestId, rerender } = await renderFeedItem(
+            <DramaFeedItem video={video} {...baseProps} isActive />
+          );
+
+          const player = latestPlayer();
+
+          player.playing = true;
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+
+          await act(async () => {
+            fireEvent.press(getByTestId('feed-item-play-pause'));
+          });
+
+          expect(player.pause).toHaveBeenCalled();
+          player.play.mockClear();
+
+          await act(async () => {
+            appStateListeners.forEach((listener) => listener('background'));
+          });
+          await act(async () => {
+            appStateListeners.forEach((listener) => listener('active'));
+          });
+
+          // Foregrounding alone must not override the explicit user pause.
+          expect(player.play).not.toHaveBeenCalled();
+        } finally {
+          addListenerSpy.mockRestore();
+        }
+      });
+
+      it('F: an unrelated update while manually paused leaves it paused through reconciliation', async () => {
+        const video = buildVideo();
+        const { getByTestId, rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        const player = latestPlayer();
+
+        player.playing = true;
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+        await act(async () => {
+          fireEvent.press(getByTestId('feed-item-play-pause'));
+        });
+
+        player.playing = false;
+        player.play.mockClear();
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive isSaved />);
+        });
+
+        expect(player.play).not.toHaveBeenCalled();
       });
     });
   });

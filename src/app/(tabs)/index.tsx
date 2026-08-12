@@ -20,6 +20,7 @@ import {
 import { DramaFeedItem } from '@/components/drama-feed-item';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
+import { useFeedPagingGuard } from '@/hooks/use-feed-paging-guard';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { onVideoTransition } from '@/services/ads/ad-controller';
 import { getNextEpisode, getSeriesById } from '@/services/videos/series-service';
@@ -217,6 +218,18 @@ export default function HomeScreen() {
     setFeedHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
   }, []);
 
+  // Issue 2 (11R physical-QA remediation): a single continuous swipe/flick,
+  // at any velocity, must move the feed by at most ±1 index from wherever it
+  // started. `disableIntervalMomentum` below is the right platform primitive
+  // but is not itself a guarantee - see `feed-paging.ts` and
+  // `use-feed-paging-guard.ts` for why a deterministic corrective backstop
+  // is still needed.
+  const { onScrollBeginDrag, onMomentumScrollEnd } = useFeedPagingGuard({
+    flatListRef,
+    itemHeight: feedHeight,
+    itemCount: videos.length,
+  });
+
   const handleShare = useCallback(async (video: Video) => {
     const message = `${video.title} - Episode ${video.episodeNumber}\n${video.caption}\n${video.playbackUrl}`;
 
@@ -377,9 +390,17 @@ export default function HomeScreen() {
         snapToAlignment="start"
         snapToInterval={feedHeight}
         decelerationRate="fast"
+        // Issue 2: the platform-level guard against a fast fling's momentum
+        // carrying the scroll view past the next snap interval. Necessary,
+        // but - see `useFeedPagingGuard` - not sufficient on its own, which
+        // is why `onScrollBeginDrag`/`onMomentumScrollEnd` below add a
+        // deterministic correction on top of it.
+        disableIntervalMomentum
         showsVerticalScrollIndicator={false}
         viewabilityConfig={VIEWABILITY_CONFIG}
         onViewableItemsChanged={handleViewableItemsChanged}
+        onScrollBeginDrag={onScrollBeginDrag}
+        onMomentumScrollEnd={onMomentumScrollEnd}
         onScrollToIndexFailed={({ index }) => {
           flatListRef.current?.scrollToOffset({ offset: feedHeight * index, animated: false });
         }}

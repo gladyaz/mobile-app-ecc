@@ -459,16 +459,47 @@ describe('DramaFeedItem', () => {
     expect(queryByText(video.caption)).toBeNull();
   });
 
-  it('renders the title in the upper-left title overlay with a light episode meta line', async () => {
+  it('renders the title alone in the upper-left overlay - no channel text, no meta line', async () => {
+    // Product feedback (2026-08-12): the channel name ("Short Drama
+    // Mandarin" in production data) must not render in the feed at all.
     const video = buildVideo();
-    const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+    const { getByTestId, queryByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
 
     const titleOverlay = getByTestId('feed-item-title-overlay');
 
     expect(within(titleOverlay).getByText(video.title)).toBeTruthy();
-    // Episode context survives as plain text under the title - not a badge
-    // occupying a control area.
-    expect(within(titleOverlay).getByText('EP 1 · Mandarin Drama ID')).toBeTruthy();
+    expect(queryByText(video.channelName)).toBeNull();
+    expect(queryByText(`EP 1 · ${video.channelName}`)).toBeNull();
+  });
+
+  it('shows the EP indicator beneath the next-episode control on the right', async () => {
+    // Product feedback (2026-08-12): "EP n" lives directly under the
+    // next-episode button - not in the title block, never in a bottom
+    // corner.
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
+    const { getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    const cluster = getByTestId('feed-item-episode-cluster');
+
+    expect(within(cluster).getByText('Episode Berikutnya')).toBeTruthy();
+    expect(within(cluster).getByText('EP 1')).toBeTruthy();
+  });
+
+  it('keeps the EP indicator on the last episode, when there is no next-episode control', async () => {
+    const video = buildVideo({ episodeNumber: 5 });
+    const { getByTestId, queryByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
+
+    const cluster = getByTestId('feed-item-episode-cluster');
+
+    expect(queryByText('Episode Berikutnya')).toBeNull();
+    expect(within(cluster).getByText('EP 5')).toBeTruthy();
   });
 
   it('navigates to the series detail when the title overlay is pressed', async () => {
@@ -483,9 +514,9 @@ describe('DramaFeedItem', () => {
     });
   });
 
-  it('anchors the next-episode pill below the title block so the two can never overlap', async () => {
+  it('anchors the episode cluster below the title block so the two can never overlap', async () => {
     // Review fix (cycle 1, Finding 1): "Episode Berikutnya" renders far
-    // wider than the pill's 74px minimum, so the pill must not share the
+    // wider than the pill's 74px minimum, so the cluster must not share the
     // title's vertical band. Insets are mocked to 0, so the offsets below
     // are the raw constants from drama-feed-item.tsx.
     const video = buildVideo();
@@ -495,26 +526,31 @@ describe('DramaFeedItem', () => {
     );
 
     const titleOverlayStyle = StyleSheet.flatten(getByTestId('feed-item-title-overlay').props.style);
+    const clusterStyle = StyleSheet.flatten(getByTestId('feed-item-episode-cluster').props.style);
     const pillStyle = StyleSheet.flatten(getByTestId('feed-item-next-episode').props.style);
 
-    // The pill starts below the title block's maximum extent (2 title lines
-    // + meta line), and its label is single-line + width-capped so no
+    // The cluster starts below the title block's maximum extent (2 title
+    // lines), and the pill's label is single-line + width-capped so no
     // locale can grow it back across the frame.
     expect(titleOverlayStyle.top).toBe(44);
+    expect(clusterStyle.top).toBe(120);
     expect(getByText('Episode Berikutnya').props.numberOfLines).toBe(1);
     expect(pillStyle.maxWidth).toBe(180);
-    expect(pillStyle.top).toBe(120);
   });
 
-  it('renders no standalone episode badge or category chip in the overlay', async () => {
+  it('renders no episode badge or category chip in the title overlay or bottom overlay', async () => {
     const video = buildVideo();
-    const { queryByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+    const { getByTestId, queryByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
 
     // The old orange "EP 1" badge and the "CEO" category chip are gone from
-    // the feed presentation - episode context lives in the title meta line
-    // and the next-episode control instead.
-    expect(queryByText('EP 1')).toBeNull();
+    // the feed presentation - the only "EP n" is the plain-text indicator
+    // inside the right-side episode cluster.
     expect(queryByText(video.category)).toBeNull();
+    expect(within(getByTestId('feed-item-title-overlay')).queryByText('EP 1')).toBeNull();
+    expect(within(getByTestId('feed-item-bottom-overlay')).queryByText('EP 1')).toBeNull();
+    expect(within(getByTestId('feed-item-episode-cluster')).getByText('EP 1')).toBeTruthy();
   });
 
   it('anchors the bottom overlay one gap above the navbar without re-adding the tab bar height', async () => {
@@ -550,9 +586,14 @@ describe('DramaFeedItem', () => {
 
     expect(StyleSheet.flatten(overlay.props.style).opacity).toBe(0);
     expect(overlay.props.pointerEvents).toBe('none');
-    // The upper-left title block steps aside the same way.
+    // The upper-left title block and the episode cluster step aside the
+    // same way.
     expect(StyleSheet.flatten(titleOverlay.props.style).opacity).toBe(0);
     expect(titleOverlay.props.pointerEvents).toBe('none');
+    const episodeCluster = getByTestId('feed-item-episode-cluster');
+
+    expect(StyleSheet.flatten(episodeCluster.props.style).opacity).toBe(0);
+    expect(episodeCluster.props.pointerEvents).toBe('none');
     expect(getByTestId('feed-item-progress-track')).toBeTruthy();
   });
 
@@ -636,9 +677,9 @@ describe('DramaFeedItem', () => {
 
       expect(buttonStyle.width).toBe(48);
       expect(buttonStyle.height).toBe(48);
-      // The old near-opaque bordered pill is gone - what remains is a faint
-      // scrim with no border.
-      expect(buttonStyle.backgroundColor).not.toBe('rgba(24, 24, 27, 0.9)');
+      // Product feedback (2026-08-12): FULLY transparent - no background,
+      // no scrim, no border ("no black element").
+      expect(buttonStyle.backgroundColor).toBeUndefined();
       expect(buttonStyle.borderWidth).toBeUndefined();
     }
   });

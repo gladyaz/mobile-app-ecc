@@ -1270,14 +1270,12 @@ export function DramaFeedItem({
         </Pressable>
       )}
 
-      {/* Mobile UI revision (2026-08-12): the title lives in the upper-left
-          hierarchy, under Home's brand overlay, instead of a bottom metadata
-          block - the feed overlay no longer shows the description/caption or
-          an episode badge, so the video stays the visual focus. The one line
-          of secondary text keeps the current episode identifiable (every
-          episode of a series shares the same title) without re-introducing a
-          badge into any control area. Tapping it keeps the existing
-          navigation path to the series detail screen. */}
+      {/* Mobile UI revision (2026-08-12, updated per direct product feedback
+          the same day): the title stands ALONE in the upper-left hierarchy,
+          under Home's brand overlay - no description, no channel text
+          ("Short Drama Mandarin" was explicitly asked to be removed), no
+          badge. Tapping it keeps the existing navigation path to the series
+          detail screen. */}
       <View
         testID="feed-item-title-overlay"
         pointerEvents={isClearDisplay ? 'none' : 'box-none'}
@@ -1296,27 +1294,38 @@ export function DramaFeedItem({
           <Text numberOfLines={2} style={[styles.title, styles.textShadow]}>
             {video.title}
           </Text>
-          <Text numberOfLines={1} style={[styles.titleMeta, styles.textShadow]}>
-            {`EP ${video.episodeNumber} · ${video.channelName}`}
-          </Text>
         </Pressable>
       </View>
 
-      {nextEpisode && !isClearDisplay ? (
-        <Pressable
-          testID="feed-item-next-episode"
-          accessibilityRole="button"
-          onPress={handleNextEpisode}
-          style={({ pressed }) => [
-            styles.nextEpisodeButton,
-            { top: insets.top + NEXT_EPISODE_TOP_OFFSET },
-            pressed && styles.buttonPressed,
-          ]}>
-          <Text numberOfLines={1} style={styles.nextEpisodeText}>
-            {t('feed.nextEpisode')}
-          </Text>
-        </Pressable>
-      ) : null}
+      {/* Right-side episode cluster (product feedback 2026-08-12): the "EP n"
+          indicator lives directly BENEATH the next-episode control, not in
+          the title block and never in a bottom corner. When this is the last
+          episode (no next-episode control) the indicator still renders here,
+          so the current episode stays identifiable - every episode of a
+          series shares the same title. */}
+      <View
+        testID="feed-item-episode-cluster"
+        pointerEvents={isClearDisplay ? 'none' : 'box-none'}
+        style={[
+          styles.episodeCluster,
+          { top: insets.top + NEXT_EPISODE_TOP_OFFSET },
+          isClearDisplay && styles.contentHidden,
+        ]}>
+        {nextEpisode ? (
+          <Pressable
+            testID="feed-item-next-episode"
+            accessibilityRole="button"
+            onPress={handleNextEpisode}
+            style={({ pressed }) => [styles.nextEpisodeButton, pressed && styles.buttonPressed]}>
+            <Text numberOfLines={1} style={styles.nextEpisodeText}>
+              {t('feed.nextEpisode')}
+            </Text>
+          </Pressable>
+        ) : null}
+        <Text style={[styles.episodeIndicator, styles.textShadow]}>
+          {`EP ${video.episodeNumber}`}
+        </Text>
+      </View>
 
       {/* Mobile UI revision (2026-08-12): the bottom overlay now carries the
           action rail alone - title/channel/episode metadata moved to the
@@ -1352,6 +1361,7 @@ export function DramaFeedItem({
                 }}
                 size={24}
                 tintColor="#fff"
+                style={styles.actionIconShadow}
               />
             </Pressable>
           )}
@@ -1369,6 +1379,7 @@ export function DramaFeedItem({
                 }}
                 size={24}
                 tintColor="#fff"
+                style={styles.actionIconShadow}
               />
             </Pressable>
           )}
@@ -1386,6 +1397,7 @@ export function DramaFeedItem({
                 }}
                 size={26}
                 tintColor={isLiked ? Palette.primary : '#fff'}
+                style={styles.actionIconShadow}
               />
             </View>
             <Text style={[styles.actionValue, styles.textShadow]}>
@@ -1405,6 +1417,7 @@ export function DramaFeedItem({
               }}
               size={24}
               tintColor={isSaved ? Palette.primary : '#fff'}
+              style={styles.actionIconShadow}
             />
           </Pressable>
           <Pressable
@@ -1416,6 +1429,7 @@ export function DramaFeedItem({
               name={{ ios: 'square.and.arrow.up', android: 'share', web: 'share' }}
               size={24}
               tintColor="#fff"
+              style={styles.actionIconShadow}
             />
           </Pressable>
         </View>
@@ -1577,13 +1591,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // `top` is provided inline (inset-aware, below the title block - see
-  // NEXT_EPISODE_TOP_OFFSET). `maxWidth` is belt-and-suspenders on top of
-  // the vertical separation: even an unexpectedly long localized label can
-  // never grow the pill across the frame (its text ellipsizes instead).
-  nextEpisodeButton: {
+  // Positions the next-episode control and the "EP n" indicator beneath it
+  // as one right-aligned cluster; `top` is provided inline (inset-aware,
+  // below the title block - see NEXT_EPISODE_TOP_OFFSET).
+  episodeCluster: {
     position: 'absolute',
     right: 18,
+    alignItems: 'flex-end',
+    gap: 6,
+  },
+  // `maxWidth` is belt-and-suspenders on top of the vertical separation
+  // from the title: even an unexpectedly long localized label can never
+  // grow the pill across the frame (its text ellipsizes instead).
+  nextEpisodeButton: {
     minWidth: 74,
     maxWidth: 180,
     alignItems: 'center',
@@ -1591,6 +1611,11 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: Radius.sm,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
+  },
+  episodeIndicator: {
+    fontSize: 12.5,
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
   },
   nextEpisodeText: {
     fontSize: 12,
@@ -1724,14 +1749,6 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.extraBold,
     color: Palette.text,
   },
-  // "EP n · channel" under the title: plain light text, deliberately not a
-  // badge - it identifies the episode without occupying any control area.
-  titleMeta: {
-    marginTop: 4,
-    fontSize: 12.5,
-    fontFamily: FontFamily.semiBold,
-    color: Palette.textSecondary,
-  },
   actions: {
     alignItems: 'center',
     gap: 14,
@@ -1745,17 +1762,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
   },
-  // Mobile UI revision (2026-08-12): TikTok-style floating controls. The
-  // heavy near-opaque pill + border is gone; what remains is a faint scrim
-  // so a white icon stays legible over bright footage. The 48px pressable
-  // is unchanged - the visual got lighter, the hit target did not.
+  // Mobile UI revision (2026-08-12, tightened per direct product feedback
+  // the same day): FULLY transparent TikTok-style controls - no scrim, no
+  // pill, no border, "no black element". Legibility over bright footage
+  // comes from the drop shadow on the glyph itself (`actionIconShadow`
+  // below). The 48px pressable is unchanged - the visual disappeared, the
+  // hit target did not.
   actionButton: {
     width: 48,
     height: 48,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Radius.pill,
-    backgroundColor: 'rgba(13, 13, 15, 0.28)',
+  },
+  // iOS renders this as a soft content shadow around the glyph (the view
+  // has no background, so the shadow follows the icon's alpha); Android
+  // ignores shadow* props - acceptable, the primary QA target is iPhone.
+  actionIconShadow: {
+    shadowColor: '#000',
+    shadowOpacity: 0.45,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
   },
   actionValue: {
     fontSize: 12,

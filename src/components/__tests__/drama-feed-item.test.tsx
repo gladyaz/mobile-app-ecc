@@ -117,6 +117,11 @@ let mockLatestVideoViewProps: {
   nativeControls?: boolean;
 } = {};
 const mockExitFullscreen = jest.fn(() => Promise.resolve());
+// Issue 3 (11R physical-QA remediation): module-level, like
+// `mockExitFullscreen` above, so a test can assert the rail's Fullscreen
+// button actually reaches `videoViewRef.current.enterFullscreen()` rather
+// than merely asserting the button exists.
+const mockEnterFullscreen = jest.fn(() => Promise.resolve());
 
 jest.mock('expo-video', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -177,7 +182,7 @@ jest.mock('expo-video', () => {
       ) => {
         mockLatestVideoViewProps = props;
         ReactModule.useImperativeHandle(ref, () => ({
-          enterFullscreen: jest.fn(() => Promise.resolve()),
+          enterFullscreen: mockEnterFullscreen,
           exitFullscreen: mockExitFullscreen,
         }));
         return null;
@@ -830,18 +835,24 @@ describe('DramaFeedItem', () => {
     });
   });
 
-  it('shows the Fullscreen button for a horizontal video', async () => {
+  it('shows the Fullscreen control in the action rail for a horizontal video', async () => {
+    // Issue 3 (11R physical-QA remediation): fullscreen moved from an
+    // ad-hoc absolute pill into the same action rail as Mute/Like/Save/Share.
     const video = buildVideo({ width: 1280, height: 720 });
-    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+    const { getByLabelText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
 
-    expect(getByText('Fullscreen')).toBeTruthy();
+    expect(getByLabelText('Fullscreen')).toBeTruthy();
   });
 
-  it('does not show the Fullscreen button for a vertical video', async () => {
+  it('does not show the Fullscreen control for a vertical video', async () => {
     const video = buildVideo({ width: 720, height: 1280 });
-    const { queryByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+    const { queryByLabelText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
 
-    expect(queryByText('Fullscreen')).toBeNull();
+    expect(queryByLabelText('Fullscreen')).toBeNull();
   });
 
   it('locks landscape orientation when entering native fullscreen', async () => {
@@ -1003,18 +1014,95 @@ describe('DramaFeedItem', () => {
   });
 
   describe('fullscreen affordances (reported from device QA)', () => {
-    it('keeps the Fullscreen button clear of the feed brand overlay', async () => {
-      // The overlay in app/(tabs)/index.tsx starts at top: 64 and is roughly
-      // 20pt tall; at the old top: 54 the label rendered over the wordmark.
+    // Issue 3 (11R physical-QA remediation): the fullscreen control used to
+    // be an ad-hoc absolute pill, independent of the action rail's own
+    // bottom anchor and z-order, which a physical-device QA pass reported as
+    // hidden behind the Share button. It now lives IN the rail (same
+    // container as Mute/Like/Save/Share, so it is bottom-anchored and
+    // z-ordered identically to every other action).
+    it('places Fullscreen inside the same action rail as Share, as an independent sibling', async () => {
       const video = buildVideo({ width: 1280, height: 720 });
-      const { getByText } = await renderFeedItem(
+      const { getByTestId, getByLabelText } = await renderFeedItem(
         <DramaFeedItem video={video} {...baseProps} />
       );
 
-      const button = getByText('Fullscreen').parent;
-      const style = StyleSheet.flatten(button?.props.style);
+      const overlay = getByTestId('feed-item-bottom-overlay');
+      const fullscreenButton = within(overlay).getByLabelText('Fullscreen');
+      const shareButton = within(overlay).getByLabelText('Share');
 
-      expect(style.top).toBeGreaterThan(90);
+      // Both controls resolve inside the one bottom-anchored overlay - not a
+      // second, independently-positioned element competing for the same
+      // screen space.
+      expect(fullscreenButton).toBeTruthy();
+      expect(shareButton).toBeTruthy();
+      // Distinct pressables, not the same control wearing two labels.
+      expect(fullscreenButton).not.toBe(shareButton);
+      expect(getByLabelText('Fullscreen')).toBe(fullscreenButton);
+    });
+
+    it('orders the rail Fullscreen, Mute, Like, Save, Share', async () => {
+      const video = buildVideo({ width: 1280, height: 720 });
+      const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      const rail = getByTestId('feed-item-actions-rail');
+      const labels = within(rail)
+        .getAllByRole('button')
+        .map((button) => button.props.accessibilityLabel);
+
+      expect(labels).toEqual(['Fullscreen', 'Mute', 'Like', 'Save', 'Share']);
+    });
+
+    it('omits Fullscreen from the rail for a vertical video, leaving the rest of the order unchanged', async () => {
+      const video = buildVideo({ width: 720, height: 1280 });
+      const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      const rail = getByTestId('feed-item-actions-rail');
+      const labels = within(rail)
+        .getAllByRole('button')
+        .map((button) => button.props.accessibilityLabel);
+
+      expect(labels).toEqual(['Mute', 'Like', 'Save', 'Share']);
+    });
+
+    it('keeps every action-rail control independently tappable - Fullscreen does not swallow Share, Like, Save, or Mute', async () => {
+      const video = buildVideo({ width: 1280, height: 720 });
+      const onToggleLike = jest.fn();
+      const onToggleSave = jest.fn();
+      const onToggleMute = jest.fn();
+      const onShare = jest.fn();
+      const { getByLabelText } = await renderFeedItem(
+        <DramaFeedItem
+          video={video}
+          {...baseProps}
+          onToggleLike={onToggleLike}
+          onToggleSave={onToggleSave}
+          onToggleMute={onToggleMute}
+          onShare={onShare}
+        />
+      );
+
+      await fireEvent.press(getByLabelText('Fullscreen'));
+      await fireEvent.press(getByLabelText('Mute'));
+      await fireEvent.press(getByLabelText('Like'));
+      await fireEvent.press(getByLabelText('Save'));
+      await fireEvent.press(getByLabelText('Share'));
+
+      expect(mockEnterFullscreen).toHaveBeenCalledTimes(1);
+      expect(onToggleMute).toHaveBeenCalledTimes(1);
+      expect(onToggleLike).toHaveBeenCalledTimes(1);
+      expect(onToggleSave).toHaveBeenCalledTimes(1);
+      expect(onShare).toHaveBeenCalledTimes(1);
+    });
+
+    it('enters native fullscreen when the rail\'s Fullscreen control is pressed', async () => {
+      const video = buildVideo({ width: 1280, height: 720 });
+      const { getByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      await fireEvent.press(getByLabelText('Fullscreen'));
+
+      expect(mockEnterFullscreen).toHaveBeenCalledTimes(1);
     });
 
     it('hands control to the platform while fullscreen, so there is a visible way out', async () => {

@@ -123,10 +123,6 @@ function lockOrientation(orientation: ScreenOrientation.OrientationLock) {
 // portion of frame where a video's burned-in subtitle typically sits. Capping
 // the block's width on wide screens keeps it compact without touching the
 // bottom anchor or phone-width layout.
-// Clears the feed's brand overlay, which starts at top: 64 and is roughly 20pt
-// tall. Anything above ~90 collides with the wordmark.
-const FULLSCREEN_BUTTON_TOP = 104;
-
 const WIDE_LAYOUT_BREAKPOINT = 700;
 const DETAILS_MAX_WIDTH_WIDE = 440;
 
@@ -1015,15 +1011,6 @@ export function DramaFeedItem({
         </Pressable>
       )}
 
-      {hasPlaybackError || !isHorizontal || isClearDisplay ? null : (
-        <Pressable
-          accessibilityRole="button"
-          onPress={handleEnterFullscreen}
-          style={({ pressed }) => [styles.fullscreenButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.fullscreenText}>{t('feed.fullscreen')}</Text>
-        </Pressable>
-      )}
-
       {nextEpisode && !isClearDisplay ? (
         <Pressable
           accessibilityRole="button"
@@ -1102,7 +1089,34 @@ export function DramaFeedItem({
           )}
         </Pressable>
 
-        <View style={styles.actions}>
+        <View testID="feed-item-actions-rail" style={styles.actions}>
+          {/* Issue 3 (11R physical-QA remediation): fullscreen used to be an
+              ad-hoc absolutely-positioned text pill (top-left of the item,
+              independent of this rail's own bottom anchor), which was easy
+              to miss and, on a physically constrained screen, competed for
+              space with other absolutely-positioned overlays. Folding it in
+              here gives it the same 48px hit target, the same bottom anchor,
+              and the same "no interactive control overlaps another"
+              guarantee every other rail action already has. Shown under the
+              same condition as before - a horizontal video - so a vertical
+              clip's rail is unchanged. */}
+          {hasPlaybackError || !isHorizontal ? null : (
+            <Pressable
+              accessibilityLabel={t('feed.fullscreen')}
+              accessibilityRole="button"
+              onPress={handleEnterFullscreen}
+              style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
+              <SymbolView
+                name={{
+                  ios: 'arrow.up.left.and.arrow.down.right',
+                  android: 'fullscreen',
+                  web: 'fullscreen',
+                }}
+                size={22}
+                tintColor="#fff"
+              />
+            </Pressable>
+          )}
           {hasPlaybackError ? null : (
             <Pressable
               accessibilityLabel={isMuted ? 'Unmute' : 'Mute'}
@@ -1324,28 +1338,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.18)',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  fullscreenButton: {
-    position: 'absolute',
-    // Sits below the feed's "Red Panda" brand overlay (top: 64 in
-    // app/(tabs)/index.tsx), not beside it. At top: 54 the two occupied the
-    // same corner and the label rendered on top of the wordmark - reported
-    // from a device, where a horizontal clip is the only case that shows this
-    // button at all. The opposite corner is already taken by "Episode
-    // Berikutnya", so the free space is downward.
-    top: FULLSCREEN_BUTTON_TOP,
-    left: 18,
-    minWidth: 74,
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: Radius.sm,
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
-  },
-  fullscreenText: {
-    fontSize: 13,
-    fontFamily: FontFamily.bold,
-    color: Palette.text,
   },
   nextEpisodeButton: {
     position: 'absolute',

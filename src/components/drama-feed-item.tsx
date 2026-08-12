@@ -18,6 +18,7 @@ import { useTranslation } from '@/stores/language';
 import { PLAYBACK_SPEEDS, usePlaybackSpeedStore } from '@/stores/playback-speed';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { recordVideoWatched } from '@/services/ads/ad-controller';
+import { ApiError } from '@/services/api/client';
 import { getTokens } from '@/services/auth/token-store';
 import { isHlsPlaybackEnabled } from '@/services/videos/hls-playback-flag';
 import { getPlaybackAuthorization, resolvePlaybackSource } from '@/services/videos/video-service';
@@ -91,15 +92,55 @@ const AD_WATCHED_THRESHOLD_SECONDS = 5;
 // before the old one can actually die mid-playback.
 const PLAYBACK_AUTH_REFRESH_MARGIN_MS = 30 * 1000;
 
-// Bounded automatic recovery from a transient authorization failure (e.g. a
-// network blip) for an item that never leaves the active slot - a scroll
-// away and back already retries for free (see the reset alongside
-// `wasActive` below), but a continuously-active item needs its own bounded
-// retry so a single blip doesn't brick it permanently. Capped, not
-// indefinite: hammering a genuinely-permanent failure (e.g. a revoked
-// entitlement) forever would be its own kind of waste.
-const MAX_PLAYBACK_AUTH_AUTO_RETRIES = 3;
-const PLAYBACK_AUTH_RETRY_DELAY_MS = 5000;
+// 11R remediation ADDENDUM (2026-08-12, control workspace DECISIONS.md):
+// how long an item must REMAIN active before its playback-authorization
+// fetch actually fires. A ±1-per-gesture paging contract means a fast
+// sequential swipe lands the "active" slot on every intermediate item, and
+// - before this existed - each one fired its own authorization request on
+// arrival: ~78 requests in ~2 minutes of real device browsing, tripping the
+// backend's 60/min-per-user throttle on `GET /videos/:id/playback` and
+// leaving the video stuck black. 400ms sits in the middle of the approved
+// 300-500ms window: long enough that a swipe-straight-through never fires
+// (a deliberate stop reads as "active" for far longer than a transit), short
+// enough that a genuine landing never feels like it's waiting on purpose.
+const PLAYBACK_AUTH_SETTLE_MS = 400;
+
+// Bounded automatic recovery from a transient authorization failure (a
+// network blip, or the backend's 60/min throttle itself - HTTP 429) for an
+// item that never leaves the active slot - a scroll away and back already
+// retries for free (see the reset alongside `wasActive` below), but a
+// continuously-active item needs its own bounded retry so a single blip
+// doesn't brick it permanently. Exponential (2s/4s/8s, no jitter - every
+// other timer in this file is a plain fixed/scheduled delay, and a single
+// client backing off on its own schedule is enough here since the settle-
+// window debounce above is what stops a burst of DIFFERENT items from ever
+// synchronizing in the first place) rather than flat, so a genuinely
+// sustained 429 window is given increasing room to clear instead of being
+// hammered at a constant cadence. Capped, not indefinite: hammering a
+// permanently-failing case (e.g. a revoked entitlement) forever would be its
+// own kind of waste - and a 403 ENTITLEMENT_REQUIRED is never even
+// classified as retryable in the first place (see
+// `isRetryablePlaybackAuthError` below), so it never reaches this budget at
+// all.
+const PLAYBACK_AUTH_RETRY_DELAYS_MS = [2000, 4000, 8000] as const;
+const MAX_PLAYBACK_AUTH_AUTO_RETRIES = PLAYBACK_AUTH_RETRY_DELAYS_MS.length;
+
+/**
+ * Only an HTTP 429 (the backend's own per-user throttle - the exact failure
+ * mode this ADDENDUM exists to recover from) or a genuine network failure
+ * (`ApiError` status 0, code `NETWORK_ERROR` - see `services/api/client.ts`)
+ * is worth automatically retrying. Every other failure - most importantly a
+ * 403 `ENTITLEMENT_REQUIRED` (the viewer genuinely does not have access) -
+ * is a legitimate, stable "unavailable" state: hammering it on a timer would
+ * not fix it, and would just add load for nothing. `status === 0` is
+ * deliberately NOT used as the network-error test on its own - a missing
+ * `EXPO_PUBLIC_API_BASE_URL` also carries status 0
+ * (`ApiError(0, 'MISSING_BASE_URL', ...)`), and that is a standing
+ * misconfiguration, not a transient blip.
+ */
+function isRetryablePlaybackAuthError(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 429 || error.code === 'NETWORK_ERROR');
+}
 
 // screen-orientation lock is only meaningful where the OS actually exposes
 // it (iOS/Android) - on web, lockAsync always rejects with a
@@ -215,6 +256,16 @@ export function DramaFeedItem({
   // one, and a ref write cannot trigger that (nor may it be written during
   // render - see the reset blocks below).
   const [authRetryAttempt, setAuthRetryAttempt] = useState(0);
+  // 11R remediation ADDENDUM: which class of failure the current
+  // `hasPlaybackAuthError` represents - only true for a 429 (the backend's
+  // own throttle) or a network error, per `isRetryablePlaybackAuthError`
+  // below. The scheduled retry effect further down reads this instead of
+  // retrying blindly, which is what keeps a 403 `ENTITLEMENT_REQUIRED` (or
+  // any other permanent failure) from ever being hammered on a timer.
+  // Declared here (ahead of `hasPlaybackAuthError` itself, out of its usual
+  // grouping below) because the deactivation reset block immediately after
+  // `wasActive` needs to reset it too.
+  const [isAuthErrorRetryable, setIsAuthErrorRetryable] = useState(false);
   // A tap-to-pause is a choice about the episode in front of the viewer, not
   // a lasting property of that episode. Without this reset it becomes one:
   // `isManuallyPaused` feeds `shouldPlay`, so swiping away from a paused
@@ -233,6 +284,10 @@ export function DramaFeedItem({
       // full new budget of automatic authorization retries rather than
       // inheriting whatever was left over from this stint.
       setAuthRetryAttempt(0);
+      // 11R remediation ADDENDUM: the retryability of a failure that
+      // belonged to THIS stint must not leak into whatever the next stint's
+      // own failure (if any) turns out to be.
+      setIsAuthErrorRetryable(false);
     }
   }
   const [isInFullscreen, setIsInFullscreen] = useState(false);
@@ -269,6 +324,12 @@ export function DramaFeedItem({
   const requiresAccessToken = !isDemoMode();
   const [playbackAuth, setPlaybackAuth] = useState<PlaybackAuthorization | null>(null);
   const [hasPlaybackAuthError, setHasPlaybackAuthError] = useState(false);
+  // Guards `handlePlayPause`'s re-authorization branch against stacking a
+  // second concurrent network request while one is already in flight - a
+  // rapid series of taps (exactly what a viewer does when a video is stuck
+  // black, per the 2026-08-12 remediation ADDENDUM's field report) must
+  // collapse to at most one outstanding request, not one per tap.
+  const [isPlaybackAuthRequestInFlight, setIsPlaybackAuthRequestInFlight] = useState(false);
   // A cached grant belongs to the video it was fetched for, never to
   // whatever video this component instance happens to hold later. Reset
   // here using the same render-time "reset when a prop changes" pattern as
@@ -285,6 +346,7 @@ export function DramaFeedItem({
     setPlaybackAuth(null);
     setHasPlaybackAuthError(false);
     setAuthRetryAttempt(0);
+    setIsAuthErrorRetryable(false);
   }
 
   // Kept in sync via a LAYOUT effect, not a plain `useEffect` (this file's
@@ -306,6 +368,33 @@ export function DramaFeedItem({
   // the current value, which is what makes a superseded (or now-inactive)
   // response a safe no-op instead of wiring up a stale/dead URL.
   const playbackRequestIdRef = useRef(0);
+  // 11R remediation ADDENDUM (fix cycle 2, Finding 1): mirrors
+  // `isPlaybackAuthRequestInFlight` state, but as a ref so it can be read
+  // AT FIRE TIME by a `setTimeout` callback scheduled by one of the two
+  // effects below. React state read inside such a closure is whatever it
+  // was WHEN THE EFFECT RAN (the timer was scheduled), not necessarily
+  // current when the timer actually fires - a tap that starts a request
+  // AFTER the timer was scheduled but BEFORE it fires would be invisible to
+  // a state-only check. This ref is set/cleared in `requestAuthorization`'s
+  // try/finally below, in lockstep with the state, so every scheduled
+  // callback (and `requestAuthorization` itself, as a final symmetric
+  // guard for every entry point - effects, play-press, and any future
+  // caller) can bail out on the CURRENT in-flight status instead of
+  // dispatching a second concurrent request for this item.
+  const isPlaybackAuthRequestInFlightRef = useRef(false);
+  // 11R remediation ADDENDUM: `true` only for the very first authorization
+  // fetch this mounted instance will ever need, AND only when it is already
+  // the active item on its first render - lazy `useRef` init runs exactly
+  // once, at mount, so a later `isActive` change never re-arms it. That one
+  // fetch (cold app start, or "the one active item" shape almost every
+  // caller renders) skips the settle-window debounce below so normal
+  // startup latency is unaffected; every later activation - in particular a
+  // PROP TRANSITION from inactive to active on an instance that was already
+  // sitting mounted-but-off-screen, which is exactly the shape a fast,
+  // ±1-per-gesture scroll produces as it passes over each pre-mounted
+  // neighbour - is debounced. Consumed (set false) the first time it is
+  // actually used, so it can only ever skip the debounce once per instance.
+  const skipAuthDebounceOnceRef = useRef(isActive);
   // Slice 11R: the ONE call site that turns a resolved playback
   // authorization (either the HLS or the legacy/MP4 shape - see
   // `types/playback.ts`) into an `expo-video` source. Routing BOTH shapes
@@ -341,6 +430,20 @@ export function DramaFeedItem({
   // pattern) - satisfying `react-hooks/set-state-in-effect` ("subscribe/
   // fire-and-forget, don't set state synchronously in the effect body").
   const requestAuthorization = useCallback(async () => {
+    // 11R remediation ADDENDUM (fix cycle 2, Finding 1): final, symmetric
+    // guard for every entry point (the debounce-settle effect, the
+    // refresh/retry effect, and `handlePlayPause`) - if a request for this
+    // item is already outstanding, skip dispatching a second one rather
+    // than relying on each call site to remember to check first. This does
+    // not starve the item: the in-flight request's own completion sets
+    // `playbackAuth` or `hasPlaybackAuthError`, both of which are
+    // dependencies of the two scheduling effects below, so they re-run and
+    // schedule whatever comes next (a refresh, a retry) off the fresh
+    // result - a skipped duplicate is never a skipped fetch.
+    if (isPlaybackAuthRequestInFlightRef.current) {
+      return;
+    }
+
     // No token yet means the real endpoint would just 401 - skip the
     // network round trip entirely and fail the same way synchronously,
     // matching the pre-Slice-11M "logged out -> error state" behavior.
@@ -349,12 +452,21 @@ export function DramaFeedItem({
     if (requiresAccessToken && !accessToken) {
       setPlaybackAuth(null);
       setHasPlaybackAuthError(true);
+      setIsAuthErrorRetryable(false);
       return;
     }
 
     playbackRequestIdRef.current += 1;
     const requestId = playbackRequestIdRef.current;
     setHasPlaybackAuthError(false);
+    // 11R remediation ADDENDUM: flipped for the lifetime of THIS request
+    // only (see the `finally` block's own requestId check below) - it is
+    // what lets `handlePlayPause`'s re-authorization branch tell "already
+    // fetching, do nothing" from "nothing in flight, go ahead." The ref is
+    // set in lockstep so a scheduled callback firing later reads the same
+    // truth (see the ref's own comment above).
+    setIsPlaybackAuthRequestInFlight(true);
+    isPlaybackAuthRequestInFlightRef.current = true;
 
     try {
       const authorization = await getPlaybackAuthorization(video.id);
@@ -389,20 +501,49 @@ export function DramaFeedItem({
       if (hasEmptyMp4Url || !resolvedSource) {
         setPlaybackAuth(null);
         setHasPlaybackAuthError(true);
+        // Neither failure mode above is a 429/network blip - a resolved 200
+        // response that turns out unusable is its own stable "unavailable"
+        // state, not something a timer could ever fix.
+        setIsAuthErrorRetryable(false);
         return;
       }
 
       setAuthRetryAttempt(0);
+      setIsAuthErrorRetryable(false);
       setPlaybackAuth(authorization);
-    } catch {
+    } catch (requestError) {
       if (playbackRequestIdRef.current !== requestId || !isActiveRef.current) {
         return;
       }
 
       setPlaybackAuth(null);
       setHasPlaybackAuthError(true);
+      setIsAuthErrorRetryable(isRetryablePlaybackAuthError(requestError));
+    } finally {
+      if (playbackRequestIdRef.current === requestId) {
+        setIsPlaybackAuthRequestInFlight(false);
+        isPlaybackAuthRequestInFlightRef.current = false;
+      }
     }
   }, [video.id, accessToken, requiresAccessToken]);
+
+  // 11R remediation ADDENDUM (fix cycle 2, Finding 1): a request left
+  // outstanding by the PREVIOUS `requestAuthorization` identity (i.e. for
+  // the previous video.id/accessToken/requiresAccessToken generation) must
+  // never block the FIRST request of a NEW one - that old request is
+  // already destined to be ignored on arrival via the `playbackRequestIdRef`
+  // staleness check above, which is what lets a genuinely newer request
+  // supersede it instead of the two racing. Without this reset, the
+  // in-flight guard added above would (incorrectly) treat that now-stale
+  // pending request as still blocking, silently dropping the new
+  // generation's own first fetch. `requestAuthorization` is only recreated
+  // when one of its three deps actually changes, so this deliberately does
+  // NOT fire on every render - only on an actual identity change, leaving
+  // the same-generation duplicate-request guard (debounce vs. a press, a
+  // scheduled retry vs. a press) fully intact.
+  useEffect(() => {
+    isPlaybackAuthRequestInFlightRef.current = false;
+  }, [requestAuthorization]);
 
   // Fetches on activation (or reactivation, or a video-id change while
   // already active) whenever there is no still-valid cached grant. Gated on
@@ -422,9 +563,38 @@ export function DramaFeedItem({
       return;
     }
 
-    void (async () => {
-      await requestAuthorization();
-    })();
+    // 11R remediation ADDENDUM: the one-time cold-start/"already the active
+    // item" exemption described above `skipAuthDebounceOnceRef`. Consumed
+    // immediately so it can only ever fire once for this instance.
+    if (skipAuthDebounceOnceRef.current) {
+      skipAuthDebounceOnceRef.current = false;
+      void requestAuthorization();
+      return;
+    }
+
+    // Every other landing waits out the settle window first. If `isActive`
+    // (or the other dependencies) change before it elapses - most
+    // importantly, the item leaving the active slot again - this effect's
+    // own cleanup clears the pending timer below, so a transient landing
+    // fires the request ZERO times, not merely "later."
+    const timeoutId = setTimeout(() => {
+      // 11R remediation ADDENDUM (fix cycle 2, Finding 1): a tap on the play
+      // button can fire its own request between this timer being scheduled
+      // and it actually elapsing - checked here, AT FIRE TIME, via the ref
+      // (not `isPlaybackAuthRequestInFlight` state, which this closure
+      // captured back when the effect ran and would still read as `false`).
+      // `requestAuthorization` re-checks the same ref itself, so this call
+      // site check is a belt-and-suspenders skip, not the only guard.
+      if (isPlaybackAuthRequestInFlightRef.current) {
+        return;
+      }
+
+      void requestAuthorization();
+    }, PLAYBACK_AUTH_SETTLE_MS);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
   }, [isActive, playbackAuth, requestAuthorization]);
 
   // A SINGLE scheduled timer (never a polling loop) that either refreshes
@@ -461,11 +631,46 @@ export function DramaFeedItem({
           return;
         }
 
+        // 11R remediation ADDENDUM (fix cycle 2, Finding 1): AT FIRE TIME,
+        // not the state this closure captured when the effect ran - a tap
+        // (or the other scheduled effect) may already have a request
+        // outstanding for this item by the time this timer elapses.
+        if (isPlaybackAuthRequestInFlightRef.current) {
+          return;
+        }
+
         void requestAuthorization();
       }, refreshDelayMs);
-    } else if (!playbackAuth && hasPlaybackAuthError && authRetryAttempt < MAX_PLAYBACK_AUTH_AUTO_RETRIES) {
+    } else if (
+      !playbackAuth &&
+      hasPlaybackAuthError &&
+      isAuthErrorRetryable &&
+      authRetryAttempt < MAX_PLAYBACK_AUTH_AUTO_RETRIES
+    ) {
+      // 11R remediation ADDENDUM: `isAuthErrorRetryable` is what keeps this
+      // branch from ever firing for a 403 `ENTITLEMENT_REQUIRED` (or any
+      // other permanent failure) - only a 429 or a network error sets it.
+      // Exponential backoff (2s/4s/8s): `authRetryAttempt` indexes directly
+      // into the delay table, so the Nth automatic retry always waits the
+      // Nth delay regardless of how many attempts preceded it.
+      const retryDelayMs =
+        PLAYBACK_AUTH_RETRY_DELAYS_MS[authRetryAttempt] ?? PLAYBACK_AUTH_RETRY_DELAYS_MS.at(-1);
+
       timeoutId = setTimeout(() => {
         if (!isActiveRef.current) {
+          return;
+        }
+
+        // 11R remediation ADDENDUM (fix cycle 2, Finding 1): AT FIRE TIME -
+        // a tap on the "Video unavailable" pressable during this backoff
+        // window already starts its own request via `handlePlayPause`, and
+        // this scheduled retry must not stack a second one on top of it.
+        // Bailing out here does not lose the retry: it is `requestId`-gated
+        // the same way a superseded response already is, and the OTHER
+        // request in flight (the tap's) still resolves into
+        // `playbackAuth`/`hasPlaybackAuthError`, which re-runs this effect
+        // and re-evaluates whether another retry is still needed.
+        if (isPlaybackAuthRequestInFlightRef.current) {
           return;
         }
 
@@ -476,7 +681,7 @@ export function DramaFeedItem({
         // again after the first retry.
         setAuthRetryAttempt((current) => current + 1);
         void requestAuthorization();
-      }, PLAYBACK_AUTH_RETRY_DELAY_MS);
+      }, retryDelayMs);
     }
 
     return () => {
@@ -484,7 +689,14 @@ export function DramaFeedItem({
         clearTimeout(timeoutId);
       }
     };
-  }, [isActive, playbackAuth, hasPlaybackAuthError, requestAuthorization, authRetryAttempt]);
+  }, [
+    isActive,
+    playbackAuth,
+    hasPlaybackAuthError,
+    isAuthErrorRetryable,
+    requestAuthorization,
+    authRetryAttempt,
+  ]);
 
   // Stable per-instance label ("p1", "p2", ...) so a reported invariant
   // violation names which players were audible at the same time.
@@ -835,6 +1047,29 @@ export function DramaFeedItem({
       return;
     }
 
+    // 11R remediation ADDENDUM: `true` when the currently-held authorization
+    // is missing (never fetched, or cleared by a failure) or has passed its
+    // own `expiresAt` - either way there is nothing playable to press "play"
+    // on, and the existing behavior (silently calling `player.play()`
+    // against a dead or absent source, or - once `hasPlaybackAuthError` hid
+    // the button entirely - not even reaching a handler at all) is exactly
+    // the "pressed play repeatedly, nothing happened" symptom from the field
+    // report. Computed here rather than at render time so reading
+    // `Date.now()` stays inside an event handler, never the render body.
+    const needsFreshPlaybackAuthorization =
+      hasPlaybackAuthError || !playbackAuth || Date.parse(playbackAuth.expiresAt) <= Date.now();
+
+    if (needsFreshPlaybackAuthorization) {
+      // Never stack a second concurrent request on top of one already in
+      // flight (the debounced landing fetch, a scheduled retry, or an
+      // earlier press) - a burst of taps collapses to at most one
+      // outstanding request.
+      if (!isPlaybackAuthRequestInFlight) {
+        void requestAuthorization();
+      }
+      return;
+    }
+
     setIsIndicatorVisible(true);
 
     if (isPlaying) {
@@ -846,7 +1081,16 @@ export function DramaFeedItem({
 
     player.play();
     setIsManuallyPaused(false);
-  }, [isActive, isPlaying, player, flushProgress]);
+  }, [
+    isActive,
+    hasPlaybackAuthError,
+    playbackAuth,
+    isPlaybackAuthRequestInFlight,
+    requestAuthorization,
+    isPlaying,
+    player,
+    flushProgress,
+  ]);
 
   const handleEnterFullscreen = useCallback(() => {
     void videoViewRef.current?.enterFullscreen();
@@ -958,10 +1202,19 @@ export function DramaFeedItem({
       }}>
       <View style={styles.videoLayer}>
         {hasPlaybackError ? (
-          <View style={styles.errorState}>
+          // 11R remediation ADDENDUM: pressable so a failed/expired
+          // authorization is reachable for a retry from here too - the
+          // normal play/pause button below is hidden for this same
+          // `hasPlaybackError` state, so without this the viewer had
+          // nothing to press at all while it was up.
+          <Pressable
+            testID="feed-item-play-pause"
+            accessibilityRole="button"
+            onPress={handlePlayPause}
+            style={styles.errorState}>
             <Text style={styles.errorTitle}>{t('feed.videoUnavailable')}</Text>
             <Text style={styles.errorHint}>{t('feed.videoUnavailableHint')}</Text>
-          </View>
+          </Pressable>
         ) : (
           <VideoView
             contentFit={isHorizontal ? 'contain' : 'cover'}

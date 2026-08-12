@@ -5,6 +5,7 @@ import { AppState, Platform, StyleSheet } from 'react-native';
 
 import { DramaFeedItem, touchDistance } from '@/components/drama-feed-item';
 import { FeedBottomGap } from '@/constants/theme';
+import { ApiError } from '@/services/api/client';
 import { resetPlaybackInvariantForTests } from '@/services/debug/playback-invariant';
 import { __resetPlaybackSpeedForTests } from '@/stores/playback-speed';
 import type { Episode } from '@/types/series';
@@ -347,6 +348,14 @@ function findPlayerByUri(expectedUri: string) {
 
   return undefined;
 }
+
+// 11R remediation ADDENDUM (2026-08-12, control workspace DECISIONS.md):
+// mirrors drama-feed-item.tsx's own `PLAYBACK_AUTH_SETTLE_MS`. Not imported
+// directly (the component does not export it) so it is redeclared here, the
+// same way this file already mirrors the component's other internal timing
+// constants as raw literals (e.g. the 30s refresh margin, the 2s/4s/8s retry
+// backoff below).
+const TEST_PLAYBACK_AUTH_SETTLE_MS = 400;
 
 function buildEpisode(overrides: Partial<Episode> = {}): Episode {
   return {
@@ -1257,50 +1266,67 @@ describe('DramaFeedItem', () => {
     });
 
     it('rapid A -> B -> C transitions leave only C playing', async () => {
-      const videos = [1, 2, 3].map((n) => buildVideo({ id: `video-${n}` }));
-      const feedWithActive = (activeIndex: number) => (
-        <>
-          {videos.map((video, index) => (
-            <DramaFeedItem
-              key={video.id}
-              video={video}
-              {...baseProps}
-              isActive={index === activeIndex}
-            />
-          ))}
-        </>
-      );
+      // 11R remediation ADDENDUM: B and C were both mounted INACTIVE
+      // alongside A (a windowed FlatList's pre-mounted neighbours), so their
+      // later activation is a genuine landing, debounced by the settle
+      // window - only A's own mount-time activation above is exempt.
+      jest.useFakeTimers();
+      try {
+        const videos = [1, 2, 3].map((n) => buildVideo({ id: `video-${n}` }));
+        const feedWithActive = (activeIndex: number) => (
+          <>
+            {videos.map((video, index) => (
+              <DramaFeedItem
+                key={video.id}
+                video={video}
+                {...baseProps}
+                isActive={index === activeIndex}
+              />
+            ))}
+          </>
+        );
 
-      const { rerender } = await renderFeedItem(feedWithActive(0));
+        const { rerender } = await renderFeedItem(feedWithActive(0));
 
-      // A is legitimately playing at this point, so the transitions are what
-      // this test is about - measure from here, not from mount. Looked up
-      // by URI, not positionally: A's own activation already replaced its
-      // initial null-sourced instance with its real one (see the
-      // `useVideoPlayer` mock above), so "the Nth distinct player" no
-      // longer reliably lines up with "the Nth item."
-      const playerA = findPlayerByUri('https://media.example.com/video-1.mp4');
+        // A is legitimately playing at this point, so the transitions are what
+        // this test is about - measure from here, not from mount. Looked up
+        // by URI, not positionally: A's own activation already replaced its
+        // initial null-sourced instance with its real one (see the
+        // `useVideoPlayer` mock above), so "the Nth distinct player" no
+        // longer reliably lines up with "the Nth item."
+        const playerA = findPlayerByUri('https://media.example.com/video-1.mp4');
 
-      playerA?.play.mockClear();
-      playerA?.pause.mockClear();
+        playerA?.play.mockClear();
+        playerA?.pause.mockClear();
 
-      await act(async () => {
-        rerender(feedWithActive(1));
-      });
-      await act(async () => {
-        rerender(feedWithActive(2));
-      });
+        await act(async () => {
+          rerender(feedWithActive(1));
+        });
+        // B's own landing settles - long enough for its authorization to
+        // actually fire and resolve - before C takes over.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+        await act(async () => {
+          rerender(feedWithActive(2));
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
 
-      const playerB = findPlayerByUri('https://media.example.com/video-2.mp4');
-      const playerC = findPlayerByUri('https://media.example.com/video-3.mp4');
+        const playerB = findPlayerByUri('https://media.example.com/video-2.mp4');
+        const playerC = findPlayerByUri('https://media.example.com/video-3.mp4');
 
-      // Every item that lost the active slot was paused, and only the final
-      // one was ever asked to play.
-      expect(playerA?.pause).toHaveBeenCalled();
-      expect(playerA?.play).not.toHaveBeenCalled();
-      expect(playerB?.pause).toHaveBeenCalled();
-      expect(playerC?.play).toHaveBeenCalled();
-      expect(playerC?.pause).not.toHaveBeenCalled();
+        // Every item that lost the active slot was paused, and only the final
+        // one was ever asked to play.
+        expect(playerA?.pause).toHaveBeenCalled();
+        expect(playerA?.play).not.toHaveBeenCalled();
+        expect(playerB?.pause).toHaveBeenCalled();
+        expect(playerC?.play).toHaveBeenCalled();
+        expect(playerC?.pause).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('backgrounding pauses the active item and foregrounding resumes it', async () => {
@@ -1441,26 +1467,38 @@ describe('DramaFeedItem', () => {
     });
 
     it('applies a rate chosen while inactive once the item becomes the active one', async () => {
-      // Arrange: the viewer picks 2x on an item that is not playing.
-      const video = buildVideo();
-      const { getByLabelText, rerender } = await renderFeedItem(
-        <DramaFeedItem video={video} {...baseProps} isActive={false} isClearDisplay />
-      );
+      // 11R remediation ADDENDUM: this item was mounted INACTIVE, so its
+      // later activation is a genuine landing - not the cold-mount-already-
+      // active exemption - and goes through the settle-window debounce
+      // before it authorizes and can start playing at all.
+      jest.useFakeTimers();
+      try {
+        // Arrange: the viewer picks 2x on an item that is not playing.
+        const video = buildVideo();
+        const { getByLabelText, rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive={false} isClearDisplay />
+        );
 
-      await act(async () => {
-        fireEvent.press(getByLabelText('Kecepatan 2x'));
-      });
+        await act(async () => {
+          fireEvent.press(getByLabelText('Kecepatan 2x'));
+        });
 
-      expect(allPlayers().at(-1)!.rateWrites).toEqual([]);
+        expect(allPlayers().at(-1)!.rateWrites).toEqual([]);
 
-      // Act: it becomes the active item.
-      await act(async () => {
-        rerender(<DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />);
-      });
+        // Act: it becomes the active item.
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />);
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
 
-      // Assert: the choice was remembered and applied exactly once, now that
-      // a rate write can no longer start something meant to stay silent.
-      expect(allPlayers().at(-1)!.rateWrites).toEqual([2]);
+        // Assert: the choice was remembered and applied exactly once, now that
+        // a rate write can no longer start something meant to stay silent.
+        expect(allPlayers().at(-1)!.rateWrites).toEqual([2]);
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('does not re-issue an identical rate write on a re-render', async () => {
@@ -1609,77 +1647,101 @@ describe('DramaFeedItem', () => {
     });
 
     it('ignores a superseded authorization response once a newer request has been issued for the same item', async () => {
-      const deferredFirst = createDeferred<PlaybackAuthorization>();
-      const deferredSecond = createDeferred<PlaybackAuthorization>();
-      mockGetPlaybackAuthorization.mockReturnValueOnce(deferredFirst.promise);
-      mockGetPlaybackAuthorization.mockReturnValueOnce(deferredSecond.promise);
-      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      // 11R remediation ADDENDUM: video A's own mount-time fetch is exempt
+      // from the settle-window debounce (it is already the active item on
+      // first render), but swapping in video B on the SAME still-active
+      // instance is a later landing, which is debounced - the fake timers
+      // below stand in for that wait.
+      jest.useFakeTimers();
+      try {
+        const deferredFirst = createDeferred<PlaybackAuthorization>();
+        const deferredSecond = createDeferred<PlaybackAuthorization>();
+        mockGetPlaybackAuthorization.mockReturnValueOnce(deferredFirst.promise);
+        mockGetPlaybackAuthorization.mockReturnValueOnce(deferredSecond.promise);
+        const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
 
-      const videoA = buildVideo({ id: 'video-a' });
-      const videoB = buildVideo({ id: 'video-b' });
-      const { rerender } = await renderFeedItem(
-        <DramaFeedItem video={videoA} {...baseProps} isActive />
-      );
-
-      // A second, still-active item takes over the same mounted position
-      // before the first request resolves - the newer request (for
-      // video-b) is now the only one whose response should ever count.
-      await act(async () => {
-        rerender(<DramaFeedItem video={videoB} {...baseProps} isActive />);
-      });
-
-      await act(async () => {
-        deferredFirst.resolve(
-          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-a.mp4' })
+        const videoA = buildVideo({ id: 'video-a' });
+        const videoB = buildVideo({ id: 'video-b' });
+        const { rerender } = await renderFeedItem(
+          <DramaFeedItem video={videoA} {...baseProps} isActive />
         );
-      });
 
-      // The superseded response must not have been wired up.
-      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toBeNull();
+        // A second, still-active item takes over the same mounted position
+        // before the first request resolves - the newer request (for
+        // video-b) is now the only one whose response should ever count.
+        await act(async () => {
+          rerender(<DramaFeedItem video={videoB} {...baseProps} isActive />);
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
 
-      await act(async () => {
-        deferredSecond.resolve(
-          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-b.mp4' })
-        );
-      });
+        await act(async () => {
+          deferredFirst.resolve(
+            buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-a.mp4' })
+          );
+        });
 
-      // The latest request's own response is applied normally.
-      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
-        uri: 'https://media.example.com/video-b.mp4',
-        headers: { Authorization: 'Bearer test-access-token' },
-      });
+        // The superseded response must not have been wired up.
+        expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toBeNull();
+
+        await act(async () => {
+          deferredSecond.resolve(
+            buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-b.mp4' })
+          );
+        });
+
+        // The latest request's own response is applied normally.
+        expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+          uri: 'https://media.example.com/video-b.mp4',
+          headers: { Authorization: 'Bearer test-access-token' },
+        });
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('requests a fresh authorization once the previous grant has expired, for an item that is active again', async () => {
-      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
-      mockGetPlaybackAuthorization.mockResolvedValueOnce(
-        buildPlaybackAuthorization({
-          playbackUrl: 'https://media.example.com/first-grant.mp4',
-          expiresAt: new Date(Date.now() - 1000).toISOString(),
-        })
-      );
-      mockGetPlaybackAuthorization.mockResolvedValueOnce(
-        buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/second-grant.mp4' })
-      );
+      // 11R remediation ADDENDUM: the REACTIVATION (after having left the
+      // active slot) is a landing like any other and is debounced - only
+      // the very first, mount-time activation above is exempt.
+      jest.useFakeTimers();
+      try {
+        const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildPlaybackAuthorization({
+            playbackUrl: 'https://media.example.com/first-grant.mp4',
+            expiresAt: new Date(Date.now() - 1000).toISOString(),
+          })
+        );
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/second-grant.mp4' })
+        );
 
-      const video = buildVideo();
-      const { rerender } = await renderFeedItem(
-        <DramaFeedItem video={video} {...baseProps} isActive />
-      );
+        const video = buildVideo();
+        const { rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
 
-      // Deactivate and reactivate: an expired grant must never be reused.
-      await act(async () => {
-        rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
-      });
-      await act(async () => {
-        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
-      });
+        // Deactivate and reactivate: an expired grant must never be reused.
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+        });
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
 
-      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
-      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
-        uri: 'https://media.example.com/second-grant.mp4',
-        headers: { Authorization: 'Bearer test-access-token' },
-      });
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+        expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+          uri: 'https://media.example.com/second-grant.mp4',
+          headers: { Authorization: 'Bearer test-access-token' },
+        });
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('requests playback authorization only for the active item among several mounted ones', async () => {
@@ -1839,38 +1901,50 @@ describe('DramaFeedItem', () => {
     });
 
     it('MEDIUM-4: does not reuse a previous video\'s cached grant when the video prop changes on the same instance', async () => {
-      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
-      const videoA = buildVideo({ id: 'video-a' });
-      const videoB = buildVideo({ id: 'video-b' });
-      mockGetPlaybackAuthorization.mockResolvedValueOnce(
-        buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-a.mp4' })
-      );
+      // 11R remediation ADDENDUM: video B's fetch is a SECOND landing on an
+      // already-mounted instance (the mount-time exemption was already
+      // consumed by video A), so it goes through the settle-window
+      // debounce.
+      jest.useFakeTimers();
+      try {
+        const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+        const videoA = buildVideo({ id: 'video-a' });
+        const videoB = buildVideo({ id: 'video-b' });
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-a.mp4' })
+        );
 
-      const { rerender } = await renderFeedItem(
-        <DramaFeedItem video={videoA} {...baseProps} isActive />
-      );
+        const { rerender } = await renderFeedItem(
+          <DramaFeedItem video={videoA} {...baseProps} isActive />
+        );
 
-      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
-        uri: 'https://media.example.com/video-a.mp4',
-        headers: { Authorization: 'Bearer test-access-token' },
-      });
+        expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+          uri: 'https://media.example.com/video-a.mp4',
+          headers: { Authorization: 'Bearer test-access-token' },
+        });
 
-      mockGetPlaybackAuthorization.mockResolvedValueOnce(
-        buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-b.mp4' })
-      );
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/video-b.mp4' })
+        );
 
-      await act(async () => {
-        rerender(<DramaFeedItem video={videoB} {...baseProps} isActive />);
-      });
+        await act(async () => {
+          rerender(<DramaFeedItem video={videoB} {...baseProps} isActive />);
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
 
-      // The player must never be handed video A's still-valid grant under
-      // video B's identity - a fresh request for B is required, and B's own
-      // resolved URL is what actually gets wired up.
-      expect(mockGetPlaybackAuthorization).toHaveBeenCalledWith('video-b');
-      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
-        uri: 'https://media.example.com/video-b.mp4',
-        headers: { Authorization: 'Bearer test-access-token' },
-      });
+        // The player must never be handed video A's still-valid grant under
+        // video B's identity - a fresh request for B is required, and B's own
+        // resolved URL is what actually gets wired up.
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledWith('video-b');
+        expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+          uri: 'https://media.example.com/video-b.mp4',
+          headers: { Authorization: 'Bearer test-access-token' },
+        });
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('MEDIUM-5: treats a resolved authorization with an empty playbackUrl as a failure, not a silent black screen', async () => {
@@ -1886,9 +1960,17 @@ describe('DramaFeedItem', () => {
     });
 
     it('MEDIUM-6: automatically retries a transient authorization failure while the item stays continuously active', async () => {
+      // 11R remediation ADDENDUM: only a 429 or a genuine network error
+      // (`ApiError`, per `isRetryablePlaybackAuthError`) is auto-retried -
+      // a bare `Error` (as this test used to reject with) is no longer
+      // treated as transient, since a real backend never throws one for
+      // this endpoint. The retry schedule is also now backoff (2s/4s/8s),
+      // not a flat 5s.
       jest.useFakeTimers();
       const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
-      mockGetPlaybackAuthorization.mockRejectedValueOnce(new Error('network blip'));
+      mockGetPlaybackAuthorization.mockRejectedValueOnce(
+        new ApiError(0, 'NETWORK_ERROR', 'network blip')
+      );
       mockGetPlaybackAuthorization.mockResolvedValueOnce(
         buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/recovered.mp4' })
       );
@@ -1897,8 +1979,10 @@ describe('DramaFeedItem', () => {
 
       expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
 
+      // First automatic retry fires 2s in (the first entry of the 2s/4s/8s
+      // backoff table).
       await act(async () => {
-        await jest.advanceTimersByTimeAsync(5000);
+        await jest.advanceTimersByTimeAsync(2000);
       });
 
       expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
@@ -1909,17 +1993,22 @@ describe('DramaFeedItem', () => {
     });
 
     it('MEDIUM-6: bounds automatic retries rather than hammering a permanently-failing endpoint forever', async () => {
+      // A sustained 429 (the backend's own throttle - the exact real-world
+      // shape the 2026-08-12 field report describes) is retryable, but
+      // still bounded rather than hammered forever.
       jest.useFakeTimers();
-      mockGetPlaybackAuthorization.mockRejectedValue(new Error('permanent failure'));
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(429, 'RATE_LIMITED', 'too many requests')
+      );
 
       await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive />);
 
       expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
 
-      // Advanced one retry interval at a time (rather than one large jump)
-      // so React gets to actually flush the state update each retry's
-      // failure produces before the next scheduled timer is due - five
-      // steps is comfortably past every retry the bound allows (3 x 5s).
+      // Advanced one step at a time (rather than one large jump) so React
+      // gets to actually flush the state update each retry's failure
+      // produces before the next scheduled timer is due. 5 x 5000ms = 25s
+      // is comfortably past the full 2s+4s+8s = 14s backoff budget.
       for (let step = 0; step < 5; step += 1) {
         await act(async () => {
           await jest.advanceTimersByTimeAsync(5000);
@@ -1928,6 +2017,417 @@ describe('DramaFeedItem', () => {
 
       // 1 initial attempt + at most 3 bounded automatic retries.
       expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(4);
+    });
+
+    it('11R remediation ADDENDUM: never retries a 403 ENTITLEMENT_REQUIRED - it is a legitimate unavailable state', async () => {
+      jest.useFakeTimers();
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(403, 'ENTITLEMENT_REQUIRED', 'no entitlement')
+      );
+
+      await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive />);
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+      // Well past the entire 2s/4s/8s backoff budget a retryable failure
+      // would have used.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(20000);
+      });
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // 2026-08-12 remediation ADDENDUM (control workspace DECISIONS.md, "11R
+  // remediation ADDENDUM approved: mobile playback-auth debounce + 429
+  // retry"): a fast, ±1-per-gesture scroll landed the active slot on every
+  // intermediate item, each firing its own playback-authorization request on
+  // arrival - ~78 requests in ~2 minutes of real device browsing, tripping
+  // the backend's 60/min-per-user throttle on `GET /videos/:id/playback`
+  // and leaving the active video stuck black. These tests exercise the
+  // settle-window debounce and the bounded 429/network retry directly (the
+  // tests above, updated for the same change, exercise it indirectly
+  // through their own existing scenarios).
+  describe('11R remediation ADDENDUM: playback-auth settle-window debounce + 429 retry', () => {
+    it('a transient landing (active for less than the settle window) fires zero authorization requests', async () => {
+      jest.useFakeTimers();
+      try {
+        const video = buildVideo();
+        const { rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive={false} />
+        );
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+        // Still short of the settle window - a mid-swipe transit, not a
+        // deliberate stop.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS - 100);
+        });
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+        });
+        // Even advancing well past the original window must not fire it -
+        // deactivating already cancelled the pending timer.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS * 3);
+        });
+
+        expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('a landing that remains active past the settle window fires exactly one authorization request', async () => {
+      jest.useFakeTimers();
+      try {
+        const video = buildVideo();
+        const { rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive={false} />
+        );
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+
+        // Not yet - the settle window has not elapsed. Pre-addendum code
+        // fires synchronously on activation with no debounce at all, so
+        // this assertion alone already fails against it; without it, this
+        // test would only ever check the post-window count, which the
+        // pre-addendum code also satisfies (it fired earlier, but still
+        // exactly once), making the "exactly one" assertion below pass on
+        // both old and new code and prove nothing about the debounce.
+        expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
+
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledWith(video.id);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('a 429 retries with backoff while the item stays active, and plays once a later attempt succeeds', async () => {
+      jest.useFakeTimers();
+      try {
+        mockGetPlaybackAuthorization.mockRejectedValueOnce(
+          new ApiError(429, 'RATE_LIMITED', 'too many requests')
+        );
+        mockGetPlaybackAuthorization.mockRejectedValueOnce(
+          new ApiError(429, 'RATE_LIMITED', 'too many requests')
+        );
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/recovered-429.mp4' })
+        );
+
+        // Mounted already active - exempt from the settle-window debounce,
+        // so the initial fetch (and its 429) fire immediately.
+        await renderFeedItem(<DramaFeedItem video={buildVideo()} {...baseProps} isActive />);
+
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+        // First automatic retry: 2s.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(2000);
+        });
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+
+        // Second automatic retry: 4s more.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(4000);
+        });
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(3);
+
+        const player = findPlayerByUri('https://media.example.com/recovered-429.mp4');
+
+        expect(player?.play).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('deactivating the item cancels a pending settle-window debounce - no request fires later', async () => {
+      jest.useFakeTimers();
+      try {
+        const video = buildVideo();
+        const { rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive={false} />
+        );
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS * 3);
+        });
+
+        expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('deactivating the item cancels a pending automatic 429/network retry - no request fires later', async () => {
+      jest.useFakeTimers();
+      try {
+        mockGetPlaybackAuthorization.mockRejectedValue(
+          new ApiError(429, 'RATE_LIMITED', 'too many requests')
+        );
+
+        const video = buildVideo();
+        const { rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+        // The first automatic retry lands at the NEW 2s backoff step, not
+        // the pre-addendum flat 5s delay - advancing only 2s (not yet 5s)
+        // already fails against pre-addendum code, which would still read
+        // 1 call here. Without this assertion, the test only ever proved a
+        // pending timer gets cancelled on deactivation - true of the
+        // pre-addendum flat-5s retry as well, so it proved nothing
+        // addendum-specific.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(2000);
+        });
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+
+        // Leaves the active slot before the SECOND scheduled retry (4s
+        // further, per the new backoff schedule) fires.
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(20000);
+        });
+
+        // No third call - the pending timer was cancelled the moment the
+        // item left the active slot, not merely delayed.
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('play-press re-auth: pressing play with a failed authorization fires exactly one fresh request, with no duplicate while it is in flight', async () => {
+      jest.useFakeTimers();
+      try {
+        const deferred = createDeferred<PlaybackAuthorization>();
+
+        mockGetPlaybackAuthorization.mockRejectedValueOnce(
+          new ApiError(429, 'RATE_LIMITED', 'too many requests')
+        );
+        mockGetPlaybackAuthorization.mockReturnValueOnce(deferred.promise);
+
+        const video = buildVideo();
+        const { getByTestId } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        // The initial (mount-time-exempt) fetch already failed with a 429 -
+        // the button shown now is the error-state one, not the normal
+        // play/pause target.
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+        // Pressing it fires a fresh request instead of doing nothing.
+        await act(async () => {
+          fireEvent.press(getByTestId('feed-item-play-pause'));
+        });
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+
+        // A second press while that fresh request is still in flight must
+        // not stack a second one.
+        await act(async () => {
+          fireEvent.press(getByTestId('feed-item-play-pause'));
+        });
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+          deferred.resolve(
+            buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/after-retry.mp4' })
+          );
+        });
+
+        const player = findPlayerByUri('https://media.example.com/after-retry.mp4');
+
+        expect(player?.play).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('play-press re-auth: pressing play with an expired (but not yet failed) authorization fires a fresh request', async () => {
+      jest.useFakeTimers();
+      try {
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildPlaybackAuthorization({
+            playbackUrl: 'https://media.example.com/already-expired.mp4',
+            // Already past its own expiry by the time it resolves - HIGH-1's
+            // proactive refresh margin (30s) exists to keep this rare in
+            // practice, but a long background stint (or a device clock
+            // skew) can still reach it.
+            expiresAt: new Date(Date.now() - 1000).toISOString(),
+          })
+        );
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/fresh-after-expiry.mp4' })
+        );
+
+        const video = buildVideo();
+        const { getByTestId } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        // The already-expired grant still resolved as a "success" (no
+        // `hasPlaybackAuthError`), so the normal play/pause button - not the
+        // error-state one - is what's on screen.
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          fireEvent.press(getByTestId('feed-item-play-pause'));
+        });
+
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+
+        const player = findPlayerByUri('https://media.example.com/fresh-after-expiry.mp4');
+
+        expect(player?.play).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    // Fix cycle 2 (Finding 1): the settle-debounce effect's and the
+    // refresh/retry effect's scheduled `setTimeout` callbacks call
+    // `requestAuthorization` directly, without checking whether a request
+    // is already in flight - and even if they read the component's
+    // `isPlaybackAuthRequestInFlight` STATE, a closure created when the
+    // effect ran would still see whatever that state was back then, not
+    // whatever it is by the time the timer actually fires. The two tests
+    // below land a play-press (or a tap on the error state) INSIDE one of
+    // those windows and assert the scheduled callback that fires afterward
+    // does not stack a second, concurrent request on top of it.
+    it('Finding 1 regression: a play-press during a pending settle-window debounce leaves the debounce a no-op once it elapses', async () => {
+      jest.useFakeTimers();
+      try {
+        const deferred = createDeferred<PlaybackAuthorization>();
+
+        mockGetPlaybackAuthorization.mockReturnValueOnce(deferred.promise);
+
+        const video = buildVideo();
+        const { rerender, getByTestId } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive={false} />
+        );
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+
+        // Still inside the settle window - nothing has fired yet.
+        expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
+
+        // A tap lands before the debounce timer elapses. `playbackAuth` is
+        // still null, so this goes through `handlePlayPause`'s
+        // re-authorization branch and fires the request itself - left
+        // deliberately unresolved so it is still in flight when the
+        // originally-scheduled timer elapses below.
+        await act(async () => {
+          fireEvent.press(getByTestId('feed-item-play-pause'));
+        });
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+
+        // No second, concurrent request - the debounce callback must see
+        // the press's request is still outstanding and skip firing its own.
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    // Non-vacuity note (verified by instrumenting the pre-fix component and
+    // re-running this exact test against it): unlike the debounce case
+    // above, this specific "tap during the backoff window" scenario turns
+    // out to ALREADY be a no-op duplicate on pre-fix code too, for a
+    // reason unrelated to this fix - `requestAuthorization` sets
+    // `hasPlaybackAuthError` back to `false` as its very first synchronous
+    // action, and that flag is itself a dependency of this refresh/retry
+    // effect, so the tap's OWN request causes the effect to re-run and its
+    // cleanup to `clearTimeout` the pending backoff timer before it ever
+    // fires - confirmed by instrumenting the effect: the retry timer is
+    // cancelled, never fires, on both the pre-fix and post-fix component.
+    // The ref-check added to this scheduled callback in `requestAuthorization`
+    // (fix cycle 2, Finding 1) is therefore defense-in-depth for this
+    // particular call site, not something this test can demonstrate as
+    // load-bearing via a same-tick "genuinely concurrent" race, which is not
+    // constructible through `act()` (it deliberately flushes all pending
+    // state/effects before returning). Kept as a regression/coverage test
+    // for the invariant itself ("no duplicate outstanding request"), and to
+    // catch a FUTURE change that removes the `hasPlaybackAuthError`
+    // dependency protection without knowing this fallback exists.
+    it('Finding 1 regression: a tap on the error state during a scheduled 429/network backoff window leaves exactly one outstanding request', async () => {
+      jest.useFakeTimers();
+      try {
+        const deferred = createDeferred<PlaybackAuthorization>();
+
+        mockGetPlaybackAuthorization.mockRejectedValueOnce(
+          new ApiError(429, 'RATE_LIMITED', 'too many requests')
+        );
+        mockGetPlaybackAuthorization.mockReturnValueOnce(deferred.promise);
+
+        const video = buildVideo();
+        // Mounted already active - exempt from the settle-window debounce,
+        // so the initial fetch (and its 429) fire immediately, scheduling
+        // an automatic retry 2s out.
+        const { getByTestId } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+        // A tap on the "Video unavailable" pressable lands before the
+        // scheduled retry fires - left deliberately unresolved so it is
+        // still in flight when that retry's timer elapses below.
+        await act(async () => {
+          fireEvent.press(getByTestId('feed-item-play-pause'));
+        });
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(2000);
+        });
+
+        // No third, concurrent request - the scheduled retry must see the
+        // tap's request is still outstanding and skip firing its own.
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+          deferred.resolve(
+            buildPlaybackAuthorization({
+              playbackUrl: 'https://media.example.com/after-tap-race.mp4',
+            })
+          );
+        });
+
+        const player = findPlayerByUri('https://media.example.com/after-tap-race.mp4');
+
+        expect(player?.play).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 
@@ -2081,90 +2581,114 @@ describe('DramaFeedItem', () => {
     });
 
     it('rapid A -> B -> C at 2x leaves only C playing, at the session speed', async () => {
-      const videos = [1, 2, 3].map((itemNumber) => buildVideo({ id: `video-${itemNumber}` }));
-      const feedWithActive = (activeIndex: number) => (
-        <>
-          {videos.map((video, index) => (
-            <DramaFeedItem
-              key={video.id}
-              video={video}
-              {...baseProps}
-              isActive={index === activeIndex}
-              isClearDisplay
-            />
-          ))}
-        </>
-      );
+      // 11R remediation ADDENDUM: see the equivalent MP4 test in the
+      // "single-player ownership invariant" describe block above - B and C
+      // were both mounted inactive, so their activation is debounced.
+      jest.useFakeTimers();
+      try {
+        const videos = [1, 2, 3].map((itemNumber) => buildVideo({ id: `video-${itemNumber}` }));
+        const feedWithActive = (activeIndex: number) => (
+          <>
+            {videos.map((video, index) => (
+              <DramaFeedItem
+                key={video.id}
+                video={video}
+                {...baseProps}
+                isActive={index === activeIndex}
+                isClearDisplay
+              />
+            ))}
+          </>
+        );
 
-      const { getAllByLabelText, rerender } = await renderFeedItem(feedWithActive(0));
+        const { getAllByLabelText, rerender } = await renderFeedItem(feedWithActive(0));
 
-      // The viewer picks 2x while A holds the active slot.
-      await act(async () => {
-        fireEvent.press(getAllByLabelText('Kecepatan 2x')[0]);
-      });
+        // The viewer picks 2x while A holds the active slot.
+        await act(async () => {
+          fireEvent.press(getAllByLabelText('Kecepatan 2x')[0]);
+        });
 
-      const playerA = findPlayerByUri('https://media.example.com/video-1.mp4');
+        const playerA = findPlayerByUri('https://media.example.com/video-1.mp4');
 
-      expect(playerA?.rateWrites).toEqual([2]);
+        expect(playerA?.rateWrites).toEqual([2]);
 
-      await act(async () => {
-        rerender(feedWithActive(1));
-      });
-      await act(async () => {
-        rerender(feedWithActive(2));
-      });
+        await act(async () => {
+          rerender(feedWithActive(1));
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+        await act(async () => {
+          rerender(feedWithActive(2));
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
 
-      const playerB = findPlayerByUri('https://media.example.com/video-2.mp4');
-      const playerC = findPlayerByUri('https://media.example.com/video-3.mp4');
+        const playerB = findPlayerByUri('https://media.example.com/video-2.mp4');
+        const playerC = findPlayerByUri('https://media.example.com/video-3.mp4');
 
-      // Every item that lost the active slot was paused; only the final one
-      // is playing, and it inherited the session speed.
-      expect(playerA?.pause).toHaveBeenCalled();
-      expect(playerB?.pause).toHaveBeenCalled();
-      expect(playerC?.play).toHaveBeenCalled();
-      expect(playerC?.pause).not.toHaveBeenCalled();
-      expect(playerC?.rateWrites).toEqual([2]);
-      // No player ever received a rate write beyond the single one its own
-      // active stint justified, and never any value but the chosen 2.
-      [playerA, playerB, playerC].forEach((player) => {
-        expect(player!.rateWrites.length).toBeLessThanOrEqual(1);
-        player!.rateWrites.forEach((writtenRate) => expect(writtenRate).toBe(2));
-      });
+        // Every item that lost the active slot was paused; only the final one
+        // is playing, and it inherited the session speed.
+        expect(playerA?.pause).toHaveBeenCalled();
+        expect(playerB?.pause).toHaveBeenCalled();
+        expect(playerC?.play).toHaveBeenCalled();
+        expect(playerC?.pause).not.toHaveBeenCalled();
+        expect(playerC?.rateWrites).toEqual([2]);
+        // No player ever received a rate write beyond the single one its own
+        // active stint justified, and never any value but the chosen 2.
+        [playerA, playerB, playerC].forEach((player) => {
+          expect(player!.rateWrites.length).toBeLessThanOrEqual(1);
+          player!.rateWrites.forEach((writtenRate) => expect(writtenRate).toBe(2));
+        });
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('the next active video inherits the session speed chosen on a previous one', async () => {
-      const videoA = buildVideo({ id: 'video-a' });
-      const videoB = buildVideo({ id: 'video-b' });
-      const feed = (activeIndex: number) => (
-        <>
-          <DramaFeedItem
-            video={videoA}
-            {...baseProps}
-            isActive={activeIndex === 0}
-            isClearDisplay
-          />
-          <DramaFeedItem
-            video={videoB}
-            {...baseProps}
-            isActive={activeIndex === 1}
-            isClearDisplay
-          />
-        </>
-      );
-      const { getAllByLabelText, rerender } = await renderFeedItem(feed(0));
+      // 11R remediation ADDENDUM: video B was mounted inactive alongside A,
+      // so its activation is debounced.
+      jest.useFakeTimers();
+      try {
+        const videoA = buildVideo({ id: 'video-a' });
+        const videoB = buildVideo({ id: 'video-b' });
+        const feed = (activeIndex: number) => (
+          <>
+            <DramaFeedItem
+              video={videoA}
+              {...baseProps}
+              isActive={activeIndex === 0}
+              isClearDisplay
+            />
+            <DramaFeedItem
+              video={videoB}
+              {...baseProps}
+              isActive={activeIndex === 1}
+              isClearDisplay
+            />
+          </>
+        );
+        const { getAllByLabelText, rerender } = await renderFeedItem(feed(0));
 
-      await act(async () => {
-        fireEvent.press(getAllByLabelText('Kecepatan 2x')[0]);
-      });
+        await act(async () => {
+          fireEvent.press(getAllByLabelText('Kecepatan 2x')[0]);
+        });
 
-      await act(async () => {
-        rerender(feed(1));
-      });
+        await act(async () => {
+          rerender(feed(1));
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
 
-      const playerB = findPlayerByUri('https://media.example.com/video-b.mp4');
+        const playerB = findPlayerByUri('https://media.example.com/video-b.mp4');
 
-      expect(playerB?.play).toHaveBeenCalled();
-      expect(playerB?.rateWrites).toEqual([2]);
+        expect(playerB?.play).toHaveBeenCalled();
+        expect(playerB?.rateWrites).toEqual([2]);
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('keeps the session speed across background/foreground without a duplicate rate write', async () => {
@@ -2335,49 +2859,63 @@ describe('DramaFeedItem', () => {
     });
 
     it('rapid A -> B -> C transitions leave only C playing when the incoming authorization is HLS', async () => {
-      const videos = [1, 2, 3].map((n) => buildVideo({ id: `video-${n}` }));
-      mockGetPlaybackAuthorization.mockImplementation((videoId: string) =>
-        Promise.resolve(
-          buildHlsPlaybackAuthorization({
-            masterUrl: `https://gateway.example.com/videos/${videoId}/master.m3u8`,
-          })
-        )
-      );
-      const feedWithActive = (activeIndex: number) => (
-        <>
-          {videos.map((video, index) => (
-            <DramaFeedItem
-              key={video.id}
-              video={video}
-              {...baseProps}
-              isActive={index === activeIndex}
-            />
-          ))}
-        </>
-      );
+      // 11R remediation ADDENDUM: see the equivalent MP4 test in the
+      // "single-player ownership invariant" describe block - B and C were
+      // both mounted inactive, so their activation is debounced.
+      jest.useFakeTimers();
+      try {
+        const videos = [1, 2, 3].map((n) => buildVideo({ id: `video-${n}` }));
+        mockGetPlaybackAuthorization.mockImplementation((videoId: string) =>
+          Promise.resolve(
+            buildHlsPlaybackAuthorization({
+              masterUrl: `https://gateway.example.com/videos/${videoId}/master.m3u8`,
+            })
+          )
+        );
+        const feedWithActive = (activeIndex: number) => (
+          <>
+            {videos.map((video, index) => (
+              <DramaFeedItem
+                key={video.id}
+                video={video}
+                {...baseProps}
+                isActive={index === activeIndex}
+              />
+            ))}
+          </>
+        );
 
-      const { rerender } = await renderFeedItem(feedWithActive(0));
+        const { rerender } = await renderFeedItem(feedWithActive(0));
 
-      const playerA = findPlayerByUri('https://gateway.example.com/videos/video-1/master.m3u8');
+        const playerA = findPlayerByUri('https://gateway.example.com/videos/video-1/master.m3u8');
 
-      playerA?.play.mockClear();
-      playerA?.pause.mockClear();
+        playerA?.play.mockClear();
+        playerA?.pause.mockClear();
 
-      await act(async () => {
-        rerender(feedWithActive(1));
-      });
-      await act(async () => {
-        rerender(feedWithActive(2));
-      });
+        await act(async () => {
+          rerender(feedWithActive(1));
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+        await act(async () => {
+          rerender(feedWithActive(2));
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
 
-      const playerB = findPlayerByUri('https://gateway.example.com/videos/video-2/master.m3u8');
-      const playerC = findPlayerByUri('https://gateway.example.com/videos/video-3/master.m3u8');
+        const playerB = findPlayerByUri('https://gateway.example.com/videos/video-2/master.m3u8');
+        const playerC = findPlayerByUri('https://gateway.example.com/videos/video-3/master.m3u8');
 
-      expect(playerA?.pause).toHaveBeenCalled();
-      expect(playerA?.play).not.toHaveBeenCalled();
-      expect(playerB?.pause).toHaveBeenCalled();
-      expect(playerC?.play).toHaveBeenCalled();
-      expect(playerC?.pause).not.toHaveBeenCalled();
+        expect(playerA?.pause).toHaveBeenCalled();
+        expect(playerA?.play).not.toHaveBeenCalled();
+        expect(playerB?.pause).toHaveBeenCalled();
+        expect(playerC?.play).toHaveBeenCalled();
+        expect(playerC?.pause).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('pauses the outgoing MP4 player and plays only the incoming HLS player when the source kind switches mid-session, with no invariant violation', async () => {

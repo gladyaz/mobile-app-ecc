@@ -1,3 +1,4 @@
+import { qaFixtureVideos, shouldIncludeQaFixtures } from '@/data/qa-fixture-videos';
 import { resolveBundledMediaUri } from '@/services/media/media-url';
 import type { Video, VideoCategory } from '@/types/video';
 
@@ -132,4 +133,11 @@ function buildEpisodes(series: BundledSeries): readonly Video[] {
   });
 }
 
-export const mockDramaVideos: readonly Video[] = bundledSeries.flatMap(buildEpisodes);
+// QA fixtures (e.g. the 16:9 fullscreen sample) ride along ONLY behind the
+// local `EXPO_PUBLIC_INCLUDE_QA_FIXTURES=true` opt-in - a demo/showcase
+// build's catalog is byte-identical with the flag unset. See
+// `qa-fixture-videos.ts` for why the fixture exists at all.
+export const mockDramaVideos: readonly Video[] = [
+  ...bundledSeries.flatMap(buildEpisodes),
+  ...(shouldIncludeQaFixtures() ? qaFixtureVideos : []),
+];

@@ -25,6 +25,8 @@ function buildVideo(overrides: Partial<Video> & Pick<Video, 'id' | 'seriesId'>):
     caption: 'Pertemuan pertama yang mengubah hidup Lin Yue.',
     likeCount: 100,
     isSaved: false,
+    // Real content by default; a case that needs a fixture says so.
+    contentKind: 'drama',
     ...overrides,
   };
 }

@@ -1,4 +1,4 @@
-import type { Video, VideoCategory } from '@/types/video';
+import type { Video, VideoCategory, VideoContentKind } from '@/types/video';
 
 export type BackendVideoDto = {
   readonly id: string;
@@ -16,6 +16,7 @@ export type BackendVideoDto = {
   readonly sourceLanguage: string;
   readonly hasEmbeddedIndonesianSubtitle: boolean;
   readonly likeCount: number;
+  readonly contentKind: string;
   readonly durationSeconds?: number;
 };
 
@@ -57,6 +58,37 @@ function assertField(condition: boolean, fieldName: string, dto: unknown): void 
  * storageKey is a backend-only identifier and is never used for playback;
  * playback always uses playbackUrl.
  */
+const CONTENT_KINDS: readonly VideoContentKind[] = ['drama', 'qa_fixture'];
+
+/**
+ * Reads the backend's explicit classification. NEVER inferred - title,
+ * channelName, sourceLanguage, storageKey, seriesId and dimensions were each
+ * evaluated and rejected: display strings break on a rename, `sourceLanguage`
+ * describes the content's language rather than its realness, and an empty
+ * `storageKey` is exactly how legitimate R2-backed media is represented.
+ *
+ * A missing or unrecognised value is a CONTRACT ERROR and throws in dev, so a
+ * backend that stops sending the field fails loudly at the boundary instead of
+ * quietly changing what the catalog contains.
+ *
+ * In production it degrades to `drama` rather than throwing or guessing
+ * `qa_fixture`. The asymmetry is deliberate: mislabelling one fixture as
+ * content is a cosmetic bug, while mislabelling real content as a fixture
+ * would erase it from every user-facing surface - and throwing would blank the
+ * whole feed over one bad row.
+ */
+function resolveContentKind(dto: BackendVideoDto): VideoContentKind {
+  const value = dto.contentKind;
+
+  if (typeof value === 'string' && (CONTENT_KINDS as readonly string[]).includes(value)) {
+    return value as VideoContentKind;
+  }
+
+  assertField(!__DEV__, 'contentKind', dto);
+
+  return 'drama';
+}
+
 export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
   assertField(typeof dto.id === 'string' && dto.id.length > 0, 'id', dto);
   assertField(typeof dto.seriesId === 'string' && dto.seriesId.length > 0, 'seriesId', dto);
@@ -81,6 +113,7 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
     dto
   );
   assertField(typeof dto.likeCount === 'number', 'likeCount', dto);
+  const contentKind = resolveContentKind(dto);
 
   return {
     id: dto.id,
@@ -101,6 +134,7 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
     processingStatus: 'completed',
     caption: dto.caption,
     likeCount: dto.likeCount,
+    contentKind,
     // Save state is tracked locally by useVideoInteractions, not the backend.
     isSaved: false,
   };

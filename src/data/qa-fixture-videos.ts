@@ -52,5 +52,6 @@ export const qaFixtureVideos: readonly Video[] = [
     caption: 'Synthetic horizontal test clip for fullscreen QA. Not production content.',
     likeCount: 0,
     isSaved: false,
+    contentKind: 'qa_fixture',
   },
 ];

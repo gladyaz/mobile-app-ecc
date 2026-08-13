@@ -54,6 +54,7 @@ function buildEpisode(episodeNumber: number): Video {
     caption: `Episode ${episodeNumber} caption.`,
     likeCount: 100,
     isSaved: false,
+    contentKind: 'drama',
   };
 }
 

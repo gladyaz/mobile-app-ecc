@@ -129,6 +129,9 @@ function buildEpisodes(series: BundledSeries): readonly Video[] {
       caption: series.captions[index] ?? series.title,
       likeCount: series.baseLikeCount + episodeNumber * 320,
       isSaved: false,
+      // The bundled catalog is real drama content, mirroring the backend's
+      // own classification of the same rows.
+      contentKind: 'drama',
     } satisfies Video;
   });
 }

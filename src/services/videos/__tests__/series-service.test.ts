@@ -21,6 +21,8 @@ function buildVideo(overrides: Partial<Video> & Pick<Video, 'id' | 'seriesId' | 
     caption: 'A drama caption.',
     likeCount: 100,
     isSaved: false,
+    // Real content by default; a case that needs a fixture says so.
+    contentKind: 'drama',
     ...overrides,
   };
 }

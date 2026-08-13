@@ -54,14 +54,39 @@ function videoMatchesSearch(video: Video, normalizedQuery: string) {
  * here and are not silently replaced with mock data; callers (the video
  * catalog provider) surface them as a visible error state.
  */
+/**
+ * THE single catalog boundary.
+ *
+ * Home, Discover and Series Detail all read the catalog through
+ * `VideoCatalogProvider`, which calls exactly this function - so filtering
+ * here is what keeps those three surfaces derived from one identical source.
+ * Filtering per-screen instead would let them drift, and Series Detail (which
+ * resolves a series out of the same array) could still surface a fixture.
+ *
+ * `qa_fixture` rows are excluded from the USER-FACING catalog only. The
+ * backend deliberately keeps serving them (they are `published`, and the 11R
+ * HLS sample exists to be played) - this is a presentation decision, made on
+ * the backend's explicit `contentKind` and on nothing else.
+ *
+ * No cap, no pagination, no slice: every `drama` row the backend returns
+ * reaches the app.
+ */
+export function selectUserFacingCatalog(videos: readonly Video[]): readonly Video[] {
+  return videos.filter((video) => video.contentKind === 'drama');
+}
+
 export async function getVideoFeed(): Promise<readonly Video[]> {
   if (shouldUseMockData()) {
+    // The bundled catalog is its own source of truth and carries the same
+    // classification, so the QA fixtures appended behind
+    // EXPO_PUBLIC_INCLUDE_QA_FIXTURES stay reachable for local playback QA
+    // exactly as before - they are opt-in by an env flag, not by accident.
     return mockDramaVideos;
   }
 
   const feed = await request<readonly BackendVideoDto[]>('videos/feed');
 
-  return feed.map(mapBackendVideoToVideo);
+  return selectUserFacingCatalog(feed.map(mapBackendVideoToVideo));
 }
 
 export async function getVideoById(id: string): Promise<Video | undefined> {

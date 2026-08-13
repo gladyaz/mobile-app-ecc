@@ -61,10 +61,6 @@ export default function TabsLayout() {
           backgroundColor: 'rgba(13, 13, 15, 0.84)',
           borderTopColor: Palette.border,
         },
-        tabBarLabelStyle: {
-          fontFamily: FontFamily.bold,
-          fontSize: 10,
-        },
       }}>
       {TAB_SCREENS.map(({ name, titleKey, icon }) => (
         <Tabs.Screen
@@ -76,7 +72,10 @@ export default function TabsLayout() {
             // OS text size truncates labels ("Discove…"). `maxFontSizeMultiplier`
             // is a Text prop rather than a style, so capping it means
             // rendering the label ourselves; everything else (color, active
-            // state) still comes from the navigator.
+            // state) still comes from the navigator. Note this makes
+            // `tabBarLabelStyle` inert - a custom element ignores it - so the
+            // font is set on `styles.tabLabel` below instead of in both
+            // places.
             tabBarLabel: ({ color }: { color: ColorValue }) => (
               <Text
                 maxFontSizeMultiplier={1.3}

@@ -510,6 +510,35 @@ describe('RewardsCenterScreen - remaining model states render', () => {
     expect(getByTestId('redeem-availability-av_soon').props.children).toBe('Segera hadir');
   });
 
+  it('never advertises an offer as redeemable while redemption is unsupported', async () => {
+    // The preview balance (1250) clears the cheapest cost (1000), so an
+    // AVAILABLE label here would read as a real, affordable redemption with
+    // only the smaller notice below to retract it.
+    const baseline = buildSnapshot();
+    const [offer] = baseline.redemptions;
+    const { getByTestId } = await renderReady({
+      redemptions: [{ ...offer, id: 'av_ok', availability: 'AVAILABLE', isRedeemSupported: false }],
+    });
+
+    await fireEvent.press(getByTestId('rewards-tab-redeem'));
+
+    expect(getByTestId('redeem-availability-av_ok').props.children).toBe('Segera hadir');
+  });
+
+  it('does advertise it as redeemable once redemption is actually supported', async () => {
+    // The downgrade is tied to support, not hardcoded: a real backend that
+    // can redeem gets the real label back, with no further code change.
+    const baseline = buildSnapshot();
+    const [offer] = baseline.redemptions;
+    const { getByTestId } = await renderReady({
+      redemptions: [{ ...offer, id: 'av_live', availability: 'AVAILABLE', isRedeemSupported: true }],
+    });
+
+    await fireEvent.press(getByTestId('rewards-tab-redeem'));
+
+    expect(getByTestId('redeem-availability-av_live').props.children).toBe('Bisa ditukar');
+  });
+
   it('labels each day chip state, and lets "today" win over "bonus"', async () => {
     const baseline = buildSnapshot();
     const { getByTestId } = await renderReady({

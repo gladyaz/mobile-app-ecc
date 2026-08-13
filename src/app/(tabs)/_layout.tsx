@@ -1,4 +1,5 @@
 import { Tabs } from 'expo-router';
+import { StyleSheet, Text, type ColorValue } from 'react-native';
 import { SymbolView, type SymbolViewProps } from 'expo-symbols';
 
 import { FontFamily, Palette } from '@/constants/theme';
@@ -71,6 +72,19 @@ export default function TabsLayout() {
           name={name}
           options={{
             title: t(titleKey),
+            // Five tabs share a 320pt phone at roughly 64pt each, so a large
+            // OS text size truncates labels ("Discove…"). `maxFontSizeMultiplier`
+            // is a Text prop rather than a style, so capping it means
+            // rendering the label ourselves; everything else (color, active
+            // state) still comes from the navigator.
+            tabBarLabel: ({ color }: { color: ColorValue }) => (
+              <Text
+                maxFontSizeMultiplier={1.3}
+                numberOfLines={1}
+                style={[styles.tabLabel, { color }]}>
+                {t(titleKey)}
+              </Text>
+            ),
             tabBarIcon: ({ color, size }) => (
               <SymbolView name={icon} size={size} tintColor={color} />
             ),
@@ -80,3 +94,11 @@ export default function TabsLayout() {
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  tabLabel: {
+    fontFamily: FontFamily.bold,
+    fontSize: 10,
+    textAlign: 'center',
+  },
+});

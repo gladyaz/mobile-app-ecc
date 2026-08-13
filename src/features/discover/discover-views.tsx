@@ -83,6 +83,8 @@ type CategoryFilterRowProps = {
 };
 
 function CategoryFilterRow({ selectedCategory, onSelectCategory }: CategoryFilterRowProps) {
+  const { t } = useTranslation();
+
   return (
     <ScrollView
       contentContainerStyle={styles.categoryRow}
@@ -94,7 +96,7 @@ function CategoryFilterRow({ selectedCategory, onSelectCategory }: CategoryFilte
 
         return (
           <Pressable
-            accessibilityLabel={`Kategori ${category}`}
+            accessibilityLabel={t('discover.categoryA11y', { category })}
             accessibilityRole="button"
             accessibilityState={{ selected: isSelected }}
             hitSlop={{ bottom: 8, left: 4, right: 4, top: 8 }}

@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette } from '@/constants/theme';
+import { useTranslation } from '@/stores/language';
 import { DailyCheckInCard } from '@/features/rewards/components/daily-check-in-card';
 import { RewardTaskCard } from '@/features/rewards/components/reward-task-card';
 import { RewardEmptyState } from '@/features/rewards/components/rewards-primitives';
@@ -52,6 +53,7 @@ function selectNoticeTaskIds(tasks: readonly RewardTask[]): ReadonlySet<string> 
 }
 
 export function EarnPanel({ dailyCheckIn, watchTime, tasks, onAction }: EarnPanelProps) {
+  const { t } = useTranslation();
   const noticeTaskIds = useMemo(() => selectNoticeTaskIds(tasks), [tasks]);
 
   return (
@@ -73,7 +75,7 @@ export function EarnPanel({ dailyCheckIn, watchTime, tasks, onAction }: EarnPane
         />
       ) : (
         <RewardEmptyState
-          message="Check-in harian belum tersedia."
+          message={t('rewards.checkInEmpty')}
           testID="rewards-check-in-empty"
         />
       )}
@@ -81,19 +83,19 @@ export function EarnPanel({ dailyCheckIn, watchTime, tasks, onAction }: EarnPane
       {watchTime ? (
         <WatchTimeCard
           onPressCta={() =>
-            onAction({ kind: 'WATCH_TIME', id: 'watch_time', label: 'Klaim Hadiah Durasi' })
+            onAction({ kind: 'WATCH_TIME', id: 'watch_time', label: t('rewards.watchTimeCta') })
           }
           watchTime={watchTime}
         />
       ) : (
         <RewardEmptyState
-          message="Progres durasi tonton belum tersedia."
+          message={t('rewards.watchTimeEmpty')}
           testID="rewards-watch-time-empty"
         />
       )}
 
       <Text accessibilityRole="header" style={styles.sectionHeading}>
-        Misi Poin
+        {t('rewards.tasksHeading')}
       </Text>
       {tasks.length > 0 ? (
         tasks.map((task) => (
@@ -105,7 +107,7 @@ export function EarnPanel({ dailyCheckIn, watchTime, tasks, onAction }: EarnPane
           />
         ))
       ) : (
-        <RewardEmptyState message="Belum ada misi tersedia." testID="rewards-tasks-empty" />
+        <RewardEmptyState message={t('rewards.tasksEmpty')} testID="rewards-tasks-empty" />
       )}
     </View>
   );

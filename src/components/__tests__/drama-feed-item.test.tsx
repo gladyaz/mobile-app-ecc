@@ -669,7 +669,7 @@ describe('DramaFeedItem', () => {
       fireEvent.press(getByLabelText('Pengaturan pemutaran'));
     });
     await act(async () => {
-      fireEvent(getByTestId('playback-settings-clear-display'), 'valueChange', true);
+      fireEvent.press(getByTestId('playback-settings-clear-display-row'));
     });
 
     // Same lifted state as the tap - one implementation, three entry points
@@ -2680,6 +2680,43 @@ describe('DramaFeedItem', () => {
     });
   });
 
+  describe('clear-display surface vs. the error-state retry target', () => {
+    // REGRESSION GUARD. The clear-display surface is a full-bleed, absolutely
+    // positioned LATER root sibling with no zIndex, so it is topmost in both
+    // platforms' hit tests. The error view is its own Pressable carrying the
+    // 11R ADDENDUM tap-to-retry re-authorization path. If both render at
+    // once, every retry tap is swallowed and the viewer is back to "pressed
+    // play repeatedly, nothing happened".
+    //
+    // fireEvent bypasses hit testing, so no press-based test can catch this -
+    // the assertion has to be about what is MOUNTED.
+    it('does not mount the clear-display surface over the error state', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(new Error('boom'));
+
+      const { queryByTestId, getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+
+      await act(async () => {});
+
+      expect(getByTestId('feed-item-play-pause')).toBeTruthy();
+      expect(queryByTestId('feed-item-clear-display-surface')).toBeNull();
+    });
+
+    it('still offers the surface when an error coincides with clear display', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(new Error('boom'));
+
+      const { getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+      );
+
+      await act(async () => {});
+
+      // Hidden chrome must always have a way back, even on a failed video.
+      expect(getByTestId('feed-item-clear-display-surface')).toBeTruthy();
+    });
+  });
+
   describe('playback settings sheet (vertical kebab)', () => {
     it('opening the sheet never touches the player', async () => {
       const { getByLabelText, getByTestId } = await renderFeedItem(
@@ -2730,7 +2767,7 @@ describe('DramaFeedItem', () => {
       expect(getByLabelText('Kecepatan 1x')).toBeTruthy();
       expect(getByLabelText('Kecepatan 1.5x')).toBeTruthy();
       expect(getByLabelText('Kecepatan 2x')).toBeTruthy();
-      expect(getByTestId('playback-settings-clear-display')).toBeTruthy();
+      expect(getByTestId('playback-settings-clear-display-row')).toBeTruthy();
       expect(getByTestId('playback-settings-fullscreen')).toBeTruthy();
       // Manual rendition choice is not part of this app's playback model, so
       // the sheet must not imply a control the player does not offer.

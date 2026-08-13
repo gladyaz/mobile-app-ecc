@@ -106,10 +106,22 @@ export function PlaybackSettingsSheet({
           })}
         </View>
 
-        <View style={styles.row}>
+        {/* The whole row is the target, matching the Fullscreen row below.
+            Two visually identical adjacent rows where only one accepts a tap
+            on its label is exactly the kind of precision demand this sheet
+            exists to remove. The Switch itself leaves the accessibility tree
+            so the row announces once, as a switch, with its checked state. */}
+        <Pressable
+          accessibilityLabel={t('feed.clearDisplay')}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: isClearDisplay }}
+          onPress={onToggleClearDisplay}
+          style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+          testID="playback-settings-clear-display-row">
           <Text style={styles.rowLabel}>{t('feed.clearDisplay')}</Text>
           <Switch
-            accessibilityLabel={t('feed.clearDisplay')}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
             ios_backgroundColor={Palette.surfaceMuted}
             onValueChange={onToggleClearDisplay}
             testID="playback-settings-clear-display"
@@ -117,7 +129,7 @@ export function PlaybackSettingsSheet({
             trackColor={{ false: Palette.surfaceMuted, true: Palette.primary }}
             value={isClearDisplay}
           />
-        </View>
+        </Pressable>
 
         {onEnterFullscreen ? (
           <Pressable

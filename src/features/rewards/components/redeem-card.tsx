@@ -52,7 +52,20 @@ export function RedeemCard({ redemption, onPressCta }: RedeemCardProps) {
             {t('rewards.pointsValue', { points: formatPoints(redemption.costPoints) })}
           </Text>
           <Text style={styles.availability} testID={`redeem-availability-${redemption.id}`}>
-            {t(AVAILABILITY_LABEL_KEY[redemption.availability])}
+            {/* Only AVAILABLE is downgraded. "Bisa ditukar" is a promise
+                this slice cannot keep - with a 1250-point preview balance
+                sitting above a 1000-point cost it reads as a real, affordable
+                redemption, and the retraction is only in the smaller notice
+                below. The other two states are already truthful ("not enough
+                points", "coming soon") and stay as they are, so downgrading
+                them would throw away real information. Once a backend can
+                actually redeem, `isRedeemSupported` flips and AVAILABLE
+                speaks for itself. */}
+            {t(
+              redemption.availability === 'AVAILABLE' && !redemption.isRedeemSupported
+                ? 'rewards.availComingSoon'
+                : AVAILABILITY_LABEL_KEY[redemption.availability]
+            )}
           </Text>
         </View>
         <RewardCta

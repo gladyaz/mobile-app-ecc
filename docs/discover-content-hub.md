@@ -14,9 +14,11 @@ the `/videos/feed` response the app already fetches for Home.
 | Cards | 7 rows for a 7-episode series | 1 poster per series |
 | States | spinner / "Video gagal dimuat." / "Tidak ada hasil" inside `ListEmptyComponent` | poster skeleton, retryable error, empty-catalog, no-search-results |
 
-Rewards and VIP entry points are intentionally **not** in this header; they
-belong to the later integration slice. The root bottom tab bar
-(`src/app/(tabs)/_layout.tsx`) is untouched.
+Rewards and VIP entry points are intentionally **not** in this header. Rewards
+is reached from the root bottom tab bar instead, which now carries five tabs -
+Home, Discover, Saved, Rewards, Profile (`src/app/(tabs)/_layout.tsx`, added in
+the Rewards integration slice). Discover's own header still carries no Rewards
+or VIP entry point.
 
 ## Data sources per surface
 
@@ -146,9 +148,9 @@ There is **no `New` badge** - see limitation 1.
   in `DISCOVER_TABS` - or drop the tab until the backend exposes `publishedAt`.
 - **"Home" appears twice on this screen**: the root bottom tab (the video feed)
   and the Discover sub-tab (the poster grid). Both names come from the product
-  direction, and the root navigator is deliberately untouched. Renaming the
-  sub-tab to "Katalog"/"Semua" would remove the collision without touching the
-  router.
+  direction, so the collision is accepted rather than resolved unilaterally.
+  Renaming the sub-tab to "Katalog"/"Semua" would remove it without touching
+  the router; that is a product call, not a technical constraint.
 
 ## Performance and scope notes
 

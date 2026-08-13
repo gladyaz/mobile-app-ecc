@@ -420,6 +420,11 @@ export function DramaFeedItem({
     setAuthRetryAttempt(0);
     setIsAuthErrorRetryable(false);
     setHasStartedPlaying(false);
+    // Same cheap insurance as the rest of this block: today's keyed FlatList
+    // never recycles an instance across videos, but if one ever did, an
+    // inherited rate is exactly the cross-video surprise the per-video
+    // decision exists to prevent.
+    setPlaybackSpeed(DEFAULT_PLAYBACK_SPEED);
   }
 
   // Kept in sync via a LAYOUT effect, not a plain `useEffect` (this file's
@@ -1397,6 +1402,15 @@ export function DramaFeedItem({
     }
 
     pendingFullscreenRef.current = false;
+
+    // The item can lose the active slot during the Modal's dismissal
+    // transition. Presenting fullscreen for a video that is no longer active
+    // would not self-correct, because the reconciler abstains entirely while
+    // `isInFullscreen` is true.
+    if (!isActiveRef.current) {
+      return;
+    }
+
     handleEnterFullscreen();
   }, [handleEnterFullscreen]);
 
@@ -1593,8 +1607,15 @@ export function DramaFeedItem({
           above return true only for exactly two touches, and capture runs
           before this child is offered the gesture at all.
           
-          Rendered in the error state too, so hidden chrome can always be
-          restored even on a video that failed to load. */}
+          NOT rendered in the plain error state. The error view is its own
+          Pressable (the 11R ADDENDUM's tap-to-retry re-authorization path),
+          and this surface is a LATER root sibling with no zIndex - which
+          makes it topmost in both platforms' hit tests and would swallow
+          every retry tap, reproducing the exact "pressed play repeatedly,
+          nothing happened" report that ADDENDUM was written to fix. It is
+          still rendered when the error coincides with clear display, so
+          hidden chrome always has a way back. */}
+      {hasPlaybackError && !isClearDisplay ? null : (
       <Pressable
         testID="feed-item-clear-display-surface"
         accessibilityLabel={isClearDisplay ? t('feed.showControls') : t('feed.hideControls')}
@@ -1608,6 +1629,7 @@ export function DramaFeedItem({
         onPress={() => onToggleClearDisplay?.(!isClearDisplay)}
         style={styles.clearDisplaySurface}
       />
+      )}
 
       {hasPlaybackError || isClearDisplay ? null : (
         <Pressable
@@ -1749,7 +1771,7 @@ export function DramaFeedItem({
               options, and the enter/exit lifecycle below are untouched. */}
           {hasPlaybackError ? null : (
             <Pressable
-              accessibilityLabel={isMuted ? 'Unmute' : 'Mute'}
+              accessibilityLabel={isMuted ? t('feed.unmute') : t('feed.mute')}
               accessibilityRole="button"
               onPress={onToggleMute}
               style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
@@ -1766,7 +1788,7 @@ export function DramaFeedItem({
             </Pressable>
           )}
           <Pressable
-            accessibilityLabel={isLiked ? 'Unlike' : 'Like'}
+            accessibilityLabel={isLiked ? t('feed.unlike') : t('feed.like')}
             accessibilityRole="button"
             onPress={onToggleLike}
             style={({ pressed }) => [styles.actionItem, pressed && styles.buttonPressed]}>
@@ -1787,7 +1809,7 @@ export function DramaFeedItem({
             </Text>
           </Pressable>
           <Pressable
-            accessibilityLabel={isSaved ? 'Unsave' : 'Save'}
+            accessibilityLabel={isSaved ? t('feed.unsave') : t('feed.save')}
             accessibilityRole="button"
             onPress={onToggleSave}
             style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
@@ -1803,7 +1825,7 @@ export function DramaFeedItem({
             />
           </Pressable>
           <Pressable
-            accessibilityLabel="Share"
+            accessibilityLabel={t('feed.share')}
             accessibilityRole="button"
             onPress={onShare}
             style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
@@ -1927,9 +1949,8 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     gap: 6,
   },
-  // `maxWidth` is belt-and-suspenders on top of the vertical separation
-  // from the title: even an unexpectedly long localized label can never
-  // grow the pill across the frame (its text ellipsizes instead).
+  // Full-bleed single-tap target for clear display. Declared FIRST among the
+  // overlays so paint order keeps it under every real control.
   clearDisplaySurface: {
     position: 'absolute',
     top: 0,
@@ -1962,10 +1983,18 @@ const styles = StyleSheet.create({
     shadowRadius: 2.5,
     shadowOffset: { width: 0, height: 1 },
   },
+  // `maxWidth` is belt-and-suspenders on top of the vertical separation from
+  // the title: even an unexpectedly long localized label can never grow the
+  // pill across the frame (its text ellipsizes instead).
   nextEpisodeButton: {
     minWidth: 74,
     maxWidth: 180,
+    // 44 is the iOS minimum; the pill's own 12pt line + 8pt padding lands
+    // around 31, which is under both platform floors. It matters more now
+    // that this control sits directly beneath the new kebab.
+    minHeight: 44,
     alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: Radius.sm,
@@ -1981,16 +2010,6 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.bold,
     color: Palette.text,
   },
-  // The one piece of chrome clear display adds rather than removes: without a
-  // visible way out, the only exit would be a gesture the viewer has to
-  // already know about.
-  // Sits just below the middle of the screen so the finger that opened it is
-  // not covering it, and well clear of the caption underneath.
-  // The three speed options share the pill with play/pause; the selected
-  // one carries the filled background, so the current rate reads at a
-  // glance without needing a separate label.
-  // Clear display is about reading the frame underneath, so the metadata and
-  // the action rail step out of the way entirely.
   contentHidden: {
     opacity: 0,
   },

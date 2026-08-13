@@ -35,9 +35,53 @@ const id = {
   'home.addedToSaved': 'Disimpan ke Saved',
 
   'discover.title': 'Discover',
-  'discover.searchPlaceholder': 'Cari judul drama…',
+  // Widened with the content-hub redesign: the underlying `searchVideos`
+  // matcher has always covered channel and category as well as title, so the
+  // old "Cari judul drama…" understated what typing here actually does.
+  'discover.searchPlaceholder': 'Cari judul, kategori, atau channel…',
   'discover.noResults': 'Tidak ada hasil',
   'discover.resetSearch': 'Reset pencarian',
+  'discover.searchA11y': 'Cari drama',
+  'discover.clearSearch': 'Hapus pencarian',
+  'discover.tabHome': 'Home',
+  'discover.tabNew': 'New',
+  'discover.tabRankings': 'Rankings',
+  'discover.loadingA11y': 'Memuat katalog Discover',
+  'discover.loadFailed': 'Katalog gagal dimuat',
+  'discover.loadFailedDesc':
+    'Periksa koneksi internetmu, lalu coba muat ulang katalog Discover.',
+  'discover.retry': 'Coba lagi',
+  'discover.reload': 'Muat ulang',
+  'discover.showAll': 'Tampilkan semua',
+  'discover.catalogEmptyTitle': 'Katalog masih kosong',
+  'discover.catalogEmptyDesc':
+    'Belum ada drama di katalog saat ini. Coba muat ulang beberapa saat lagi.',
+  'discover.categoryEmptyTitle': 'Kategori ini masih kosong',
+  'discover.categoryEmptyDesc':
+    'Belum ada drama pada kategori {category} di katalog saat ini.',
+  // TRUTHFULNESS (see docs/discover-content-hub.md): the mobile-visible feed
+  // DTO carries no createdAt/publishedAt and the endpoint documents no
+  // ordering guarantee, so "New" must describe itself as catalog order and
+  // must not imply a release date. Rankings likewise names its metric as a
+  // like TOTAL, never a view count.
+  'discover.newTitle': 'Urutan Katalog',
+  'discover.newDesc':
+    'Ditampilkan sesuai urutan katalog yang dikirim server. Katalog belum menyertakan tanggal tayang, jadi urutan ini bukan klaim tanggal rilis.',
+  'discover.topHits': 'Top Hits',
+  'discover.rankingsDesc':
+    'Peringkat dihitung dari total suka semua episode pada katalog ini, bukan jumlah tayangan.',
+  'discover.otherRankings': 'Peringkat lainnya',
+  'discover.likeTotal': '{count} suka total',
+  'discover.resultCount': '{count} hasil untuk “{query}”',
+  'discover.searchHint': 'Dicocokkan dengan judul, deskripsi episode, channel, dan kategori.',
+  'discover.noResultsDescAll': 'Coba kata kunci lain, atau telusuri katalog lewat kategori.',
+  'discover.noResultsDescCategory':
+    'Tidak ada hasil pada kategori {category}. Coba kata kunci lain, atau pilih kategori All.',
+  'discover.rankA11y': 'Peringkat {rank}',
+  'discover.episodeCount': '{count} episode',
+  'discover.episodePill': '{count} EP',
+  'discover.badgeHot': 'Hot',
+  'discover.badgePremium': 'Premium',
 
   'saved.title': 'Saved',
   'saved.empty': 'Belum ada video tersimpan',
@@ -231,7 +275,41 @@ const en: Copy = {
   'home.addedToSaved': 'Added to Saved',
 
   'discover.title': 'Discover',
-  'discover.searchPlaceholder': 'Search drama titles…',
+  'discover.searchPlaceholder': 'Search titles, categories, or channels…',
+  'discover.searchA11y': 'Search dramas',
+  'discover.clearSearch': 'Clear search',
+  'discover.tabHome': 'Home',
+  'discover.tabNew': 'New',
+  'discover.tabRankings': 'Rankings',
+  'discover.loadingA11y': 'Loading the Discover catalog',
+  'discover.loadFailed': 'Catalog failed to load',
+  'discover.loadFailedDesc': 'Check your internet connection, then reload the Discover catalog.',
+  'discover.retry': 'Try again',
+  'discover.reload': 'Reload',
+  'discover.showAll': 'Show all',
+  'discover.catalogEmptyTitle': 'The catalog is still empty',
+  'discover.catalogEmptyDesc':
+    'There are no dramas in the catalog right now. Try reloading in a little while.',
+  'discover.categoryEmptyTitle': 'This category is still empty',
+  'discover.categoryEmptyDesc': 'No dramas in the {category} category are in the catalog yet.',
+  'discover.newTitle': 'Catalog Order',
+  'discover.newDesc':
+    'Shown in the catalog order the server returned. The catalog carries no air date, so this order is not a release-date claim.',
+  'discover.topHits': 'Top Hits',
+  'discover.rankingsDesc':
+    'Ranked by the total likes across every episode in this catalog, not by view count.',
+  'discover.otherRankings': 'Other rankings',
+  'discover.likeTotal': '{count} likes total',
+  'discover.resultCount': '{count} results for “{query}”',
+  'discover.searchHint': 'Matched against title, episode description, channel, and category.',
+  'discover.noResultsDescAll': 'Try another keyword, or browse the catalog by category.',
+  'discover.noResultsDescCategory':
+    'No results in the {category} category. Try another keyword, or pick the All category.',
+  'discover.rankA11y': 'Rank {rank}',
+  'discover.episodeCount': '{count} episodes',
+  'discover.episodePill': '{count} EP',
+  'discover.badgeHot': 'Hot',
+  'discover.badgePremium': 'Premium',
   'discover.noResults': 'No results',
   'discover.resetSearch': 'Reset search',
 
@@ -418,7 +496,37 @@ const zh: Copy = {
   'home.addedToSaved': '已加入收藏',
 
   'discover.title': '发现',
-  'discover.searchPlaceholder': '搜索剧名…',
+  'discover.searchPlaceholder': '搜索剧名、分类或频道…',
+  'discover.searchA11y': '搜索短剧',
+  'discover.clearSearch': '清除搜索',
+  'discover.tabHome': '首页',
+  'discover.tabNew': '最新',
+  'discover.tabRankings': '排行榜',
+  'discover.loadingA11y': '正在加载发现目录',
+  'discover.loadFailed': '目录加载失败',
+  'discover.loadFailedDesc': '请检查网络连接，然后重新加载发现目录。',
+  'discover.retry': '重试',
+  'discover.reload': '重新加载',
+  'discover.showAll': '显示全部',
+  'discover.catalogEmptyTitle': '目录还是空的',
+  'discover.catalogEmptyDesc': '目前目录中还没有短剧。请稍后重新加载。',
+  'discover.categoryEmptyTitle': '该分类还是空的',
+  'discover.categoryEmptyDesc': '目录中暂时没有「{category}」分类的短剧。',
+  'discover.newTitle': '目录顺序',
+  'discover.newDesc': '按服务器返回的目录顺序显示。目录尚未包含上线日期，因此此顺序并非发布日期。',
+  'discover.topHits': '热门推荐',
+  'discover.rankingsDesc': '排名依据本目录中所有剧集的点赞总数，而非播放量。',
+  'discover.otherRankings': '其他排名',
+  'discover.likeTotal': '共 {count} 个赞',
+  'discover.resultCount': '“{query}”的 {count} 个结果',
+  'discover.searchHint': '匹配范围包括剧名、剧集简介、频道和分类。',
+  'discover.noResultsDescAll': '换个关键词试试，或按分类浏览目录。',
+  'discover.noResultsDescCategory': '「{category}」分类下没有结果。换个关键词，或选择 All 分类。',
+  'discover.rankA11y': '第 {rank} 名',
+  'discover.episodeCount': '{count} 集',
+  'discover.episodePill': '{count} 集',
+  'discover.badgeHot': 'Hot',
+  'discover.badgePremium': 'Premium',
   'discover.noResults': '没有结果',
   'discover.resetSearch': '重置搜索',
 

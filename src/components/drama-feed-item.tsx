@@ -20,7 +20,11 @@ import {
 } from '@/services/debug/playback-invariant';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { useTranslation } from '@/stores/language';
-import { PLAYBACK_SPEEDS, usePlaybackSpeedStore } from '@/stores/playback-speed';
+import {
+  DEFAULT_PLAYBACK_SPEED,
+  PLAYBACK_SPEEDS,
+  type PlaybackSpeed,
+} from '@/constants/playback-speed';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { recordVideoWatched } from '@/services/ads/ad-controller';
 import { ApiError } from '@/services/api/client';
@@ -278,15 +282,22 @@ export function DramaFeedItem({
   // fired so one gesture toggles clear display exactly once, however far the
   // fingers keep travelling.
   const pinchStartDistanceRef = useRef(0);
-  // Session-scoped, not per-item (a product decision that reversed the
-  // earlier per-clip design): the chosen speed follows the viewer to the
-  // next active video and only resets on a cold app restart, because the
-  // store is memory-only - deliberately never persisted. Shared state means
-  // a change re-renders every mounted item, so the rate mirror effect below
-  // MUST keep its `shouldPlay` gate: it alone keeps the inactive copies
-  // from touching their players.
-  const playbackSpeed = usePlaybackSpeedStore((state) => state.speed);
-  const setPlaybackSpeed = usePlaybackSpeedStore((state) => state.setSpeed);
+  // Per-item, not session-scoped (product decision 2026-08-13, reversing the
+  // session-wide store that had itself reversed an earlier per-clip design).
+  // A rate is a way to skim THIS clip, not a standing preference: landing on
+  // a fresh video already at 2x because of a choice made two clips ago is a
+  // surprise, so every newly-active item starts at 1x.
+  //
+  // Component-local state IS the guarantee - with no shared store, one item
+  // structurally cannot reach another item's rate, and the choice lives
+  // exactly as long as this item stays mounted in the feed's render window.
+  //
+  // The rate mirror effect below still MUST keep its `shouldPlay` gate. It is
+  // no longer needed to protect OTHER items (they no longer re-render on this
+  // change at all), but it is still what stops a rate chosen while THIS item
+  // is inactive or paused from starting its own player - on iOS a rate write
+  // IS a play command.
+  const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(DEFAULT_PLAYBACK_SPEED);
   const [isQuickActionsVisible, setIsQuickActionsVisible] = useState(false);
   const { t } = useTranslation();
   const { width: windowWidth } = useWindowDimensions();
@@ -802,13 +813,20 @@ export function DramaFeedItem({
   // every mounted item's player at once. So:
   //   - `shouldPlay` keeps the write inside the window where playback is
   //     already intended, which is the only place it cannot start anything
-  //     that was meant to stay silent. A rate chosen while the item is
-  //     inactive or paused is remembered in the session store and applied
-  //     by this same effect when the item becomes eligible again - the
-  //     same path that hands the NEXT active item the session speed on
-  //     activation.
+  //     that was meant to stay silent. A rate chosen while this item is
+  //     inactive or paused is held in its own local state and applied by
+  //     this same effect once the item becomes eligible again.
   //   - the equality check keeps a re-render from re-issuing an identical
   //     write, since even that would restart a paused player.
+  //
+  // Now that the rate is per-item, a newly-active item holds the default 1
+  // while its fresh player already reports 1, so the equality check elides the
+  // write entirely: activating a default-speed item issues NO rate write at
+  // all. That is strictly safer than the session-scoped predecessor, which
+  // wrote the inherited rate on every activation. The effect still re-runs on
+  // a player-generation swap (`player` is a dep), so an item that IS at 1.5x
+  // re-applies it to the replacement player - the rate survives a token
+  // refresh without surviving into the next video.
   useEffect(() => {
     if (!shouldPlay) {
       return;

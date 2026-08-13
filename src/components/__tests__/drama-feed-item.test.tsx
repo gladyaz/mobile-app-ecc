@@ -7,7 +7,6 @@ import { DramaFeedItem, touchDistance } from '@/components/drama-feed-item';
 import { FeedBottomGap } from '@/constants/theme';
 import { ApiError } from '@/services/api/client';
 import { resetPlaybackInvariantForTests } from '@/services/debug/playback-invariant';
-import { __resetPlaybackSpeedForTests } from '@/stores/playback-speed';
 import type { Episode } from '@/types/series';
 import type {
   HlsPlaybackAuthorization,
@@ -365,6 +364,12 @@ function findPlayerByUri(expectedUri: string) {
         play: jest.Mock;
         pause: jest.Mock;
         rateWrites: number[];
+        // The rate the mock player currently reports. Distinct from
+        // `rateWrites`: that records every write, this is the resulting
+        // state - so a test can assert "this item is AT 1.5x" separately
+        // from "this item was WRITTEN 1.5x", which is what makes the
+        // no-redundant-write assertions meaningful.
+        playbackRate: number;
       };
     }
   }
@@ -433,9 +438,9 @@ describe('DramaFeedItem', () => {
     // The invariant registry is module-level state; without this a test that
     // ever drives a player to playing=true would leak into the next one.
     resetPlaybackInvariantForTests();
-    // The session speed store is module-level too - a test that selects
-    // 1.5x/2x would otherwise leak that speed into every test after it.
-    __resetPlaybackSpeedForTests();
+    // No speed reset is needed here: the playback rate is per-item useState,
+    // so it dies with the unmount at the end of each test. There is no
+    // module-level speed left to leak into the next one.
     // react-native's Jest preset returns undefined from
     // AppState.addEventListener, which breaks useAppForeground's cleanup on
     // unmount - give every test a real subscription shape by default. Tests
@@ -2542,12 +2547,13 @@ describe('DramaFeedItem', () => {
     });
   });
 
-  describe('playback speed selector (session speed: 1x / 1.5x / 2x)', () => {
+  describe('playback speed selector (per-video speed: 1x / 1.5x / 2x)', () => {
     type MockPlayer = {
       playing: boolean;
       play: jest.Mock;
       pause: jest.Mock;
       rateWrites: number[];
+      playbackRate: number;
     };
 
     function latestPlayer(): MockPlayer {
@@ -2616,11 +2622,13 @@ describe('DramaFeedItem', () => {
       expect(latestPlayer().rateWrites).toEqual([1.5]);
     });
 
-    it('a speed change touches only the active player even though every mounted item re-renders', async () => {
-      // The speed now lives in a store shared by all mounted items, so a
-      // change re-renders the inactive copies too - this is the test that
-      // their `shouldPlay` gates still keep every one of their players
-      // untouched.
+    it('a speed change touches only the active player, leaving every other mounted player alone', async () => {
+      // Under the previous session-scoped store this test existed because a
+      // change re-rendered every mounted item and only their `shouldPlay`
+      // gates kept the inactive players untouched. Per-item state removes
+      // that pressure at the source - siblings no longer re-render at all -
+      // but the guarantee is what the product depends on, so it stays pinned
+      // here regardless of which mechanism is currently providing it.
       const { getAllByLabelText } = await renderFeedItem(
         <>
           {[1, 2, 3].map((itemNumber) => (
@@ -2691,7 +2699,7 @@ describe('DramaFeedItem', () => {
       expect(player.rateWrites).toEqual([2]);
     });
 
-    it('rapid A -> B -> C at 2x leaves only C playing, at the session speed', async () => {
+    it('rapid A -> B -> C after choosing 2x on A leaves only C playing, at 1x', async () => {
       // 11R remediation ADDENDUM: see the equivalent MP4 test in the
       // "single-player ownership invariant" describe block above - B and C
       // were both mounted inactive, so their activation is debounced.
@@ -2745,64 +2753,150 @@ describe('DramaFeedItem', () => {
         expect(playerB?.pause).toHaveBeenCalled();
         expect(playerC?.play).toHaveBeenCalled();
         expect(playerC?.pause).not.toHaveBeenCalled();
-        expect(playerC?.rateWrites).toEqual([2]);
-        // No player ever received a rate write beyond the single one its own
-        // active stint justified, and never any value but the chosen 2.
-        [playerA, playerB, playerC].forEach((player) => {
-          expect(player!.rateWrites.length).toBeLessThanOrEqual(1);
-          player!.rateWrites.forEach((writtenRate) => expect(writtenRate).toBe(2));
-        });
+        // The 2x belonged to A alone. C starts at its own default 1x, and
+        // because its fresh player already reports 1 the mirror effect's
+        // equality check elides the write entirely - so C is not merely "at
+        // 1x", it never received a rate write at all. On iOS that absence is
+        // the point: a rate write there IS a play command.
+        expect(playerC?.rateWrites).toEqual([]);
+        expect(playerB?.rateWrites).toEqual([]);
+        // A keeps the single write its own active stint justified.
+        expect(playerA?.rateWrites).toEqual([2]);
       } finally {
         jest.useRealTimers();
       }
     });
 
-    it('the next active video inherits the session speed chosen on a previous one', async () => {
-      // 11R remediation ADDENDUM: video B was mounted inactive alongside A,
-      // so its activation is debounced.
+    // Two videos mounted side by side, one active at a time - the smallest
+    // arrangement that can tell "per video" apart from "per session". Both
+    // render their own speed selector (isClearDisplay), so index 0 addresses
+    // A's controls and index 1 addresses B's.
+    //
+    // 11R remediation ADDENDUM: the inactive item's later activation is
+    // debounced, hence the fake timers and the settle advance.
+    const videoA = buildVideo({ id: 'video-a' });
+    const videoB = buildVideo({ id: 'video-b' });
+    const URI_A = 'https://media.example.com/video-a.mp4';
+    const URI_B = 'https://media.example.com/video-b.mp4';
+    const twoVideoFeed = (activeIndex: number) => (
+      <>
+        <DramaFeedItem video={videoA} {...baseProps} isActive={activeIndex === 0} isClearDisplay />
+        <DramaFeedItem video={videoB} {...baseProps} isActive={activeIndex === 1} isClearDisplay />
+      </>
+    );
+    const isSelected = (element: { props: { accessibilityState?: { selected?: boolean } } }) =>
+      element.props.accessibilityState?.selected === true;
+
+    it('starts a newly-active video at 1x instead of inheriting the previous video’s speed', async () => {
       jest.useFakeTimers();
       try {
-        const videoA = buildVideo({ id: 'video-a' });
-        const videoB = buildVideo({ id: 'video-b' });
-        const feed = (activeIndex: number) => (
-          <>
-            <DramaFeedItem
-              video={videoA}
-              {...baseProps}
-              isActive={activeIndex === 0}
-              isClearDisplay
-            />
-            <DramaFeedItem
-              video={videoB}
-              {...baseProps}
-              isActive={activeIndex === 1}
-              isClearDisplay
-            />
-          </>
-        );
-        const { getAllByLabelText, rerender } = await renderFeedItem(feed(0));
+        const { getAllByLabelText, rerender } = await renderFeedItem(twoVideoFeed(0));
 
         await act(async () => {
-          fireEvent.press(getAllByLabelText('Kecepatan 2x')[0]);
+          fireEvent.press(getAllByLabelText('Kecepatan 1.5x')[0]);
         });
 
         await act(async () => {
-          rerender(feed(1));
+          rerender(twoVideoFeed(1));
         });
         await act(async () => {
           await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
         });
 
-        const playerB = findPlayerByUri('https://media.example.com/video-b.mp4');
+        const playerB = findPlayerByUri(URI_B);
 
+        // B plays, and it plays at 1x. No rate write reaches it at all: its
+        // own default is 1 and its fresh player already reports 1, so the
+        // mirror effect's equality check suppresses the write.
         expect(playerB?.play).toHaveBeenCalled();
-        expect(playerB?.rateWrites).toEqual([2]);
+        expect(playerB?.rateWrites).toEqual([]);
+        expect(playerB?.playbackRate).toBe(1);
+        // B's own selector reflects 1x, not A's 1.5x.
+        expect(isSelected(getAllByLabelText('Kecepatan 1x')[1])).toBe(true);
+        expect(isSelected(getAllByLabelText('Kecepatan 1.5x')[1])).toBe(false);
       } finally {
         jest.useRealTimers();
       }
     });
 
-    it('keeps the session speed across background/foreground without a duplicate rate write', async () => {
+    it('a speed chosen on B leaves A’s speed and player untouched', async () => {
+      jest.useFakeTimers();
+      try {
+        const { getAllByLabelText, rerender } = await renderFeedItem(twoVideoFeed(0));
+
+        await act(async () => {
+          fireEvent.press(getAllByLabelText('Kecepatan 1.5x')[0]);
+        });
+
+        const playerA = findPlayerByUri(URI_A);
+
+        expect(playerA?.rateWrites).toEqual([1.5]);
+
+        await act(async () => {
+          rerender(twoVideoFeed(1));
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+        await act(async () => {
+          fireEvent.press(getAllByLabelText('Kecepatan 2x')[1]);
+        });
+
+        const playerB = findPlayerByUri(URI_B);
+
+        // B took the 2x...
+        expect(playerB?.rateWrites).toEqual([2]);
+        expect(isSelected(getAllByLabelText('Kecepatan 2x')[1])).toBe(true);
+        // ...and none of it reached A, whose stored choice is still 1.5x and
+        // whose player received no further write.
+        expect(playerA?.rateWrites).toEqual([1.5]);
+        expect(playerA?.playbackRate).toBe(1.5);
+        expect(isSelected(getAllByLabelText('Kecepatan 1.5x')[0])).toBe(true);
+        expect(isSelected(getAllByLabelText('Kecepatan 2x')[0])).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('restores the speed a still-mounted video was left at when it becomes active again', async () => {
+      jest.useFakeTimers();
+      try {
+        const { getAllByLabelText, rerender } = await renderFeedItem(twoVideoFeed(0));
+
+        await act(async () => {
+          fireEvent.press(getAllByLabelText('Kecepatan 1.5x')[0]);
+        });
+
+        // Away to B...
+        await act(async () => {
+          rerender(twoVideoFeed(1));
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+        // ...and back to A, which never unmounted.
+        await act(async () => {
+          rerender(twoVideoFeed(0));
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+
+        const playerA = findPlayerByUri(URI_A);
+
+        // A resumes at the 1.5x it was left at. The rate is restored without
+        // a SECOND write: the player never lost the rate, so the equality
+        // check correctly declines to re-issue it.
+        expect(playerA?.playbackRate).toBe(1.5);
+        expect(playerA?.rateWrites).toEqual([1.5]);
+        expect(playerA?.play).toHaveBeenCalled();
+        expect(isSelected(getAllByLabelText('Kecepatan 1.5x')[0])).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('keeps the item’s speed across background/foreground without a duplicate rate write', async () => {
       const appStateListeners: ((state: string) => void)[] = [];
       const addListenerSpy = jest.spyOn(AppState, 'addEventListener').mockImplementation(((
         _event: string,
@@ -2887,6 +2981,47 @@ describe('DramaFeedItem', () => {
       });
 
       expect(latestPlayer().rateWrites).toEqual([1.5, 2]);
+    });
+
+    it('changing rate never rebuilds the player, reloads the source, re-authorizes, or pauses', async () => {
+      const { getByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+      );
+
+      const playerBefore = latestPlayer();
+      const authCallsBefore = mockGetPlaybackAuthorization.mock.calls.length;
+      const playCallsBefore = playerBefore.play.mock.calls.length;
+      // Baselined, not asserted as 1: cold open legitimately builds a second
+      // player when the authorized source replaces the unauthorized one. That
+      // swap happens before this point; what must not grow is the count from
+      // here on.
+      const distinctPlayersBefore = allDistinctPlayers().length;
+
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 1.5x'));
+      });
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 2x'));
+      });
+
+      // The rate really did change twice - this is not a no-op test.
+      expect(playerBefore.rateWrites).toEqual([1.5, 2]);
+      expect(playerBefore.playbackRate).toBe(2);
+
+      // Same player OBJECT, not merely an equivalent one. The expo-video mock
+      // constructs a new player only when the resolved source key changes, so
+      // identity here is simultaneously the proof that nothing rebuilt the
+      // player and that nothing replaced/reloaded its source.
+      expect(latestPlayer()).toBe(playerBefore);
+      expect(allDistinctPlayers()).toHaveLength(distinctPlayersBefore);
+
+      // No re-authorization: a rate is a local player property, never a
+      // reason to re-fetch a playback URL or rotate an Authorization header.
+      expect(mockGetPlaybackAuthorization.mock.calls).toHaveLength(authCallsBefore);
+
+      // And playback was never interrupted to apply it.
+      expect(playerBefore.pause).not.toHaveBeenCalled();
+      expect(playerBefore.play.mock.calls).toHaveLength(playCallsBefore);
     });
   });
 

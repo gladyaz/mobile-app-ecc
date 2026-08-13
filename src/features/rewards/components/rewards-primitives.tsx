@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { formatPoints } from '@/features/rewards/format-points';
 import { RewardAccent, RewardUnavailable, scaledLineHeight } from '@/features/rewards/rewards-theme';
+import { useTranslation } from '@/stores/language';
 
 /**
  * Shared presentational primitives for the Rewards Center.
@@ -20,9 +21,12 @@ import { RewardAccent, RewardUnavailable, scaledLineHeight } from '@/features/re
  * implemented once instead of being re-decided per card.
  */
 
-/** Announced on every CTA that has no server-verified action behind it. */
-export const UNAVAILABLE_CTA_HINT =
-  'Belum tersedia. Menunggu integrasi backend rewards - menekan tombol ini tidak menambah poin.';
+/**
+ * Announced on every CTA that has no server-verified action behind it.
+ * Read through `t` at render time rather than held as a module constant, so
+ * it follows the app language like every other routed string.
+ */
+export const UNAVAILABLE_CTA_HINT_KEY = 'rewards.unavailableCtaHint' as const;
 
 type RewardsCardProps = {
   readonly title: string;
@@ -50,10 +54,12 @@ type PointsPillProps = {
 
 /** "+50 poin" chip. The `+` is presentational; it never implies a credit. */
 export function PointsPill({ points, testID }: PointsPillProps) {
+  const { t } = useTranslation();
+
   return (
     <View style={styles.pointsPill}>
       <Text style={styles.pointsPillText} testID={testID}>
-        +{formatPoints(points)} poin
+        {t('rewards.pointsPill', { points: formatPoints(points) })}
       </Text>
     </View>
   );
@@ -64,9 +70,11 @@ export function PointsPill({ points, testID }: PointsPillProps) {
  * status is visible before the user reads a single card.
  */
 export function PreviewBadge() {
+  const { t } = useTranslation();
+
   return (
     <View style={styles.previewBadge}>
-      <Text style={styles.previewBadgeText}>PRATINJAU</Text>
+      <Text style={styles.previewBadgeText}>{t('rewards.previewBadge')}</Text>
     </View>
   );
 }
@@ -160,9 +168,11 @@ type RewardCtaProps = {
 };
 
 export function RewardCta({ label, isSupported, onPress, testID }: RewardCtaProps) {
+  const { t } = useTranslation();
+
   return (
     <Pressable
-      accessibilityHint={isSupported ? undefined : UNAVAILABLE_CTA_HINT}
+      accessibilityHint={isSupported ? undefined : t(UNAVAILABLE_CTA_HINT_KEY)}
       accessibilityRole="button"
       onPress={onPress}
       style={({ pressed }) => [

@@ -3,6 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { FontFamily, Palette } from '@/constants/theme';
 import { RedeemCard } from '@/features/rewards/components/redeem-card';
 import { RewardEmptyState } from '@/features/rewards/components/rewards-primitives';
+import { useTranslation } from '@/stores/language';
 import type { RewardRedemption, RewardsPrototypeAction } from '@/types/rewards';
 
 /**
@@ -20,13 +21,15 @@ type RedeemPanelProps = {
 };
 
 export function RedeemPanel({ redemptions, onAction }: RedeemPanelProps) {
+  const { t } = useTranslation();
+
   return (
     // No `tabpanel` role: that is a web ARIA role with no React Native
     // equivalent. The `header`-role heading below is how a screen reader
     // user recognises they have landed in this panel.
     <View style={styles.section} testID="rewards-redeem-panel">
       <Text accessibilityRole="header" style={styles.sectionHeading}>
-        Tukar Poin jadi VIP
+        {t('rewards.redeemHeading')}
       </Text>
       {redemptions.length > 0 ? (
         redemptions.map((redemption) => (
@@ -39,7 +42,10 @@ export function RedeemPanel({ redemptions, onAction }: RedeemPanelProps) {
           />
         ))
       ) : (
-        <RewardEmptyState message="Belum ada item penukaran." testID="rewards-redemptions-empty" />
+        <RewardEmptyState
+          message={t('rewards.redemptionsEmpty')}
+          testID="rewards-redemptions-empty"
+        />
       )}
     </View>
   );

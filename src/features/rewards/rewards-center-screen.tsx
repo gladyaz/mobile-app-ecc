@@ -15,8 +15,9 @@ import { EarnPanel } from '@/features/rewards/components/earn-panel';
 import { PointsBalanceCard } from '@/features/rewards/components/points-balance-card';
 import { RedeemPanel } from '@/features/rewards/components/redeem-panel';
 import { PreviewBadge } from '@/features/rewards/components/rewards-primitives';
-import { FIXTURE_REWARDS_SNAPSHOT } from '@/features/rewards/rewards-fixtures';
+import { buildFixtureRewardsSnapshot } from '@/features/rewards/rewards-fixtures';
 import { scaledLineHeight } from '@/features/rewards/rewards-theme';
+import { useTranslation, type Translate } from '@/stores/language';
 import type { RewardsPrototypeAction, RewardsViewState } from '@/types/rewards';
 
 /**
@@ -43,17 +44,14 @@ import type { RewardsPrototypeAction, RewardsViewState } from '@/types/rewards';
  */
 
 const TABS = [
-  { key: 'earn', label: 'Kumpulkan' },
-  { key: 'redeem', label: 'Tukar Poin' },
+  { key: 'earn', labelKey: 'rewards.tabEarn' },
+  { key: 'redeem', labelKey: 'rewards.tabRedeem' },
 ] as const;
 
 type RewardsTabKey = (typeof TABS)[number]['key'];
 
-const FOOTER_DISCLAIMER =
-  'Semua angka di layar ini masih fixture pratinjau dan belum disetujui sebagai nilai reward final.';
-
-function describePendingAction(action: RewardsPrototypeAction): string {
-  return `"${action.label}" belum tersedia. Aksi ini tidak menambah poin, tidak menyelesaikan misi, dan tidak mengaktifkan VIP.`;
+function describePendingAction(t: Translate, action: RewardsPrototypeAction): string {
+  return t('rewards.actionUnavailable', { label: action.label });
 }
 
 type ActionBannerProps = {
@@ -62,6 +60,8 @@ type ActionBannerProps = {
 };
 
 function ActionBanner({ action, onDismiss }: ActionBannerProps) {
+  const { t } = useTranslation();
+
   return (
     <View
       // Android announces this through the live region. iOS has no
@@ -73,14 +73,14 @@ function ActionBanner({ action, onDismiss }: ActionBannerProps) {
       accessibilityRole="alert"
       style={styles.actionBanner}
       testID="rewards-action-banner">
-      <Text style={styles.actionBannerText}>{describePendingAction(action)}</Text>
+      <Text style={styles.actionBannerText}>{describePendingAction(t, action)}</Text>
       <Pressable
-        accessibilityLabel="Tutup pemberitahuan"
+        accessibilityLabel={t('rewards.dismissNotice')}
         accessibilityRole="button"
         onPress={onDismiss}
         style={({ pressed }) => [styles.dismissButton, pressed && styles.pressed]}
         testID="rewards-action-banner-dismiss">
-        <Text style={styles.dismissButtonText}>Tutup</Text>
+        <Text style={styles.dismissButtonText}>{t('rewards.dismiss')}</Text>
       </Pressable>
     </View>
   );
@@ -104,13 +104,20 @@ export type RewardsCenterScreenProps = {
 };
 
 export function RewardsCenterScreen({
-  state = { status: 'ready', snapshot: FIXTURE_REWARDS_SNAPSHOT },
+  state,
   onRetry,
   onClose,
   onPrototypeAction,
 }: RewardsCenterScreenProps) {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<RewardsTabKey>('earn');
   const [pendingAction, setPendingAction] = useState<RewardsPrototypeAction | null>(null);
+  // Built per language rather than read from a module constant, so switching
+  // the app language re-renders the preview copy with everything else.
+  const resolvedState: RewardsViewState = state ?? {
+    status: 'ready',
+    snapshot: buildFixtureRewardsSnapshot(t),
+  };
 
   const handlePrototypeAction = useCallback(
     (action: RewardsPrototypeAction) => {
@@ -121,12 +128,12 @@ export function RewardsCenterScreen({
       setPendingAction(action);
 
       if (Platform.OS === 'ios') {
-        AccessibilityInfo.announceForAccessibility(describePendingAction(action));
+        AccessibilityInfo.announceForAccessibility(describePendingAction(t, action));
       }
 
       onPrototypeAction?.(action);
     },
-    [onPrototypeAction]
+    [onPrototypeAction, t]
   );
 
   return (
@@ -134,7 +141,7 @@ export function RewardsCenterScreen({
       <View style={styles.header}>
         {onClose ? (
           <Pressable
-            accessibilityLabel="Kembali"
+            accessibilityLabel={t('rewards.back')}
             accessibilityRole="button"
             onPress={onClose}
             style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
@@ -142,31 +149,31 @@ export function RewardsCenterScreen({
             <Text style={styles.backButtonText}>‹</Text>
           </Pressable>
         ) : null}
-        <Text style={styles.title}>Rewards</Text>
+        <Text style={styles.title}>{t('rewards.title')}</Text>
         <PreviewBadge />
       </View>
 
-      {state.status === 'loading' ? (
+      {resolvedState.status === 'loading' ? (
         <View style={styles.centered} testID="rewards-loading">
           <ActivityIndicator color={Palette.primary} size="large" />
-          <Text style={styles.centeredText}>Memuat rewards...</Text>
+          <Text style={styles.centeredText}>{t('rewards.loading')}</Text>
         </View>
-      ) : state.status === 'error' ? (
+      ) : resolvedState.status === 'error' ? (
         <View style={styles.centered} testID="rewards-error">
-          <Text style={styles.errorText}>{state.message}</Text>
+          <Text style={styles.errorText}>{resolvedState.message}</Text>
           {onRetry ? (
             <Pressable
               accessibilityRole="button"
               onPress={onRetry}
               style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
               testID="rewards-retry-button">
-              <Text style={styles.retryButtonText}>Coba Lagi</Text>
+              <Text style={styles.retryButtonText}>{t('rewards.retry')}</Text>
             </Pressable>
           ) : null}
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.content}>
-          <PointsBalanceCard wallet={state.snapshot.wallet} />
+          <PointsBalanceCard wallet={resolvedState.snapshot.wallet} />
 
           {pendingAction ? (
             <ActionBanner action={pendingAction} onDismiss={() => setPendingAction(null)} />
@@ -188,7 +195,9 @@ export function RewardsCenterScreen({
                     pressed && styles.pressed,
                   ]}
                   testID={`rewards-tab-${tab.key}`}>
-                  <Text style={[styles.tabText, isActive && styles.tabTextActive]}>{tab.label}</Text>
+                  <Text style={[styles.tabText, isActive && styles.tabTextActive]}>
+                    {t(tab.labelKey)}
+                  </Text>
                 </Pressable>
               );
             })}
@@ -196,19 +205,19 @@ export function RewardsCenterScreen({
 
           {activeTab === 'earn' ? (
             <EarnPanel
-              dailyCheckIn={state.snapshot.dailyCheckIn}
+              dailyCheckIn={resolvedState.snapshot.dailyCheckIn}
               onAction={handlePrototypeAction}
-              tasks={state.snapshot.tasks}
-              watchTime={state.snapshot.watchTime}
+              tasks={resolvedState.snapshot.tasks}
+              watchTime={resolvedState.snapshot.watchTime}
             />
           ) : (
             <RedeemPanel
               onAction={handlePrototypeAction}
-              redemptions={state.snapshot.redemptions}
+              redemptions={resolvedState.snapshot.redemptions}
             />
           )}
 
-          <Text style={styles.footerDisclaimer}>{FOOTER_DISCLAIMER}</Text>
+          <Text style={styles.footerDisclaimer}>{t('rewards.footerDisclaimer')}</Text>
         </ScrollView>
       )}
     </View>

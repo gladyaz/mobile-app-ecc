@@ -95,9 +95,16 @@ describe('rewards scope boundary', () => {
 describe('rewards fixtures', () => {
   // `requireActual` bypasses the tripwire above on purpose: these cases
   // assert on the real placeholder data.
-  const { FIXTURE_REWARDS_SNAPSHOT } = jest.requireActual<
+  const { buildFixtureRewardsSnapshot } = jest.requireActual<
     typeof import('@/features/rewards/rewards-fixtures')
   >('@/features/rewards/rewards-fixtures');
+
+  // The snapshot is localized, so building it needs a `t`. This stub returns
+  // the key it was given: every case below asserts on FLAGS, never on copy,
+  // and a key-returning stub keeps it that way - a test that started
+  // depending on Indonesian wording would fail loudly here instead of
+  // silently pinning one language.
+  const FIXTURE_REWARDS_SNAPSHOT = buildFixtureRewardsSnapshot((key) => key);
 
   it('marks the placeholder wallet as not server-authoritative', () => {
     expect(FIXTURE_REWARDS_SNAPSHOT.wallet.isServerAuthoritative).toBe(false);

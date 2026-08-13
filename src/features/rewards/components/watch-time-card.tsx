@@ -9,6 +9,8 @@ import {
 } from '@/features/rewards/components/rewards-primitives';
 import { formatPoints } from '@/features/rewards/format-points';
 import { RewardAccent } from '@/features/rewards/rewards-theme';
+import type { TranslationKey } from '@/services/i18n/translations';
+import { useTranslation } from '@/stores/language';
 import type {
   WatchTimeMilestone,
   WatchTimeMilestoneStatus,
@@ -30,13 +32,10 @@ import type {
  * viewing time.
  */
 
-const PLACEHOLDER_SOURCE_MESSAGE =
-  'Durasi di sini masih data contoh. Progres asli nanti dikirim server dari analitik tonton, bukan dihitung timer di perangkat.';
-
-const MILESTONE_STATE_LABEL: Record<WatchTimeMilestoneStatus, string> = {
-  CLAIMED: 'Diklaim',
-  REACHED: 'Tercapai',
-  LOCKED: 'Terkunci',
+const MILESTONE_STATE_LABEL_KEY: Record<WatchTimeMilestoneStatus, TranslationKey> = {
+  CLAIMED: 'rewards.milestoneClaimed',
+  REACHED: 'rewards.milestoneReached',
+  LOCKED: 'rewards.milestoneLocked',
 };
 
 type MilestoneChipProps = {
@@ -44,20 +43,31 @@ type MilestoneChipProps = {
 };
 
 function MilestoneChip({ milestone }: MilestoneChipProps) {
+  const { t } = useTranslation();
   const isReached = milestone.status === 'REACHED';
   const isClaimed = milestone.status === 'CLAIMED';
+  const stateLabel = t(MILESTONE_STATE_LABEL_KEY[milestone.status]);
 
   return (
     <View
       accessible
-      accessibilityLabel={`${milestone.minutes} menit, hadiah ${formatPoints(
-        milestone.rewardPoints
-      )} poin, ${MILESTONE_STATE_LABEL[milestone.status].toLowerCase()}`}
+      // toLocaleLowerCase() (not toLowerCase) so the spoken label lowercases
+      // correctly in every app language; it is a no-op for Chinese, which
+      // has no letter case at all.
+      accessibilityLabel={t('rewards.milestoneA11y', {
+        minutes: milestone.minutes,
+        points: formatPoints(milestone.rewardPoints),
+        state: stateLabel.toLocaleLowerCase(),
+      })}
       style={[styles.chip, isClaimed && styles.chipClaimed, isReached && styles.chipReached]}
       testID={`watch-time-milestone-${milestone.id}`}>
-      <Text style={styles.chipMinutes}>{milestone.minutes} mnt</Text>
-      <Text style={styles.chipPoints}>{formatPoints(milestone.rewardPoints)} poin</Text>
-      <Text style={styles.chipState}>{MILESTONE_STATE_LABEL[milestone.status]}</Text>
+      <Text style={styles.chipMinutes}>
+        {t('rewards.minutesShort', { minutes: milestone.minutes })}
+      </Text>
+      <Text style={styles.chipPoints}>
+        {t('rewards.pointsValue', { points: formatPoints(milestone.rewardPoints) })}
+      </Text>
+      <Text style={styles.chipState}>{stateLabel}</Text>
     </View>
   );
 }
@@ -68,6 +78,7 @@ type WatchTimeCardProps = {
 };
 
 export function WatchTimeCard({ watchTime, onPressCta }: WatchTimeCardProps) {
+  const { t } = useTranslation();
   // The bar spans up to the largest configured milestone. Derived from the
   // supplied milestones, so a re-tuned curve needs no code change here.
   const finalMinutes = watchTime.milestones.reduce(
@@ -77,23 +88,25 @@ export function WatchTimeCard({ watchTime, onPressCta }: WatchTimeCardProps) {
 
   return (
     <RewardsCard
-      caption="Kumpulkan durasi tonton untuk membuka hadiah bertingkat."
+      caption={t('rewards.watchTimeCaption')}
       testID="rewards-watch-time"
-      title="Hadiah Durasi Tonton">
+      title={t('rewards.watchTimeTitle')}>
       <View style={styles.summaryRow}>
         <Text style={styles.summaryValue} testID="watch-time-watched-minutes">
-          {formatPoints(watchTime.watchedMinutes)} menit
+          {t('rewards.watchedMinutes', { minutes: formatPoints(watchTime.watchedMinutes) })}
         </Text>
         {/* An empty milestone list is type-legal; "dari 0 menit" would be
             nonsense, so the target half is simply omitted. */}
         {finalMinutes > 0 ? (
-          <Text style={styles.summaryTarget}>dari {formatPoints(finalMinutes)} menit</Text>
+          <Text style={styles.summaryTarget}>
+            {t('rewards.watchTarget', { minutes: formatPoints(finalMinutes) })}
+          </Text>
         ) : null}
       </View>
 
       <RewardProgressBar
         current={watchTime.watchedMinutes}
-        label="Durasi tonton, dalam menit"
+        label={t('rewards.watchProgressA11y')}
         target={finalMinutes}
         testID="watch-time-progress-bar"
       />
@@ -109,13 +122,13 @@ export function WatchTimeCard({ watchTime, onPressCta }: WatchTimeCardProps) {
 
       <RewardCta
         isSupported={watchTime.isClaimSupported}
-        label="Klaim Hadiah Durasi"
+        label={t('rewards.watchTimeCta')}
         onPress={onPressCta}
         testID="watch-time-cta"
       />
 
       {watchTime.source === 'SERVER' && watchTime.isClaimSupported ? null : (
-        <RewardNotice message={PLACEHOLDER_SOURCE_MESSAGE} testID="watch-time-notice" />
+        <RewardNotice message={t('rewards.watchTimePlaceholderSource')} testID="watch-time-notice" />
       )}
     </RewardsCard>
   );

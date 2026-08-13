@@ -1,3 +1,4 @@
+import type { Translate } from '@/stores/language';
 import type {
   DailyCheckIn,
   RewardRedemption,
@@ -31,6 +32,14 @@ import type {
  *
  * When the backend lands, this file is replaced by a service response of
  * the same shape; no component changes.
+ *
+ * WHY A BUILDER RATHER THAN A CONST: Rewards is a routed, user-visible
+ * screen, so its placeholder copy has to speak all three app languages. The
+ * `RewardsSnapshot` MODEL is deliberately unchanged - `title`, `description`
+ * and `ctaLabel` stay plain strings, because that is what a real backend
+ * will send. Only this preview module needs `t`, so only this module takes
+ * it. Swapping in the real service later means deleting this file, not
+ * unpicking a translation key from the domain contract.
  */
 
 const FIXTURE_WALLET: RewardWallet = {
@@ -42,24 +51,26 @@ const FIXTURE_WALLET: RewardWallet = {
   updatedAtLabel: null,
 };
 
-const FIXTURE_DAILY_CHECK_IN: DailyCheckIn = {
-  currentStreakDays: 3,
-  longestStreakDays: 11,
-  todayRewardPoints: 25,
-  isTodayClaimed: false,
-  days: [
-    { day: 1, rewardPoints: 10, state: 'CLAIMED', isBonus: false },
-    { day: 2, rewardPoints: 15, state: 'CLAIMED', isBonus: false },
-    { day: 3, rewardPoints: 20, state: 'CLAIMED', isBonus: false },
-    { day: 4, rewardPoints: 25, state: 'TODAY', isBonus: false },
-    { day: 5, rewardPoints: 30, state: 'UPCOMING', isBonus: false },
-    { day: 6, rewardPoints: 40, state: 'UPCOMING', isBonus: false },
-    { day: 7, rewardPoints: 100, state: 'UPCOMING', isBonus: true },
-  ],
-  ctaLabel: 'Check-in Hari Ini',
-  isClaimSupported: false,
-  resetsAtLabel: 'Reset tiap tengah malam WIB',
-};
+function buildDailyCheckIn(t: Translate): DailyCheckIn {
+  return {
+    currentStreakDays: 3,
+    longestStreakDays: 11,
+    todayRewardPoints: 25,
+    isTodayClaimed: false,
+    days: [
+      { day: 1, rewardPoints: 10, state: 'CLAIMED', isBonus: false },
+      { day: 2, rewardPoints: 15, state: 'CLAIMED', isBonus: false },
+      { day: 3, rewardPoints: 20, state: 'CLAIMED', isBonus: false },
+      { day: 4, rewardPoints: 25, state: 'TODAY', isBonus: false },
+      { day: 5, rewardPoints: 30, state: 'UPCOMING', isBonus: false },
+      { day: 6, rewardPoints: 40, state: 'UPCOMING', isBonus: false },
+      { day: 7, rewardPoints: 100, state: 'UPCOMING', isBonus: true },
+    ],
+    ctaLabel: t('rewards.fixtureCheckInCta'),
+    isClaimSupported: false,
+    resetsAtLabel: t('rewards.fixtureResetsAt'),
+  };
+}
 
 const FIXTURE_WATCH_TIME: WatchTimeProgress = {
   watchedMinutes: 7,
@@ -76,104 +87,117 @@ const FIXTURE_WATCH_TIME: WatchTimeProgress = {
   isClaimSupported: false,
 };
 
-const FIXTURE_TASKS: readonly RewardTask[] = [
-  {
-    id: 'task_social_facebook',
-    type: 'SOCIAL_FOLLOW',
-    socialPlatform: 'FACEBOOK',
-    title: 'Follow Facebook',
-    description: 'Ikuti halaman Facebook resmi untuk update rilis drama terbaru.',
-    rewardPoints: 50,
-    progress: null,
-    status: 'AVAILABLE',
-    ctaLabel: 'Follow',
-    isClaimSupported: false,
-  },
-  {
-    id: 'task_social_youtube',
-    type: 'SOCIAL_FOLLOW',
-    socialPlatform: 'YOUTUBE',
-    title: 'Subscribe YouTube',
-    description: 'Subscribe channel YouTube resmi untuk cuplikan episode baru.',
-    rewardPoints: 50,
-    progress: null,
-    status: 'AVAILABLE',
-    ctaLabel: 'Subscribe',
-    isClaimSupported: false,
-  },
-  {
-    id: 'task_social_tiktok',
-    type: 'SOCIAL_FOLLOW',
-    socialPlatform: 'TIKTOK',
-    title: 'Follow TikTok',
-    description: 'Ikuti akun TikTok resmi untuk potongan drama harian.',
-    rewardPoints: 50,
-    progress: null,
-    status: 'AVAILABLE',
-    ctaLabel: 'Follow',
-    isClaimSupported: false,
-  },
-  {
-    id: 'task_rewarded_ad',
-    type: 'REWARDED_AD',
-    title: 'Tonton Iklan Berhadiah',
-    description: 'Tonton iklan sampai selesai untuk poin tambahan.',
-    rewardPoints: 20,
-    progress: { current: 0, target: 5 },
-    status: 'IN_PROGRESS',
-    ctaLabel: 'Tonton',
-    isClaimSupported: false,
-  },
-  {
-    id: 'task_campaign_placeholder',
-    type: 'CAMPAIGN',
-    title: 'Misi Spesial',
-    description: 'Slot untuk campaign musiman. Kontennya nanti dikirim backend.',
-    rewardPoints: 150,
-    progress: { current: 0, target: 1 },
-    status: 'LOCKED',
-    ctaLabel: 'Belum Dibuka',
-    isClaimSupported: false,
-  },
-];
+function buildTasks(t: Translate): readonly RewardTask[] {
+  return [
+    {
+      id: 'task_social_facebook',
+      type: 'SOCIAL_FOLLOW',
+      socialPlatform: 'FACEBOOK',
+      title: t('rewards.fixtureFacebookTitle'),
+      description: t('rewards.fixtureFacebookDesc'),
+      rewardPoints: 50,
+      progress: null,
+      status: 'AVAILABLE',
+      ctaLabel: t('rewards.ctaFollow'),
+      isClaimSupported: false,
+    },
+    {
+      id: 'task_social_youtube',
+      type: 'SOCIAL_FOLLOW',
+      socialPlatform: 'YOUTUBE',
+      title: t('rewards.fixtureYoutubeTitle'),
+      description: t('rewards.fixtureYoutubeDesc'),
+      rewardPoints: 50,
+      progress: null,
+      status: 'AVAILABLE',
+      ctaLabel: t('rewards.ctaSubscribe'),
+      isClaimSupported: false,
+    },
+    {
+      id: 'task_social_tiktok',
+      type: 'SOCIAL_FOLLOW',
+      socialPlatform: 'TIKTOK',
+      title: t('rewards.fixtureTiktokTitle'),
+      description: t('rewards.fixtureTiktokDesc'),
+      rewardPoints: 50,
+      progress: null,
+      status: 'AVAILABLE',
+      ctaLabel: t('rewards.ctaFollow'),
+      isClaimSupported: false,
+    },
+    {
+      id: 'task_rewarded_ad',
+      type: 'REWARDED_AD',
+      title: t('rewards.fixtureAdTitle'),
+      description: t('rewards.fixtureAdDesc'),
+      rewardPoints: 20,
+      progress: { current: 0, target: 5 },
+      status: 'IN_PROGRESS',
+      ctaLabel: t('rewards.ctaWatch'),
+      isClaimSupported: false,
+    },
+    {
+      id: 'task_campaign_placeholder',
+      type: 'CAMPAIGN',
+      title: t('rewards.fixtureCampaignTitle'),
+      description: t('rewards.fixtureCampaignDesc'),
+      rewardPoints: 150,
+      progress: { current: 0, target: 1 },
+      status: 'LOCKED',
+      ctaLabel: t('rewards.ctaLocked'),
+      isClaimSupported: false,
+    },
+  ];
+}
 
-const FIXTURE_REDEMPTIONS: readonly RewardRedemption[] = [
-  {
-    id: 'redeem_vip_1d',
-    title: 'VIP 1 Hari',
-    description: 'Akses semua episode premium selama 24 jam.',
-    costPoints: 1000,
-    grantsDays: 1,
-    availability: 'AVAILABLE',
-    ctaLabel: 'Tukar',
-    isRedeemSupported: false,
-  },
-  {
-    id: 'redeem_vip_3d',
-    title: 'VIP 3 Hari',
-    description: 'Akses semua episode premium selama 3 hari.',
-    costPoints: 2500,
-    grantsDays: 3,
-    availability: 'INSUFFICIENT_POINTS',
-    ctaLabel: 'Tukar',
-    isRedeemSupported: false,
-  },
-  {
-    id: 'redeem_vip_7d',
-    title: 'VIP 7 Hari',
-    description: 'Akses semua episode premium selama sepekan.',
-    costPoints: 5000,
-    grantsDays: 7,
-    availability: 'COMING_SOON',
-    ctaLabel: 'Segera',
-    isRedeemSupported: false,
-  },
-];
+function buildRedemptions(t: Translate): readonly RewardRedemption[] {
+  return [
+    {
+      id: 'redeem_vip_1d',
+      title: t('rewards.fixtureVip1Title'),
+      description: t('rewards.fixtureVip1Desc'),
+      costPoints: 1000,
+      grantsDays: 1,
+      availability: 'AVAILABLE',
+      ctaLabel: t('rewards.ctaRedeem'),
+      isRedeemSupported: false,
+    },
+    {
+      id: 'redeem_vip_3d',
+      title: t('rewards.fixtureVip3Title'),
+      description: t('rewards.fixtureVip3Desc'),
+      costPoints: 2500,
+      grantsDays: 3,
+      availability: 'INSUFFICIENT_POINTS',
+      ctaLabel: t('rewards.ctaRedeem'),
+      isRedeemSupported: false,
+    },
+    {
+      id: 'redeem_vip_7d',
+      title: t('rewards.fixtureVip7Title'),
+      description: t('rewards.fixtureVip7Desc'),
+      costPoints: 5000,
+      grantsDays: 7,
+      availability: 'COMING_SOON',
+      ctaLabel: t('rewards.ctaSoon'),
+      isRedeemSupported: false,
+    },
+  ];
+}
 
-export const FIXTURE_REWARDS_SNAPSHOT: RewardsSnapshot = {
-  wallet: FIXTURE_WALLET,
-  dailyCheckIn: FIXTURE_DAILY_CHECK_IN,
-  watchTime: FIXTURE_WATCH_TIME,
-  tasks: FIXTURE_TASKS,
-  redemptions: FIXTURE_REDEMPTIONS,
-};
+/**
+ * The preview snapshot, in the caller's current language.
+ *
+ * Every `isClaimSupported` / `isRedeemSupported` flag is hardcoded false and
+ * `wallet.isServerAuthoritative` is hardcoded false, so no argument to this
+ * function can produce a snapshot that claims to be real.
+ */
+export function buildFixtureRewardsSnapshot(t: Translate): RewardsSnapshot {
+  return {
+    wallet: FIXTURE_WALLET,
+    dailyCheckIn: buildDailyCheckIn(t),
+    watchTime: FIXTURE_WATCH_TIME,
+    tasks: buildTasks(t),
+    redemptions: buildRedemptions(t),
+  };
+}

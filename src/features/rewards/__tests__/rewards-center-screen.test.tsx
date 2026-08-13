@@ -1,9 +1,25 @@
 import { fireEvent, render, within } from '@testing-library/react-native';
 
-import { UNAVAILABLE_CTA_HINT } from '@/features/rewards/components/rewards-primitives';
+import { UNAVAILABLE_CTA_HINT_KEY } from '@/features/rewards/components/rewards-primitives';
 import { RewardsCenterScreen } from '@/features/rewards/rewards-center-screen';
-import { FIXTURE_REWARDS_SNAPSHOT } from '@/features/rewards/rewards-fixtures';
+import { buildFixtureRewardsSnapshot } from '@/features/rewards/rewards-fixtures';
+import { DEFAULT_LANGUAGE, translations } from '@/services/i18n/translations';
 import type { RewardsSnapshot } from '@/types/rewards';
+
+// Rewards is now localized. These cases still assert the Indonesian copy the
+// screen has always rendered, because `useTranslation()` falls back to
+// DEFAULT_LANGUAGE when no LanguageProvider wraps the tree - which is
+// exactly how this file renders the screen. Resolving through `translations`
+// rather than re-typing the sentence keeps the assertion honest: if the copy
+// is reworded, the test follows it instead of pinning a stale string.
+const idCopy = translations[DEFAULT_LANGUAGE];
+const UNAVAILABLE_CTA_HINT = idCopy[UNAVAILABLE_CTA_HINT_KEY];
+const FIXTURE_REWARDS_SNAPSHOT = buildFixtureRewardsSnapshot((key, params) =>
+  Object.entries(params ?? {}).reduce(
+    (text, [name, value]) => text.split(`{${name}}`).join(String(value)),
+    idCopy[key]
+  )
+);
 
 /**
  * The Rewards Center must never issue a reward. These tests pin that down

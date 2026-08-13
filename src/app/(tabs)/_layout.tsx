@@ -32,6 +32,15 @@ const TAB_SCREENS: readonly {
     icon: { ios: 'bookmark.fill', android: 'bookmark', web: 'bookmark' },
   },
   {
+    // Preview surface - no reward engine behind it yet. It earns a root tab
+    // anyway because the screen states its own PRATINJAU/PREVIEW status on
+    // every card; a tab that is honest about being a preview is discoverable
+    // without being misleading.
+    name: 'rewards',
+    titleKey: 'rewards.title',
+    icon: { ios: 'gift.fill', android: 'redeem', web: 'redeem' },
+  },
+  {
     name: 'profile',
     titleKey: 'profile.title',
     icon: { ios: 'person.crop.circle.fill', android: 'account_circle', web: 'account_circle' },

@@ -9,6 +9,8 @@ import {
 } from '@/features/rewards/components/rewards-primitives';
 import { formatPoints } from '@/features/rewards/format-points';
 import { RewardAccent, scaledLineHeight } from '@/features/rewards/rewards-theme';
+import type { TranslationKey } from '@/services/i18n/translations';
+import { useTranslation } from '@/stores/language';
 import type { RewardTask, RewardTaskStatus, RewardTaskType, SocialPlatform } from '@/types/rewards';
 
 /**
@@ -21,12 +23,12 @@ import type { RewardTask, RewardTaskStatus, RewardTaskType, SocialPlatform } fro
  * social app or ad unit in this slice.
  */
 
-const STATUS_LABEL: Record<RewardTaskStatus, string> = {
-  LOCKED: 'Terkunci',
-  AVAILABLE: 'Tersedia',
-  IN_PROGRESS: 'Berjalan',
-  CLAIMABLE: 'Siap diklaim',
-  COMPLETED: 'Selesai',
+const STATUS_LABEL_KEY: Record<RewardTaskStatus, TranslationKey> = {
+  LOCKED: 'rewards.taskStatusLocked',
+  AVAILABLE: 'rewards.taskStatusAvailable',
+  IN_PROGRESS: 'rewards.taskStatusInProgress',
+  CLAIMABLE: 'rewards.taskStatusClaimable',
+  COMPLETED: 'rewards.taskStatusCompleted',
 };
 
 /**
@@ -36,13 +38,12 @@ const STATUS_LABEL: Record<RewardTaskStatus, string> = {
  * `EarnPanel` decides which card displays it (see `showUnsupportedNotice`)
  * rather than every card repeating an identical block.
  */
-const UNSUPPORTED_TASK_MESSAGE: Record<RewardTaskType, string> = {
-  SOCIAL_FOLLOW:
-    'Follow belum bisa diverifikasi. Membuka link bukan bukti follow, jadi tombol ini belum memberi poin.',
-  REWARDED_AD: 'Belum terhubung ke SDK iklan. Tombol ini belum memutar iklan dan belum memberi poin.',
-  WATCH_TIME: 'Durasi tonton nanti dihitung server, bukan timer di perangkat.',
-  CAMPAIGN: 'Campaign ini belum dikonfigurasi backend.',
-  DAILY_CHECK_IN: 'Check-in belum aktif sampai backend rewards tersedia.',
+const UNSUPPORTED_TASK_MESSAGE_KEY: Record<RewardTaskType, TranslationKey> = {
+  SOCIAL_FOLLOW: 'rewards.unsupportedSocialFollow',
+  REWARDED_AD: 'rewards.unsupportedRewardedAd',
+  WATCH_TIME: 'rewards.unsupportedWatchTime',
+  CAMPAIGN: 'rewards.unsupportedCampaign',
+  DAILY_CHECK_IN: 'rewards.unsupportedDailyCheckIn',
 };
 
 /**
@@ -81,6 +82,7 @@ export function RewardTaskCard({
   onPressCta,
   showUnsupportedNotice = false,
 }: RewardTaskCardProps) {
+  const { t } = useTranslation();
   const mark = task.socialPlatform ? PLATFORM_MARK[task.socialPlatform] : TYPE_MARK[task.type];
 
   return (
@@ -108,14 +110,14 @@ export function RewardTaskCard({
       {task.progress ? (
         <View style={styles.progressBlock}>
           <View style={styles.progressLabelRow}>
-            <Text style={styles.progressLabel}>Progres</Text>
+            <Text style={styles.progressLabel}>{t('rewards.progress')}</Text>
             <Text style={styles.progressValue} testID={`reward-task-progress-${task.id}`}>
               {formatPoints(task.progress.current)} / {formatPoints(task.progress.target)}
             </Text>
           </View>
           <RewardProgressBar
             current={task.progress.current}
-            label={`Progres ${task.title}`}
+            label={t('rewards.progressA11y', { title: task.title })}
             target={task.progress.target}
             testID={`reward-task-progress-bar-${task.id}`}
           />
@@ -125,7 +127,7 @@ export function RewardTaskCard({
       <View style={styles.bottomRow}>
         <View style={styles.statusChip}>
           <Text style={styles.statusText} testID={`reward-task-status-${task.id}`}>
-            {STATUS_LABEL[task.status]}
+            {t(STATUS_LABEL_KEY[task.status])}
           </Text>
         </View>
         <RewardCta
@@ -138,7 +140,7 @@ export function RewardTaskCard({
 
       {!task.isClaimSupported && showUnsupportedNotice ? (
         <RewardNotice
-          message={UNSUPPORTED_TASK_MESSAGE[task.type]}
+          message={t(UNSUPPORTED_TASK_MESSAGE_KEY[task.type])}
           testID={`reward-task-notice-${task.id}`}
         />
       ) : null}

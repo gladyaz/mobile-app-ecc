@@ -4,6 +4,8 @@ import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { RewardCta, RewardNotice } from '@/features/rewards/components/rewards-primitives';
 import { formatPoints } from '@/features/rewards/format-points';
 import { RewardAccent, scaledLineHeight } from '@/features/rewards/rewards-theme';
+import { useTranslation } from '@/stores/language';
+import type { TranslationKey } from '@/services/i18n/translations';
 import type { RewardRedemption, RewardRedemptionAvailability } from '@/types/rewards';
 
 /**
@@ -17,13 +19,10 @@ import type { RewardRedemption, RewardRedemptionAvailability } from '@/types/rew
  * as a placeholder.
  */
 
-const NOT_SUPPORTED_MESSAGE =
-  'Penukaran belum aktif. Tombol ini tidak memotong poin dan tidak mengaktifkan VIP.';
-
-const AVAILABILITY_LABEL: Record<RewardRedemptionAvailability, string> = {
-  AVAILABLE: 'Bisa ditukar',
-  INSUFFICIENT_POINTS: 'Poin belum cukup',
-  COMING_SOON: 'Segera hadir',
+const AVAILABILITY_LABEL_KEY: Record<RewardRedemptionAvailability, TranslationKey> = {
+  AVAILABLE: 'rewards.availAvailable',
+  INSUFFICIENT_POINTS: 'rewards.availInsufficient',
+  COMING_SOON: 'rewards.availComingSoon',
 };
 
 type RedeemCardProps = {
@@ -32,6 +31,8 @@ type RedeemCardProps = {
 };
 
 export function RedeemCard({ redemption, onPressCta }: RedeemCardProps) {
+  const { t } = useTranslation();
+
   return (
     <View style={styles.card} testID={`redeem-card-${redemption.id}`}>
       <View style={styles.headerRow}>
@@ -41,17 +42,17 @@ export function RedeemCard({ redemption, onPressCta }: RedeemCardProps) {
         </View>
         <View style={styles.durationChip}>
           <Text style={styles.durationValue}>{redemption.grantsDays}</Text>
-          <Text style={styles.durationUnit}>hari</Text>
+          <Text style={styles.durationUnit}>{t('rewards.daysUnit')}</Text>
         </View>
       </View>
 
       <View style={styles.footerRow}>
         <View style={styles.costBlock}>
           <Text style={styles.costValue} testID={`redeem-cost-${redemption.id}`}>
-            {formatPoints(redemption.costPoints)} poin
+            {t('rewards.pointsValue', { points: formatPoints(redemption.costPoints) })}
           </Text>
           <Text style={styles.availability} testID={`redeem-availability-${redemption.id}`}>
-            {AVAILABILITY_LABEL[redemption.availability]}
+            {t(AVAILABILITY_LABEL_KEY[redemption.availability])}
           </Text>
         </View>
         <RewardCta
@@ -63,7 +64,10 @@ export function RedeemCard({ redemption, onPressCta }: RedeemCardProps) {
       </View>
 
       {redemption.isRedeemSupported ? null : (
-        <RewardNotice message={NOT_SUPPORTED_MESSAGE} testID={`redeem-notice-${redemption.id}`} />
+        <RewardNotice
+          message={t('rewards.redeemNotSupported')}
+          testID={`redeem-notice-${redemption.id}`}
+        />
       )}
     </View>
   );

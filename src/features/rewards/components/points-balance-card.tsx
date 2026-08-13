@@ -4,6 +4,7 @@ import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { RewardNotice } from '@/features/rewards/components/rewards-primitives';
 import { formatPoints } from '@/features/rewards/format-points';
 import { RewardAccent } from '@/features/rewards/rewards-theme';
+import { useTranslation } from '@/stores/language';
 import type { RewardWallet } from '@/types/rewards';
 
 /**
@@ -15,25 +16,23 @@ import type { RewardWallet } from '@/types/rewards';
  * misleading cash-value visual.
  */
 
-const NOT_AUTHORITATIVE_MESSAGE =
-  'Saldo ini data pratinjau, bukan poin nyata. Saldo sebenarnya nanti dihitung server dari ledger transaksi.';
-
 type PointsBalanceCardProps = {
   readonly wallet: RewardWallet;
 };
 
 export function PointsBalanceCard({ wallet }: PointsBalanceCardProps) {
+  const { t } = useTranslation();
   const balanceLabel = formatPoints(wallet.balancePoints);
 
   return (
     <View style={styles.card} testID="rewards-balance-card">
-      <View accessible accessibilityLabel={`Saldo poin kamu: ${balanceLabel} poin`}>
-        <Text style={styles.label}>Poin Kamu</Text>
+      <View accessible accessibilityLabel={t('rewards.balanceA11y', { points: balanceLabel })}>
+        <Text style={styles.label}>{t('rewards.yourPoints')}</Text>
         <View style={styles.balanceRow}>
           <Text style={styles.balanceValue} testID="rewards-balance-value">
             {balanceLabel}
           </Text>
-          <Text style={styles.balanceUnit}>poin</Text>
+          <Text style={styles.balanceUnit}>{t('rewards.pointsUnit')}</Text>
         </View>
       </View>
 
@@ -42,9 +41,11 @@ export function PointsBalanceCard({ wallet }: PointsBalanceCardProps) {
       <View style={styles.metaRow}>
         <View
           accessible
-          accessibilityLabel={`Total didapat ${formatPoints(wallet.lifetimeEarnedPoints)} poin`}
+          accessibilityLabel={t('rewards.totalEarnedA11y', {
+            points: formatPoints(wallet.lifetimeEarnedPoints),
+          })}
           style={styles.metaItem}>
-          <Text style={styles.metaLabel}>Total didapat</Text>
+          <Text style={styles.metaLabel}>{t('rewards.totalEarned')}</Text>
           <Text style={styles.metaValue} testID="rewards-lifetime-value">
             {formatPoints(wallet.lifetimeEarnedPoints)}
           </Text>
@@ -52,16 +53,19 @@ export function PointsBalanceCard({ wallet }: PointsBalanceCardProps) {
         {wallet.updatedAtLabel ? (
           <View
             accessible
-            accessibilityLabel={`Diperbarui ${wallet.updatedAtLabel}`}
+            accessibilityLabel={t('rewards.updatedA11y', { value: wallet.updatedAtLabel })}
             style={styles.metaItem}>
-            <Text style={styles.metaLabel}>Diperbarui</Text>
+            <Text style={styles.metaLabel}>{t('rewards.updated')}</Text>
             <Text style={styles.metaValue}>{wallet.updatedAtLabel}</Text>
           </View>
         ) : null}
       </View>
 
       {wallet.isServerAuthoritative ? null : (
-        <RewardNotice message={NOT_AUTHORITATIVE_MESSAGE} testID="rewards-balance-notice" />
+        <RewardNotice
+          message={t('rewards.balanceNotAuthoritative')}
+          testID="rewards-balance-notice"
+        />
       )}
     </View>
   );

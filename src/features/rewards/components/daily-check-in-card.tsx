@@ -9,6 +9,8 @@ import {
 } from '@/features/rewards/components/rewards-primitives';
 import { formatPoints } from '@/features/rewards/format-points';
 import { RewardAccent } from '@/features/rewards/rewards-theme';
+import type { TranslationKey } from '@/services/i18n/translations';
+import { useTranslation } from '@/stores/language';
 import type { DailyCheckIn, DailyCheckInDay } from '@/types/rewards';
 
 /**
@@ -24,13 +26,10 @@ import type { DailyCheckIn, DailyCheckInDay } from '@/types/rewards';
  * are server decisions (see `docs/rewards-domain-contract.md`).
  */
 
-const UNVERIFIED_MESSAGE =
-  'Check-in belum aktif. Streak dan hadiah harian nanti dihitung server, bukan di perangkat.';
-
-const DAY_STATE_SUFFIX: Record<DailyCheckInDay['state'], string> = {
-  CLAIMED: 'sudah diklaim',
-  TODAY: 'hari ini',
-  UPCOMING: 'belum tersedia',
+const DAY_STATE_SUFFIX_KEY: Record<DailyCheckInDay['state'], TranslationKey> = {
+  CLAIMED: 'rewards.dayStateClaimed',
+  TODAY: 'rewards.dayStateToday',
+  UPCOMING: 'rewards.dayStateUpcoming',
 };
 
 type DayChipProps = {
@@ -38,15 +37,19 @@ type DayChipProps = {
 };
 
 function DayChip({ day }: DayChipProps) {
+  const { t } = useTranslation();
   const isToday = day.state === 'TODAY';
   const isClaimed = day.state === 'CLAIMED';
 
   return (
     <View
       accessible
-      accessibilityLabel={`Hari ${day.day}, ${formatPoints(day.rewardPoints)} poin, ${
-        DAY_STATE_SUFFIX[day.state]
-      }${day.isBonus ? ', hadiah bonus' : ''}`}
+      accessibilityLabel={t('rewards.dayChipA11y', {
+        day: day.day,
+        points: formatPoints(day.rewardPoints),
+        state: t(DAY_STATE_SUFFIX_KEY[day.state]),
+        bonus: day.isBonus ? t('rewards.bonusSuffix') : '',
+      })}
       style={[
         styles.dayChip,
         isClaimed && styles.dayChipClaimed,
@@ -54,7 +57,9 @@ function DayChip({ day }: DayChipProps) {
         day.isBonus && !isToday && styles.dayChipBonus,
       ]}
       testID={`check-in-day-${day.day}`}>
-      <Text style={[styles.dayLabel, isToday && styles.dayLabelToday]}>Hari {day.day}</Text>
+      <Text style={[styles.dayLabel, isToday && styles.dayLabelToday]}>
+        {t('rewards.dayLabel', { day: day.day })}
+      </Text>
       <Text style={[styles.dayPoints, isToday && styles.dayPointsToday]}>
         {formatPoints(day.rewardPoints)}
       </Text>
@@ -62,7 +67,13 @@ function DayChip({ day }: DayChipProps) {
           "Hari ini" outranks "Bonus" so the today cue is never lost on a day
           that happens to be both. */}
       <Text style={[styles.dayState, isToday && styles.dayStateToday]}>
-        {isClaimed ? 'Selesai' : isToday ? 'Hari ini' : day.isBonus ? 'Bonus' : 'Nanti'}
+        {isClaimed
+          ? t('rewards.dayDone')
+          : isToday
+            ? t('rewards.dayToday')
+            : day.isBonus
+              ? t('rewards.dayBonus')
+              : t('rewards.dayLater')}
       </Text>
     </View>
   );
@@ -74,32 +85,34 @@ type DailyCheckInCardProps = {
 };
 
 export function DailyCheckInCard({ checkIn, onPressCta }: DailyCheckInCardProps) {
+  const { t } = useTranslation();
+
   return (
     <RewardsCard
       caption={checkIn.resetsAtLabel}
       testID="rewards-daily-check-in"
-      title="Check-in Harian">
+      title={t('rewards.checkInTitle')}>
       {/* Grouped so a screen reader announces two facts, not four fragments
           ("6", "hari beruntun", "19", "rekor terpanjang"). */}
       <View style={styles.streakRow}>
         <View
           accessible
-          accessibilityLabel={`Streak saat ini ${checkIn.currentStreakDays} hari beruntun`}
+          accessibilityLabel={t('rewards.streakCurrentA11y', { days: checkIn.currentStreakDays })}
           style={styles.streakItem}>
           <Text style={styles.streakValue} testID="check-in-current-streak">
             {checkIn.currentStreakDays}
           </Text>
-          <Text style={styles.streakLabel}>hari beruntun</Text>
+          <Text style={styles.streakLabel}>{t('rewards.streakCurrentLabel')}</Text>
         </View>
         <View style={styles.streakDivider} />
         <View
           accessible
-          accessibilityLabel={`Rekor terpanjang ${checkIn.longestStreakDays} hari`}
+          accessibilityLabel={t('rewards.streakLongestA11y', { days: checkIn.longestStreakDays })}
           style={styles.streakItem}>
           <Text style={styles.streakValueMuted} testID="check-in-longest-streak">
             {checkIn.longestStreakDays}
           </Text>
-          <Text style={styles.streakLabel}>rekor terpanjang</Text>
+          <Text style={styles.streakLabel}>{t('rewards.streakLongestLabel')}</Text>
         </View>
       </View>
 
@@ -114,9 +127,11 @@ export function DailyCheckInCard({ checkIn, onPressCta }: DailyCheckInCardProps)
 
       <View style={styles.todayRow}>
         <View style={styles.todayText}>
-          <Text style={styles.todayLabel}>Hadiah hari ini</Text>
+          <Text style={styles.todayLabel}>{t('rewards.todayReward')}</Text>
           <Text style={styles.todayStatus}>
-            {checkIn.isTodayClaimed ? 'Sudah check-in hari ini' : 'Belum check-in hari ini'}
+            {checkIn.isTodayClaimed
+              ? t('rewards.checkedInToday')
+              : t('rewards.notCheckedInToday')}
           </Text>
         </View>
         <PointsPill points={checkIn.todayRewardPoints} testID="check-in-today-reward" />
@@ -130,7 +145,7 @@ export function DailyCheckInCard({ checkIn, onPressCta }: DailyCheckInCardProps)
       />
 
       {checkIn.isClaimSupported ? null : (
-        <RewardNotice message={UNVERIFIED_MESSAGE} testID="check-in-notice" />
+        <RewardNotice message={t('rewards.checkInUnverified')} testID="check-in-notice" />
       )}
     </RewardsCard>
   );

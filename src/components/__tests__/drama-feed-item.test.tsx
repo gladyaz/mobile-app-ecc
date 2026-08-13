@@ -433,6 +433,22 @@ describe('touchDistance', () => {
   });
 });
 
+/**
+ * Opens the Playback Settings sheet on every mounted item. Speed lives there
+ * now - behind the vertical kebab - rather than in the clear-display control
+ * strip the previous design used, so any case that drives speed has to open
+ * it first.
+ */
+async function openPlaybackSettingsFor(
+  getAllByLabelText: (label: string) => unknown[]
+): Promise<void> {
+  for (const kebab of getAllByLabelText('Pengaturan pemutaran')) {
+    await act(async () => {
+      fireEvent.press(kebab as never);
+    });
+  }
+}
+
 describe('DramaFeedItem', () => {
   beforeEach(() => {
     // The invariant registry is module-level state; without this a test that
@@ -625,35 +641,62 @@ describe('DramaFeedItem', () => {
     expect(getByTestId('feed-item-progress-track')).toBeTruthy();
   });
 
-  it('opens clear display from a long press in the middle of the video', async () => {
-    // Arrange
+  it('opens clear display from a single tap on the open video surface', async () => {
+    // The long-press quick-actions menu is gone: nothing advertised it, so
+    // the feature was effectively undiscoverable. A plain tap is the entry
+    // point now, and the kebab below is its discoverable twin.
     const video = buildVideo();
     const onToggleClearDisplay = jest.fn();
 
-    const { getByTestId, queryByLabelText, findByLabelText } = await renderFeedItem(
+    const { getByTestId } = await renderFeedItem(
       <DramaFeedItem video={video} {...baseProps} onToggleClearDisplay={onToggleClearDisplay} />
     );
 
-    // Nothing is offered until the viewer asks for it - a normal tap still
-    // just plays and pauses.
-    expect(queryByLabelText('Tampilan bersih')).toBeNull();
+    fireEvent.press(getByTestId('feed-item-clear-display-surface'));
 
-    // Act
-    fireEvent(getByTestId('feed-item-play-pause'), 'longPress');
-    fireEvent.press(await findByLabelText('Tampilan bersih'));
-
-    // Assert
     expect(onToggleClearDisplay).toHaveBeenCalledWith(true);
   });
 
-  it('gives clear display a visible way out, plus play and speed controls', async () => {
-    // Arrange: without an on-screen exit, the only way back would be a gesture
-    // the viewer has to already know about.
+  it('opens clear display from the Playback Settings sheet', async () => {
     const video = buildVideo();
     const onToggleClearDisplay = jest.fn();
 
-    // Act
-    const { getByLabelText, findByLabelText } = await renderFeedItem(
+    const { getByLabelText, getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} onToggleClearDisplay={onToggleClearDisplay} />
+    );
+
+    await act(async () => {
+      fireEvent.press(getByLabelText('Pengaturan pemutaran'));
+    });
+    await act(async () => {
+      fireEvent(getByTestId('playback-settings-clear-display'), 'valueChange', true);
+    });
+
+    // Same lifted state as the tap - one implementation, three entry points
+    // (tap, sheet switch, pinch).
+    expect(onToggleClearDisplay).toHaveBeenCalledWith(true);
+  });
+
+  it('renders the overflow affordance as a VERTICAL kebab, never a horizontal ellipsis', async () => {
+    const { getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={buildVideo()} {...baseProps} />
+    );
+
+    // Drawn as three stacked child views rather than a glyph name, so no
+    // platform can substitute a horizontal "..." for it.
+    expect(getByTestId('feed-item-kebab-vertical').props.children).toHaveLength(3);
+  });
+
+  it('gives clear display a way out: a tap anywhere restores the chrome', async () => {
+    // The old design answered this with an on-screen control strip, which
+    // meant "clean display" still carried an exit button, a play/pause and a
+    // speed selector. The surface itself is the exit now, so clear display
+    // is genuinely clear - and the affordance is the same tap that got the
+    // viewer here.
+    const video = buildVideo();
+    const onToggleClearDisplay = jest.fn();
+
+    const { getByTestId, queryByLabelText } = await renderFeedItem(
       <DramaFeedItem
         video={video}
         {...baseProps}
@@ -662,17 +705,39 @@ describe('DramaFeedItem', () => {
       />
     );
 
-    // Assert: all three rates are offered, 1x is the resting default, and a
-    // tap moves the selection...
-    expect(getByLabelText('Kecepatan 1x').props.accessibilityState.selected).toBe(true);
-    fireEvent.press(getByLabelText('Kecepatan 1.5x'));
-    expect((await findByLabelText('Kecepatan 1.5x')).props.accessibilityState.selected).toBe(true);
-    expect(getByLabelText('Kecepatan 1x').props.accessibilityState.selected).toBe(false);
-    expect(getByLabelText('Kecepatan 2x').props.accessibilityState.selected).toBe(false);
+    // Nothing but the video is left. The rail steps aside the way it always
+    // has - opacity 0 and pointerEvents none, not unmounted - while the two
+    // controls the old design kept ON SCREEN during clear display (the exit
+    // pill and the speed strip) are gone outright.
+    expect(queryByLabelText('Kecepatan 1x')).toBeNull();
+    expect(queryByLabelText('Keluar dari tampilan bersih')).toBeNull();
+    expect(queryByLabelText('Pengaturan pemutaran')).toBeNull();
 
-    // ...and the exit hands control back to the feed that owns the state.
-    fireEvent.press(getByLabelText('Keluar dari tampilan bersih'));
+    const overlay = getByTestId('feed-item-bottom-overlay');
+
+    expect(StyleSheet.flatten(overlay.props.style).opacity).toBe(0);
+    expect(overlay.props.pointerEvents).toBe('none');
+
+    fireEvent.press(getByTestId('feed-item-clear-display-surface'));
+
     expect(onToggleClearDisplay).toHaveBeenCalledWith(false);
+  });
+
+  it('puts the clear-display surface in the screen-reader order only while the chrome is hidden', async () => {
+    // Full-bleed and always mounted, so it must stay OUT of the reader order
+    // while the real controls are up - otherwise it would be the first stop
+    // on every feed item, ahead of Like/Save/Share.
+    const { getByTestId, rerender } = await renderFeedItem(
+      <DramaFeedItem video={buildVideo()} {...baseProps} />
+    );
+
+    expect(getByTestId('feed-item-clear-display-surface').props.accessible).toBe(false);
+
+    await act(async () => {
+      rerender(<DramaFeedItem video={buildVideo()} {...baseProps} isClearDisplay />);
+    });
+
+    expect(getByTestId('feed-item-clear-display-surface').props.accessible).toBe(true);
   });
 
   it('keeps every action-rail control inside the bottom anchor, in a stable order', async () => {
@@ -691,7 +756,7 @@ describe('DramaFeedItem', () => {
       .getAllByRole('button')
       .map((button) => button.props.accessibilityLabel);
 
-    expect(railButtonLabels).toEqual(['Fullscreen', 'Mute', 'Like', 'Save', 'Share']);
+    expect(railButtonLabels).toEqual(['Mute', 'Like', 'Save', 'Share']);
   });
 
   it('keeps 48px hit targets on the transparent action rail (no heavy opaque pill)', async () => {
@@ -700,7 +765,7 @@ describe('DramaFeedItem', () => {
     const video = buildVideo({ width: 1280, height: 720 });
     const { getByLabelText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
-    for (const label of ['Fullscreen', 'Mute', 'Save', 'Share']) {
+    for (const label of ['Mute', 'Save', 'Share']) {
       const buttonStyle = StyleSheet.flatten(getByLabelText(label).props.style);
 
       expect(buttonStyle.width).toBe(48);
@@ -960,24 +1025,43 @@ describe('DramaFeedItem', () => {
     });
   });
 
-  it('shows the Fullscreen control in the action rail for a horizontal video', async () => {
-    // Issue 3 (11R physical-QA remediation): fullscreen moved from an
-    // ad-hoc absolute pill into the same action rail as Mute/Like/Save/Share.
+  it('offers Fullscreen in Playback Settings for a horizontal video, not in the rail', async () => {
+    // Fullscreen's ENTRY POINT moved again (product decision 2026-08-13):
+    // out of the action rail, into the settings sheet, so the rail carries
+    // only the four social actions and fullscreen is not duplicated across
+    // two surfaces. The implementation and lifecycle are unchanged.
     const video = buildVideo({ width: 1280, height: 720 });
-    const { getByLabelText } = await renderFeedItem(
+    const { getByLabelText, getByTestId, queryByTestId } = await renderFeedItem(
       <DramaFeedItem video={video} {...baseProps} />
     );
 
-    expect(getByLabelText('Fullscreen')).toBeTruthy();
+    const rail = getByTestId('feed-item-actions-rail');
+
+    expect(within(rail).queryByLabelText('Fullscreen')).toBeNull();
+    expect(queryByTestId('playback-settings-fullscreen')).toBeNull();
+
+    await act(async () => {
+      fireEvent.press(getByLabelText('Pengaturan pemutaran'));
+    });
+
+    expect(getByTestId('playback-settings-fullscreen')).toBeTruthy();
   });
 
-  it('does not show the Fullscreen control for a vertical video', async () => {
+  it('does not offer Fullscreen at all for a vertical video', async () => {
     const video = buildVideo({ width: 720, height: 1280 });
-    const { queryByLabelText } = await renderFeedItem(
+    const { getByLabelText, queryByLabelText, queryByTestId } = await renderFeedItem(
       <DramaFeedItem video={video} {...baseProps} />
     );
 
     expect(queryByLabelText('Fullscreen')).toBeNull();
+
+    // Still absent once the sheet is open - a vertical clip has no
+    // fullscreen affordance to offer anywhere.
+    await act(async () => {
+      fireEvent.press(getByLabelText('Pengaturan pemutaran'));
+    });
+
+    expect(queryByTestId('playback-settings-fullscreen')).toBeNull();
   });
 
   it('locks landscape orientation when entering native fullscreen', async () => {
@@ -1145,24 +1229,21 @@ describe('DramaFeedItem', () => {
     // hidden behind the Share button. It now lives IN the rail (same
     // container as Mute/Like/Save/Share, so it is bottom-anchored and
     // z-ordered identically to every other action).
-    it('places Fullscreen inside the same action rail as Share, as an independent sibling', async () => {
+    it('keeps Fullscreen out of the action rail entirely, leaving Share untouched', async () => {
       const video = buildVideo({ width: 1280, height: 720 });
       const { getByTestId, getByLabelText } = await renderFeedItem(
         <DramaFeedItem video={video} {...baseProps} />
       );
 
       const overlay = getByTestId('feed-item-bottom-overlay');
-      const fullscreenButton = within(overlay).getByLabelText('Fullscreen');
-      const shareButton = within(overlay).getByLabelText('Share');
 
-      // Both controls resolve inside the one bottom-anchored overlay - not a
-      // second, independently-positioned element competing for the same
-      // screen space.
-      expect(fullscreenButton).toBeTruthy();
-      expect(shareButton).toBeTruthy();
-      // Distinct pressables, not the same control wearing two labels.
-      expect(fullscreenButton).not.toBe(shareButton);
-      expect(getByLabelText('Fullscreen')).toBe(fullscreenButton);
+      // Share keeps its place; fullscreen simply is not here any more, so it
+      // cannot overlap or swallow anything in the rail - the device-QA issue
+      // this describe was created for is answered by removal rather than by
+      // careful placement.
+      expect(within(overlay).getByLabelText('Share')).toBeTruthy();
+      expect(within(overlay).queryByLabelText('Fullscreen')).toBeNull();
+      expect(getByLabelText('Pengaturan pemutaran')).toBeTruthy();
     });
 
     it('orders the rail Fullscreen, Mute, Like, Save, Share', async () => {
@@ -1174,7 +1255,7 @@ describe('DramaFeedItem', () => {
         .getAllByRole('button')
         .map((button) => button.props.accessibilityLabel);
 
-      expect(labels).toEqual(['Fullscreen', 'Mute', 'Like', 'Save', 'Share']);
+      expect(labels).toEqual(['Mute', 'Like', 'Save', 'Share']);
     });
 
     it('omits Fullscreen from the rail for a vertical video, leaving the rest of the order unchanged', async () => {
@@ -1206,28 +1287,74 @@ describe('DramaFeedItem', () => {
         />
       );
 
-      await fireEvent.press(getByLabelText('Fullscreen'));
       await fireEvent.press(getByLabelText('Mute'));
       await fireEvent.press(getByLabelText('Like'));
       await fireEvent.press(getByLabelText('Save'));
       await fireEvent.press(getByLabelText('Share'));
 
-      expect(mockEnterFullscreen).toHaveBeenCalledTimes(1);
       expect(onToggleMute).toHaveBeenCalledTimes(1);
       expect(onToggleLike).toHaveBeenCalledTimes(1);
       expect(onToggleSave).toHaveBeenCalledTimes(1);
       expect(onShare).toHaveBeenCalledTimes(1);
     });
 
-    it('enters native fullscreen when the rail\'s Fullscreen control is pressed', async () => {
-      const video = buildVideo({ width: 1280, height: 720 });
-      const { getByLabelText } = await renderFeedItem(
-        <DramaFeedItem video={video} {...baseProps} />
-      );
+    it('enters native fullscreen from the Playback Settings sheet', async () => {
+      // Android (and web) enter immediately - there is no presentation stack
+      // to contend with.
+      const originalOS = Platform.OS;
 
-      await fireEvent.press(getByLabelText('Fullscreen'));
+      Platform.OS = 'android';
 
-      expect(mockEnterFullscreen).toHaveBeenCalledTimes(1);
+      try {
+        const video = buildVideo({ width: 1280, height: 720 });
+        const { getByLabelText, getByTestId } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} />
+        );
+
+        await act(async () => {
+          fireEvent.press(getByLabelText('Pengaturan pemutaran'));
+        });
+        await act(async () => {
+          fireEvent.press(getByTestId('playback-settings-fullscreen'));
+        });
+
+        // Reaches the SAME videoViewRef.enterFullscreen() the rail control
+        // used to call - only the entry point moved.
+        expect(mockEnterFullscreen).toHaveBeenCalledTimes(1);
+      } finally {
+        Platform.OS = originalOS;
+      }
+    });
+
+    it('defers fullscreen entry on iOS until the sheet has finished dismissing', async () => {
+      // Presenting the native fullscreen view controller while the sheet
+      // Modal is still animating out is a UIKit presentation conflict
+      // ("presentation in progress"), so the press must NOT enter directly.
+      // The actual call is made from the Modal's onDismiss, which only fires
+      // after the transition completes and only exists on iOS.
+      const originalOS = Platform.OS;
+
+      Platform.OS = 'ios';
+
+      try {
+        const video = buildVideo({ width: 1280, height: 720 });
+        const { getByLabelText, getByTestId, queryByTestId } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} />
+        );
+
+        await act(async () => {
+          fireEvent.press(getByLabelText('Pengaturan pemutaran'));
+        });
+        await act(async () => {
+          fireEvent.press(getByTestId('playback-settings-fullscreen'));
+        });
+
+        expect(mockEnterFullscreen).not.toHaveBeenCalled();
+        // The sheet did close - the entry is pending, not dropped.
+        expect(queryByTestId('playback-settings-fullscreen')).toBeNull();
+      } finally {
+        Platform.OS = originalOS;
+      }
     });
 
     it('hands control to the platform while fullscreen, so there is a visible way out', async () => {
@@ -1278,9 +1405,11 @@ describe('DramaFeedItem', () => {
 
     it('writes playbackRate only when the viewer changes the speed', async () => {
       // Arrange
-      const { getByLabelText } = await renderFeedItem(
-        <DramaFeedItem video={buildVideo()} {...baseProps} isClearDisplay />
+      const { getByLabelText, getAllByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
       );
+
+      await openPlaybackSettingsFor(getAllByLabelText);
 
       // Act
       await act(async () => {
@@ -1568,9 +1697,11 @@ describe('DramaFeedItem', () => {
       // item that is not meant to be playing the only safe number of writes
       // is zero - asserting "it wrote 2 but did not call play()" would be
       // asserting the hazard itself.
-      const { getByLabelText } = await renderFeedItem(
-        <DramaFeedItem video={buildVideo()} {...baseProps} isActive={false} isClearDisplay />
+      const { getByLabelText, getAllByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive={false} />
       );
+
+      await openPlaybackSettingsFor(getAllByLabelText);
 
       await act(async () => {
         fireEvent.press(getByLabelText('Kecepatan 2x'));
@@ -1591,9 +1722,11 @@ describe('DramaFeedItem', () => {
       try {
         // Arrange: the viewer picks 2x on an item that is not playing.
         const video = buildVideo();
-        const { getByLabelText, rerender } = await renderFeedItem(
-          <DramaFeedItem video={video} {...baseProps} isActive={false} isClearDisplay />
+        const { getByLabelText, getAllByLabelText, rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive={false} />
         );
+
+        await openPlaybackSettingsFor(getAllByLabelText);
 
         await act(async () => {
           fireEvent.press(getByLabelText('Kecepatan 2x'));
@@ -1603,7 +1736,7 @@ describe('DramaFeedItem', () => {
 
         // Act: it becomes the active item.
         await act(async () => {
-          rerender(<DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />);
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
         });
         await act(async () => {
           await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
@@ -2547,7 +2680,74 @@ describe('DramaFeedItem', () => {
     });
   });
 
+  describe('playback settings sheet (vertical kebab)', () => {
+    it('opening the sheet never touches the player', async () => {
+      const { getByLabelText, getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      const playerBefore = (useVideoPlayer as jest.Mock).mock.results.at(-1)?.value;
+      const authCallsBefore = mockGetPlaybackAuthorization.mock.calls.length;
+
+      await act(async () => {
+        fireEvent.press(getByLabelText('Pengaturan pemutaran'));
+      });
+
+      expect(getByTestId('playback-settings-sheet')).toBeTruthy();
+      // Same player object, no pause, no re-authorization: the sheet is a
+      // Modal over the feed, not a playback event.
+      expect((useVideoPlayer as jest.Mock).mock.results.at(-1)?.value).toBe(playerBefore);
+      expect(playerBefore.pause).not.toHaveBeenCalled();
+      expect(playerBefore.rateWrites).toEqual([]);
+      expect(mockGetPlaybackAuthorization.mock.calls).toHaveLength(authCallsBefore);
+    });
+
+    it('closes from the scrim without changing anything', async () => {
+      const { getByLabelText, getByTestId, queryByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+
+      await act(async () => {
+        fireEvent.press(getByLabelText('Pengaturan pemutaran'));
+      });
+      await act(async () => {
+        fireEvent.press(getByTestId('playback-settings-scrim'));
+      });
+
+      expect(queryByTestId('playback-settings-sheet')).toBeNull();
+    });
+
+    it('offers exactly Speed, Clear Display and Fullscreen - no quality or download', async () => {
+      const { getByLabelText, getByTestId, queryByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo({ width: 1280, height: 720 })} {...baseProps} isActive />
+      );
+
+      await act(async () => {
+        fireEvent.press(getByLabelText('Pengaturan pemutaran'));
+      });
+
+      expect(getByLabelText('Kecepatan 1x')).toBeTruthy();
+      expect(getByLabelText('Kecepatan 1.5x')).toBeTruthy();
+      expect(getByLabelText('Kecepatan 2x')).toBeTruthy();
+      expect(getByTestId('playback-settings-clear-display')).toBeTruthy();
+      expect(getByTestId('playback-settings-fullscreen')).toBeTruthy();
+      // Manual rendition choice is not part of this app's playback model, so
+      // the sheet must not imply a control the player does not offer.
+      for (const absent of ['Quality', 'Kualitas', 'HLS', 'Download', 'Unduh']) {
+        expect(queryByLabelText(absent)).toBeNull();
+      }
+    });
+  });
+
   describe('playback speed selector (per-video speed: 1x / 1.5x / 2x)', () => {
+    // Speed now lives in the Playback Settings sheet behind the vertical
+    // kebab, not in a clear-display control strip, so every case here opens
+    // the sheet first. Pressing EVERY kebab keeps the multi-item cases
+    // index-aligned: `getAllByLabelText('Kecepatan 1.5x')[n]` still
+    // addresses item n's own control.
+    const openAllPlaybackSettings = openPlaybackSettingsFor;
+
     type MockPlayer = {
       playing: boolean;
       play: jest.Mock;
@@ -2575,9 +2775,10 @@ describe('DramaFeedItem', () => {
     }
 
     it('defaults to 1x, expressed by writing nothing to the player', async () => {
-      const { getByLabelText } = await renderFeedItem(
-        <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+      const { getByLabelText, getAllByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
       );
+      await openAllPlaybackSettings(getAllByLabelText);
 
       expect(getByLabelText('Kecepatan 1x').props.accessibilityState.selected).toBe(true);
       expect(getByLabelText('Kecepatan 1.5x').props.accessibilityState.selected).toBe(false);
@@ -2590,9 +2791,10 @@ describe('DramaFeedItem', () => {
     it.each([[1.5], [2]])(
       'selecting %sx writes that rate to the active player exactly once',
       async (chosenSpeed) => {
-        const { getByLabelText } = await renderFeedItem(
-          <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+        const { getByLabelText, getAllByLabelText } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
         );
+        await openAllPlaybackSettings(getAllByLabelText);
 
         await act(async () => {
           fireEvent.press(getByLabelText(`Kecepatan ${chosenSpeed}x`));
@@ -2606,9 +2808,10 @@ describe('DramaFeedItem', () => {
     );
 
     it('re-selecting the already-chosen speed issues no additional write', async () => {
-      const { getByLabelText } = await renderFeedItem(
-        <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+      const { getByLabelText, getAllByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
       );
+      await openAllPlaybackSettings(getAllByLabelText);
 
       await act(async () => {
         fireEvent.press(getByLabelText('Kecepatan 1.5x'));
@@ -2637,11 +2840,11 @@ describe('DramaFeedItem', () => {
               video={buildVideo({ id: `video-${itemNumber}` })}
               {...baseProps}
               isActive={itemNumber === 1}
-              isClearDisplay
             />
           ))}
         </>
       );
+      await openAllPlaybackSettings(getAllByLabelText);
 
       await act(async () => {
         fireEvent.press(getAllByLabelText('Kecepatan 1.5x')[0]);
@@ -2657,16 +2860,17 @@ describe('DramaFeedItem', () => {
 
     it('choosing a speed while manually paused does not start playback; it applies on resume', async () => {
       const video = buildVideo();
-      const { getByLabelText, rerender } = await renderFeedItem(
-        <DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />
+      const { getByLabelText, rerender, getAllByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
       );
+      await openAllPlaybackSettings(getAllByLabelText);
       const player = latestPlayer();
 
       // The mocked useEvent reads player.playing at render time, so the flag
       // has to be set and re-rendered before the tap sees something to pause.
       player.playing = true;
       await act(async () => {
-        rerender(<DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />);
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
       });
       await act(async () => {
         fireEvent.press(getByLabelText('Pause'));
@@ -2676,7 +2880,7 @@ describe('DramaFeedItem', () => {
 
       player.playing = false;
       await act(async () => {
-        rerender(<DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />);
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
       });
       player.play.mockClear();
 
@@ -2714,13 +2918,13 @@ describe('DramaFeedItem', () => {
                 video={video}
                 {...baseProps}
                 isActive={index === activeIndex}
-                isClearDisplay
               />
             ))}
           </>
         );
 
         const { getAllByLabelText, rerender } = await renderFeedItem(feedWithActive(0));
+        await openAllPlaybackSettings(getAllByLabelText);
 
         // The viewer picks 2x while A holds the active slot.
         await act(async () => {
@@ -2780,8 +2984,8 @@ describe('DramaFeedItem', () => {
     const URI_B = 'https://media.example.com/video-b.mp4';
     const twoVideoFeed = (activeIndex: number) => (
       <>
-        <DramaFeedItem video={videoA} {...baseProps} isActive={activeIndex === 0} isClearDisplay />
-        <DramaFeedItem video={videoB} {...baseProps} isActive={activeIndex === 1} isClearDisplay />
+        <DramaFeedItem video={videoA} {...baseProps} isActive={activeIndex === 0} />
+        <DramaFeedItem video={videoB} {...baseProps} isActive={activeIndex === 1} />
       </>
     );
     const isSelected = (element: { props: { accessibilityState?: { selected?: boolean } } }) =>
@@ -2791,6 +2995,7 @@ describe('DramaFeedItem', () => {
       jest.useFakeTimers();
       try {
         const { getAllByLabelText, rerender } = await renderFeedItem(twoVideoFeed(0));
+        await openAllPlaybackSettings(getAllByLabelText);
 
         await act(async () => {
           fireEvent.press(getAllByLabelText('Kecepatan 1.5x')[0]);
@@ -2823,6 +3028,7 @@ describe('DramaFeedItem', () => {
       jest.useFakeTimers();
       try {
         const { getAllByLabelText, rerender } = await renderFeedItem(twoVideoFeed(0));
+        await openAllPlaybackSettings(getAllByLabelText);
 
         await act(async () => {
           fireEvent.press(getAllByLabelText('Kecepatan 1.5x')[0]);
@@ -2862,6 +3068,7 @@ describe('DramaFeedItem', () => {
       jest.useFakeTimers();
       try {
         const { getAllByLabelText, rerender } = await renderFeedItem(twoVideoFeed(0));
+        await openAllPlaybackSettings(getAllByLabelText);
 
         await act(async () => {
           fireEvent.press(getAllByLabelText('Kecepatan 1.5x')[0]);
@@ -2908,9 +3115,10 @@ describe('DramaFeedItem', () => {
       }) as never);
 
       try {
-        const { getByLabelText } = await renderFeedItem(
-          <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+        const { getByLabelText, getAllByLabelText } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
         );
+        await openAllPlaybackSettings(getAllByLabelText);
 
         await act(async () => {
           fireEvent.press(getByLabelText('Kecepatan 1.5x'));
@@ -2940,9 +3148,10 @@ describe('DramaFeedItem', () => {
 
     it('tab navigation away pauses playback and defers a speed change until the feed regains focus', async () => {
       const video = buildVideo();
-      const { getByLabelText, rerender } = await renderFeedItem(
-        <DramaFeedItem video={video} {...baseProps} isActive isClearDisplay />
+      const { getByLabelText, rerender, getAllByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
       );
+      await openAllPlaybackSettings(getAllByLabelText);
 
       await act(async () => {
         fireEvent.press(getByLabelText('Kecepatan 1.5x'));
@@ -2958,7 +3167,6 @@ describe('DramaFeedItem', () => {
             {...baseProps}
             isActive
             isScreenFocused={false}
-            isClearDisplay
           />
         );
       });
@@ -2976,7 +3184,7 @@ describe('DramaFeedItem', () => {
       // Back on the feed tab, the remembered choice applies exactly once.
       await act(async () => {
         rerender(
-          <DramaFeedItem video={video} {...baseProps} isActive isScreenFocused isClearDisplay />
+          <DramaFeedItem video={video} {...baseProps} isActive isScreenFocused />
         );
       });
 
@@ -2984,9 +3192,10 @@ describe('DramaFeedItem', () => {
     });
 
     it('changing rate never rebuilds the player, reloads the source, re-authorizes, or pauses', async () => {
-      const { getByLabelText } = await renderFeedItem(
-        <DramaFeedItem video={buildVideo()} {...baseProps} isActive isClearDisplay />
+      const { getByLabelText, getAllByLabelText } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
       );
+      await openAllPlaybackSettings(getAllByLabelText);
 
       const playerBefore = latestPlayer();
       const authCallsBefore = mockGetPlaybackAuthorization.mock.calls.length;

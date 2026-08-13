@@ -8,6 +8,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { PlaybackSettingsSheet } from '@/components/playback-settings-sheet';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { FeedProgressBar } from '@/components/feed-progress-bar';
@@ -20,11 +21,7 @@ import {
 } from '@/services/debug/playback-invariant';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { useTranslation } from '@/stores/language';
-import {
-  DEFAULT_PLAYBACK_SPEED,
-  PLAYBACK_SPEEDS,
-  type PlaybackSpeed,
-} from '@/constants/playback-speed';
+import { DEFAULT_PLAYBACK_SPEED, type PlaybackSpeed } from '@/constants/playback-speed';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { recordVideoWatched } from '@/services/ads/ad-controller';
 import { ApiError } from '@/services/api/client';
@@ -47,15 +44,7 @@ const TIME_UPDATE_INTERVAL_SECONDS = 0.25;
 // clumsy grab does not trigger it.
 const PINCH_ACTIVATION_RATIO = 1.25;
 
-// Height of the clear-display control strip. The progress bar is lifted by
-// exactly this much while clear display is on, so it sits directly above the
-// strip rather than behind it.
-const CLEAR_CONTROLS_HEIGHT = 64;
 
-// The quick-actions bar hides itself again rather than waiting to be
-// dismissed, so a long press that was not meant to open anything costs the
-// viewer nothing.
-const QUICK_ACTIONS_TIMEOUT_MS = 4000;
 
 /**
  * Distance between the first two active touches. Returns 0 for anything that
@@ -90,6 +79,11 @@ const TITLE_OVERLAY_TOP_OFFSET = 44;
 // fixed distance below the title block's maximum extent (2 title lines at
 // 23px line-height + the meta line + breathing room) makes the two
 // deterministically non-overlapping at every title length and locale.
+// The kebab sits in the top-right safe area; the episode cluster starts
+// below it. 48 is the button's own size, so the two never overlap.
+const OVERFLOW_TOP_OFFSET = 8;
+const OVERFLOW_BUTTON_SIZE = 48;
+
 const NEXT_EPISODE_TOP_OFFSET = TITLE_OVERLAY_TOP_OFFSET + 76;
 
 // How often to persist playback progress while a video is actively
@@ -298,7 +292,7 @@ export function DramaFeedItem({
   // is inactive or paused from starting its own player - on iOS a rate write
   // IS a play command.
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(DEFAULT_PLAYBACK_SPEED);
-  const [isQuickActionsVisible, setIsQuickActionsVisible] = useState(false);
+  const [isSettingsSheetVisible, setIsSettingsSheetVisible] = useState(false);
   const { t } = useTranslation();
   const { width: windowWidth } = useWindowDimensions();
   const isWideLayout = windowWidth >= WIDE_LAYOUT_BREAKPOINT;
@@ -869,15 +863,6 @@ export function DramaFeedItem({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player]);
 
-  useEffect(() => {
-    if (!isQuickActionsVisible) {
-      return;
-    }
-
-    const timer = setTimeout(() => setIsQuickActionsVisible(false), QUICK_ACTIONS_TIMEOUT_MS);
-
-    return () => clearTimeout(timer);
-  }, [isQuickActionsVisible]);
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
   const { status, error } = useEvent(player, 'statusChange', {
     status: player.status,
@@ -1376,6 +1361,56 @@ export function DramaFeedItem({
     void videoViewRef.current?.enterFullscreen();
   }, []);
 
+  const handleOpenSettingsSheet = useCallback(() => setIsSettingsSheetVisible(true), []);
+  const handleCloseSettingsSheet = useCallback(() => setIsSettingsSheetVisible(false), []);
+
+  // The sheet's Clear Display switch drives the SAME lifted state as the
+  // single tap and the pinch - one implementation, three entry points. The
+  // sheet closes on toggle so the result is immediately visible.
+  const handleToggleClearDisplayFromSheet = useCallback(() => {
+    setIsSettingsSheetVisible(false);
+    onToggleClearDisplay?.(!isClearDisplay);
+  }, [isClearDisplay, onToggleClearDisplay]);
+
+  // Fullscreen keeps the baseline implementation untouched - only its entry
+  // point moved from the action rail into the sheet. On iOS, presenting the
+  // native fullscreen view controller while the sheet Modal is still
+  // animating out is a UIKit presentation conflict, so the call is deferred
+  // to the Modal's onDismiss (which fires only after that transition ends,
+  // and only exists on iOS). Other platforms enter immediately.
+  const pendingFullscreenRef = useRef(false);
+
+  const handleEnterFullscreenFromSheet = useCallback(() => {
+    setIsSettingsSheetVisible(false);
+
+    if (Platform.OS === 'ios') {
+      pendingFullscreenRef.current = true;
+      return;
+    }
+
+    handleEnterFullscreen();
+  }, [handleEnterFullscreen]);
+
+  const handleSettingsSheetDismissed = useCallback(() => {
+    if (!pendingFullscreenRef.current) {
+      return;
+    }
+
+    pendingFullscreenRef.current = false;
+    handleEnterFullscreen();
+  }, [handleEnterFullscreen]);
+
+  // If playback errors while the sheet is open the sheet unmounts (see the
+  // render gate), so drop the flag too - otherwise a later error-recovery
+  // render would resurrect a sheet nobody asked for.
+  useEffect(() => {
+    if (hasPlaybackError) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setIsSettingsSheetVisible(false);
+      pendingFullscreenRef.current = false;
+    }
+  }, [hasPlaybackError]);
+
   const handleNextEpisode = useCallback(() => {
     if (!nextEpisode) {
       return;
@@ -1542,16 +1577,48 @@ export function DramaFeedItem({
         )}
       </View>
 
+      {/* SINGLE TAP -> toggle clear display. Declared FIRST among the
+          overlays, so RN's paint order puts it underneath every interactive
+          control: the centre play/pause button, the kebab, the episode
+          cluster and the action rail all win the touch when they are
+          visible, and this surface only ever receives taps on otherwise open
+          video. In clear display, where all of those are gone, it is the
+          whole screen - which is what makes a tap the way back.
+          
+          WHY THIS DOES NOT BREAK PAGING: a Pressable claims the responder
+          only on touch-START. The moment the finger moves, the enclosing
+          FlatList wins it through onMoveShouldSetResponderCapture, so a
+          vertical swipe still pages and never registers as a tap. Two-finger
+          pinch is likewise unaffected - the container's capture handlers
+          above return true only for exactly two touches, and capture runs
+          before this child is offered the gesture at all.
+          
+          Rendered in the error state too, so hidden chrome can always be
+          restored even on a video that failed to load. */}
+      <Pressable
+        testID="feed-item-clear-display-surface"
+        accessibilityLabel={isClearDisplay ? t('feed.showControls') : t('feed.hideControls')}
+        accessibilityRole="button"
+        // While the chrome is up this full-bleed surface stays OUT of the
+        // screen-reader order, or it would be the first stop on every feed
+        // item, ahead of Like/Save/Share. Once the chrome is hidden it
+        // becomes the accessible way to bring it back.
+        accessible={isClearDisplay}
+        importantForAccessibility={isClearDisplay ? 'yes' : 'no'}
+        onPress={() => onToggleClearDisplay?.(!isClearDisplay)}
+        style={styles.clearDisplaySurface}
+      />
+
       {hasPlaybackError || isClearDisplay ? null : (
         <Pressable
           testID="feed-item-play-pause"
+          // The clear-display control strip used to be the only thing that
+          // labelled play/pause; with that gone, the label belongs on the
+          // control itself. An unlabelled primary playback button is a real
+          // screen-reader defect, not a test detail.
+          accessibilityLabel={isPlaying ? t('feed.pause') : t('feed.play')}
           accessibilityRole="button"
           onPress={handlePlayPause}
-          // Holding the middle of the screen is the way in to clear display.
-          // It sits on the button that is already centred there, so there is
-          // no second invisible target competing for the same touch.
-          onLongPress={() => setIsQuickActionsVisible(true)}
-          delayLongPress={400}
           style={({ pressed }) => [styles.playPauseButton, pressed && styles.buttonPressed]}>
           {/* 11R PLAYBACK-STABILITY REMEDIATION: `!isWaitingToStartPlayback`
               is what stops this glyph - built to mean "paused, tap to
@@ -1606,6 +1673,33 @@ export function DramaFeedItem({
         </Pressable>
       </View>
 
+      {/* Vertical-kebab overflow: the single discoverable entry point to
+          Playback Settings, replacing the long-press quick-actions menu that
+          nothing advertised. Sits in the top-right safe area, above the
+          episode cluster. Chrome, so it hides with everything else in clear
+          display - where a single tap brings it all back. */}
+      {hasPlaybackError || isClearDisplay ? null : (
+        <Pressable
+          testID="feed-item-playback-settings"
+          accessibilityLabel={t('feed.openPlaybackSettings')}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: isSettingsSheetVisible }}
+          onPress={handleOpenSettingsSheet}
+          style={({ pressed }) => [
+            styles.overflowButton,
+            { top: insets.top + OVERFLOW_TOP_OFFSET },
+            pressed && styles.buttonPressed,
+          ]}>
+          {/* Drawn as three stacked dots rather than a glyph name, so it can
+              never resolve to a HORIZONTAL ellipsis on any platform. */}
+          <View style={styles.overflowKebab} testID="feed-item-kebab-vertical">
+            <View style={styles.overflowKebabDot} />
+            <View style={styles.overflowKebabDot} />
+            <View style={styles.overflowKebabDot} />
+          </View>
+        </Pressable>
+      )}
+
       {/* Right-side episode cluster (product feedback 2026-08-12): the "EP n"
           indicator lives directly BENEATH the next-episode control, not in
           the title block and never in a bottom corner. When this is the last
@@ -1646,34 +1740,13 @@ export function DramaFeedItem({
         pointerEvents={isClearDisplay ? 'none' : 'box-none'}
         style={[styles.content, { bottom: overlayBottom }, isClearDisplay && styles.contentHidden]}>
         <View testID="feed-item-actions-rail" style={styles.actions}>
-          {/* Issue 3 (11R physical-QA remediation): fullscreen used to be an
-              ad-hoc absolutely-positioned text pill (top-left of the item,
-              independent of this rail's own bottom anchor), which was easy
-              to miss and, on a physically constrained screen, competed for
-              space with other absolutely-positioned overlays. Folding it in
-              here gives it the same 48px hit target, the same bottom anchor,
-              and the same "no interactive control overlaps another"
-              guarantee every other rail action already has. Shown under the
-              same condition as before - a horizontal video - so a vertical
-              clip's rail is unchanged. */}
-          {hasPlaybackError || !isHorizontal ? null : (
-            <Pressable
-              accessibilityLabel={t('feed.fullscreen')}
-              accessibilityRole="button"
-              onPress={handleEnterFullscreen}
-              style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
-              <SymbolView
-                name={{
-                  ios: 'arrow.up.left.and.arrow.down.right',
-                  android: 'fullscreen',
-                  web: 'fullscreen',
-                }}
-                size={24}
-                tintColor="#fff"
-                style={styles.actionIconShadow}
-              />
-            </Pressable>
-          )}
+          {/* Fullscreen is NOT in this rail any more (product decision
+              2026-08-13). It moved into the Playback Settings sheet behind
+              the vertical-kebab so the rail carries exactly one kind of
+              thing - the four per-video social actions - and so fullscreen
+              is not duplicated across two surfaces. Only the ENTRY POINT
+              moved: `handleEnterFullscreen`, the VideoView fullscreen
+              options, and the enter/exit lifecycle below are untouched. */}
           {hasPlaybackError ? null : (
             <Pressable
               accessibilityLabel={isMuted ? 'Unmute' : 'Mute'}
@@ -1747,96 +1820,28 @@ export function DramaFeedItem({
       {hasPlaybackError ? null : (
         <FeedProgressBar
           progressRatio={playbackProgressRatio}
-          bottom={isClearDisplay ? progressBottom + CLEAR_CONTROLS_HEIGHT : progressBottom}
+          bottom={progressBottom}
         />
       )}
-
-      {isQuickActionsVisible && !isClearDisplay ? (
-        <View style={styles.quickActions}>
-          <Pressable
-            accessibilityLabel="Tampilan bersih"
-            accessibilityRole="button"
-            onPress={() => {
-              setIsQuickActionsVisible(false);
-              onToggleClearDisplay?.(true);
-            }}
-            style={({ pressed }) => [styles.quickActionButton, pressed && styles.buttonPressed]}>
-            <SymbolView
-              name={{
-                ios: 'arrow.up.left.and.arrow.down.right',
-                android: 'fullscreen',
-                web: 'fullscreen',
-              }}
-              size={18}
-              tintColor="#fff"
-            />
-            <Text style={styles.quickActionText}>{t('feed.clearDisplay')}</Text>
-          </Pressable>
-        </View>
-      ) : null}
-
-      {isClearDisplay ? (
-        <View style={styles.clearControls}>
-          <Pressable
-            accessibilityLabel="Keluar dari tampilan bersih"
-            accessibilityRole="button"
-            onPress={() => onToggleClearDisplay?.(false)}
-            style={({ pressed }) => [styles.clearExitButton, pressed && styles.buttonPressed]}>
-            <SymbolView
-              name={{ ios: 'xmark', android: 'close', web: 'close' }}
-              size={20}
-              tintColor="#fff"
-            />
-          </Pressable>
-
-          <View style={styles.clearControlGroup}>
-            <Pressable
-              accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
-              accessibilityRole="button"
-              onPress={handlePlayPause}
-              style={({ pressed }) => [styles.clearControlButton, pressed && styles.buttonPressed]}>
-              <SymbolView
-                name={{
-                  ios: isPlaying ? 'pause.fill' : 'play.fill',
-                  android: isPlaying ? 'pause' : 'play_arrow',
-                  web: isPlaying ? 'pause' : 'play_arrow',
-                }}
-                size={20}
-                tintColor="#fff"
-              />
-            </Pressable>
-            <View style={styles.clearControlDivider} />
-            {PLAYBACK_SPEEDS.map((speedOption) => {
-              const isSelected = playbackSpeed === speedOption;
-
-              return (
-                <Pressable
-                  key={speedOption}
-                  accessibilityLabel={`Kecepatan ${speedOption}x`}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: isSelected }}
-                  onPress={() => setPlaybackSpeed(speedOption)}
-                  style={({ pressed }) => [
-                    styles.clearSpeedOption,
-                    isSelected && styles.clearSpeedOptionSelected,
-                    pressed && styles.buttonPressed,
-                  ]}>
-                  <Text
-                    style={[styles.clearSpeedText, !isSelected && styles.clearSpeedTextDimmed]}>
-                    {`${speedOption}×`}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-      ) : null}
 
       <PremiumPreviewModal
         onDismiss={() => setIsPremiumModalVisible(false)}
         onGoToFreeEpisode={firstFreeEpisodeInSeries ? handleGoToFreeEpisode : undefined}
         visible={isPremiumModalVisible}
       />
+
+      {hasPlaybackError ? null : (
+        <PlaybackSettingsSheet
+          isClearDisplay={isClearDisplay}
+          onClose={handleCloseSettingsSheet}
+          onDismissed={handleSettingsSheetDismissed}
+          onEnterFullscreen={isHorizontal ? handleEnterFullscreenFromSheet : undefined}
+          onSelectPlaybackSpeed={setPlaybackSpeed}
+          onToggleClearDisplay={handleToggleClearDisplayFromSheet}
+          playbackSpeed={playbackSpeed}
+          visible={isSettingsSheetVisible}
+        />
+      )}
     </View>
   );
 }
@@ -1925,6 +1930,38 @@ const styles = StyleSheet.create({
   // `maxWidth` is belt-and-suspenders on top of the vertical separation
   // from the title: even an unexpectedly long localized label can never
   // grow the pill across the frame (its text ellipsizes instead).
+  clearDisplaySurface: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
+  overflowButton: {
+    position: 'absolute',
+    right: 12,
+    width: OVERFLOW_BUTTON_SIZE,
+    height: OVERFLOW_BUTTON_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+  },
+  overflowKebab: {
+    alignItems: 'center',
+    gap: 3.5,
+  },
+  overflowKebabDot: {
+    width: 4.5,
+    height: 4.5,
+    borderRadius: Radius.pill,
+    backgroundColor: '#fff',
+    // Matches the rail's treatment: fully transparent control, legibility
+    // carried by the glyph shadow rather than a scrim.
+    shadowColor: '#000',
+    shadowOpacity: 0.55,
+    shadowRadius: 2.5,
+    shadowOffset: { width: 0, height: 1 },
+  },
   nextEpisodeButton: {
     minWidth: 74,
     maxWidth: 180,
@@ -1949,91 +1986,9 @@ const styles = StyleSheet.create({
   // already know about.
   // Sits just below the middle of the screen so the finger that opened it is
   // not covering it, and well clear of the caption underneath.
-  quickActions: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: '58%',
-    alignItems: 'center',
-  },
-  quickActionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    height: 44,
-    paddingHorizontal: 18,
-    borderRadius: Radius.pill,
-    backgroundColor: 'rgba(13, 13, 15, 0.92)',
-    borderWidth: 1,
-    borderColor: Palette.border,
-  },
-  quickActionText: {
-    fontSize: 14,
-    fontFamily: FontFamily.bold,
-    color: '#fff',
-  },
-  clearControls: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: CLEAR_CONTROLS_HEIGHT,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    backgroundColor: '#000',
-  },
-  clearExitButton: {
-    width: 40,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: Radius.pill,
-    backgroundColor: 'rgba(255, 255, 255, 0.14)',
-  },
-  clearControlGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: 40,
-    paddingHorizontal: 6,
-    borderRadius: Radius.pill,
-    backgroundColor: 'rgba(255, 255, 255, 0.14)',
-  },
-  clearControlButton: {
-    minWidth: 44,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  clearControlDivider: {
-    width: 1,
-    height: 18,
-    backgroundColor: 'rgba(255, 255, 255, 0.28)',
-  },
   // The three speed options share the pill with play/pause; the selected
   // one carries the filled background, so the current rate reads at a
   // glance without needing a separate label.
-  clearSpeedOption: {
-    minWidth: 44,
-    height: 40,
-    paddingHorizontal: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: Radius.pill,
-  },
-  clearSpeedOptionSelected: {
-    backgroundColor: 'rgba(255, 255, 255, 0.22)',
-  },
-  clearSpeedText: {
-    fontSize: 15,
-    fontFamily: FontFamily.bold,
-    color: '#fff',
-    fontVariant: ['tabular-nums'],
-  },
-  clearSpeedTextDimmed: {
-    color: 'rgba(255, 255, 255, 0.55)',
-  },
   // Clear display is about reading the frame underneath, so the metadata and
   // the action rail step out of the way entirely.
   contentHidden: {

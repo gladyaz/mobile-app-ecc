@@ -1614,21 +1614,23 @@ export function DramaFeedItem({
           every retry tap, reproducing the exact "pressed play repeatedly,
           nothing happened" report that ADDENDUM was written to fix. It is
           still rendered when the error coincides with clear display, so
-          hidden chrome always has a way back. */}
+          hidden chrome always has a way back - recovery there is two taps
+          (exit clear display, then retry), which is deliberate: the
+          alternative is a failed video with no way back to its own chrome. */}
       {hasPlaybackError && !isClearDisplay ? null : (
-      <Pressable
-        testID="feed-item-clear-display-surface"
-        accessibilityLabel={isClearDisplay ? t('feed.showControls') : t('feed.hideControls')}
-        accessibilityRole="button"
-        // While the chrome is up this full-bleed surface stays OUT of the
-        // screen-reader order, or it would be the first stop on every feed
-        // item, ahead of Like/Save/Share. Once the chrome is hidden it
-        // becomes the accessible way to bring it back.
-        accessible={isClearDisplay}
-        importantForAccessibility={isClearDisplay ? 'yes' : 'no'}
-        onPress={() => onToggleClearDisplay?.(!isClearDisplay)}
-        style={styles.clearDisplaySurface}
-      />
+        <Pressable
+          testID="feed-item-clear-display-surface"
+          accessibilityLabel={isClearDisplay ? t('feed.showControls') : t('feed.hideControls')}
+          accessibilityRole="button"
+          // While the chrome is up this full-bleed surface stays OUT of the
+          // screen-reader order, or it would be the first stop on every feed
+          // item, ahead of Like/Save/Share. Once the chrome is hidden it
+          // becomes the accessible way to bring it back.
+          accessible={isClearDisplay}
+          importantForAccessibility={isClearDisplay ? 'yes' : 'no'}
+          onPress={() => onToggleClearDisplay?.(!isClearDisplay)}
+          style={styles.clearDisplaySurface}
+        />
       )}
 
       {hasPlaybackError || isClearDisplay ? null : (

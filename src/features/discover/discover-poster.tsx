@@ -91,24 +91,30 @@ type DiscoverPosterProps = {
  */
 export function DiscoverPoster({ card, variant, rank, style }: DiscoverPosterProps) {
   const { t } = useTranslation();
-  // Keyed by series AND url, not a bare boolean, so a recycled cell showing a
-  // different series - or the same series with new artwork - starts out
-  // trusting its own image again.
-  //
-  // KNOWN LIMIT: a transient network failure keeps the fallback until that
-  // cell remounts (tab switch, or scrolling it out of the render window),
-  // because once the fallback replaces the Image there is nothing left to
-  // report a later success. Clearing it from an effect is what this repo's
-  // `react-hooks/set-state-in-effect` rule forbids. The failure direction is
-  // the safe one: a branded tile, never a black rectangle.
-  const [failedSeriesId, setFailedSeriesId] = useState<string | null>(null);
+  /**
+   * A load failure is remembered against the ARTWORK URL that failed, so new
+   * artwork for a series retries while a URL that just failed does not.
+   *
+   * It is deliberately NOT keyed on the card object, even though that would
+   * self-clear and look like free recovery. `cards` is rebuilt on a catalog
+   * refetch AND on every like or save anywhere in the app - and since Discover
+   * has no pull-to-refresh, the like/save path is the one that actually fires
+   * (see docs/discover-content-hub.md). Object-identity keying would therefore
+   * re-issue a request for every failed poster in the render window on every
+   * unrelated tap, against a URL that just failed, from a screen the user is
+   * not looking at. A stale fallback is the cheaper failure.
+   *
+   * KNOWN LIMIT: a transient failure therefore holds the fallback until that
+   * cell remounts (tab switch, or scrolling out of the render window). The
+   * failure direction stays safe - a branded tile, never a black rectangle.
+   * Clean recovery needs a catalog-generation token threaded from the screen;
+   * that is recorded as a follow-up rather than bolted on here.
+   */
+  const [failedPosterUrl, setFailedPosterUrl] = useState<string | null>(null);
 
   const isGrid = variant === 'grid';
   const hasPosterUrl = card.posterUrl.trim().length > 0;
-  // Keyed by the URL as well, so new artwork for the same series clears a
-  // previous failure instead of pinning the fallback forever.
-  const posterKey = `${card.seriesId}|${card.posterUrl}`;
-  const hasFailedToLoad = failedSeriesId === posterKey;
+  const hasFailedToLoad = failedPosterUrl === card.posterUrl;
   const showFallback = !hasPosterUrl || hasFailedToLoad;
 
   const visibleBadges = resolveVisibleBadges(card.badges, { isGrid, rank });
@@ -126,8 +132,7 @@ export function DiscoverPoster({ card, variant, rank, style }: DiscoverPosterPro
           accessible={false}
           cachePolicy="memory-disk"
           contentFit="cover"
-          onError={() => setFailedSeriesId(posterKey)}
-          onLoad={() => setFailedSeriesId(null)}
+          onError={() => setFailedPosterUrl(card.posterUrl)}
           recyclingKey={card.seriesId}
           source={{ uri: card.posterUrl }}
           style={styles.image}

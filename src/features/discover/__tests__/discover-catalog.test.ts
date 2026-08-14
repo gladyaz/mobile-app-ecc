@@ -6,7 +6,6 @@ import {
   formatCompactCount,
   formatLikeTotal,
   rankDiscoverCards,
-  selectDiscoverCards,
 } from '@/features/discover/discover-catalog';
 import type { Video } from '@/types/video';
 
@@ -303,18 +302,6 @@ describe('filterDiscoverCardsByCategory', () => {
   });
 });
 
-describe('selectDiscoverCards', () => {
-  it('keeps catalog order and catalog-wide badges when narrowing to search hits', () => {
-    const cards = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
-    const selected = selectDiscoverCards(cards, new Set(['series-c', 'series-a']));
-
-    expect(selected.map((card) => card.seriesId)).toEqual(['series-a', 'series-c']);
-    // series-a keeps the catalog-wide Hot badge; series-c does not gain one
-    // just because it is now 2nd out of 2 results.
-    expect(selected[0].badges).toContain('Hot');
-    expect(selected[1].badges).not.toContain('Hot');
-  });
-});
 
 describe('formatCompactCount', () => {
   it.each([

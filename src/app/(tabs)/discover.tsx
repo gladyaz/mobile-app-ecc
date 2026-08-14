@@ -7,7 +7,7 @@ import {
   buildDiscoverCards,
   filterDiscoverCardsByCategory,
   rankDiscoverCards,
-  selectDiscoverCards,
+  translateCategory,
 } from '@/features/discover/discover-catalog';
 import { DiscoverHeader } from '@/features/discover/discover-header';
 import {
@@ -50,6 +50,12 @@ export default function DiscoverScreen() {
   // category argument the previous Discover screen passed - and maps the
   // matching episodes onto their series cards, so badges and ordering stay
   // identical to the rest of Discover.
+  //
+  // It then also matches the LOCALIZED category label. `searchVideos` compares
+  // the raw English category value, so once the chips render "Romantis" the
+  // search hint's promise to match "kategori" would otherwise be false in
+  // every language but English. The selected category is still applied on the
+  // raw value, so this can only surface cards that filter already allows.
   const searchResults = useMemo(() => {
     if (!isSearching) {
       return [];
@@ -58,9 +64,19 @@ export default function DiscoverScreen() {
     const matchedSeriesIds = new Set(
       searchVideos(videos, searchQuery, selectedCategory).map((video) => video.seriesId)
     );
+    const normalizedQuery = searchQuery.trim().toLowerCase();
 
-    return selectDiscoverCards(cards, matchedSeriesIds);
-  }, [cards, isSearching, searchQuery, selectedCategory, videos]);
+    return cards.filter((card) => {
+      if (selectedCategory !== 'All' && card.category !== selectedCategory) {
+        return false;
+      }
+
+      return (
+        matchedSeriesIds.has(card.seriesId) ||
+        translateCategory(t, card.category).toLowerCase().includes(normalizedQuery)
+      );
+    });
+  }, [cards, isSearching, searchQuery, selectedCategory, t, videos]);
 
   const homeCards = useMemo(
     () => filterDiscoverCardsByCategory(cards, selectedCategory),

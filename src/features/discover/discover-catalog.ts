@@ -1,3 +1,4 @@
+import type { TranslationKey } from '@/services/i18n/translations';
 import type { Translate } from '@/stores/language';
 import { groupVideosIntoSeries } from '@/services/videos/series-service';
 import type { VideoCategoryFilter } from '@/services/videos/video-service';
@@ -107,14 +108,16 @@ function buildBadges(
   card: DiscoverSeriesCardDraft,
   hotSeriesIds: ReadonlySet<string>
 ): readonly DiscoverBadge[] {
+  // Premium first: it is the access status, so it takes the prime corner of
+  // the poster and is read out first. Hot follows as the editorial signal.
   const badges: DiscoverBadge[] = [];
-
-  if (hotSeriesIds.has(card.seriesId)) {
-    badges.push('Hot');
-  }
 
   if (card.hasPremiumEpisodes) {
     badges.push('Premium');
+  }
+
+  if (hotSeriesIds.has(card.seriesId)) {
+    badges.push('Hot');
   }
 
   return badges;
@@ -187,12 +190,26 @@ export function filterDiscoverCardsByCategory(
   return cards.filter((card) => card.category === category);
 }
 
-/** Keeps catalog order while narrowing to the given series (e.g. search hits). */
-export function selectDiscoverCards(
-  cards: readonly DiscoverSeriesCard[],
-  seriesIds: ReadonlySet<string>
-): readonly DiscoverSeriesCard[] {
-  return cards.filter((card) => seriesIds.has(card.seriesId));
+/**
+ * Category values are DATA: they are the filter keys, they come from
+ * `getCategories()`, and `searchVideos` still matches on them. Only the
+ * DISPLAY of a category is localized, through this map - nothing downstream
+ * ever compares translated text.
+ */
+const CATEGORY_LABEL_KEY: Record<VideoCategoryFilter, TranslationKey> = {
+  All: 'discover.categoryAll',
+  Romance: 'discover.categoryRomance',
+  Revenge: 'discover.categoryRevenge',
+  Family: 'discover.categoryFamily',
+  CEO: 'discover.categoryCEO',
+  Historical: 'discover.categoryHistorical',
+  Action: 'discover.categoryAction',
+  Comedy: 'discover.categoryComedy',
+  Drama: 'discover.categoryDrama',
+};
+
+export function translateCategory(t: Translate, category: VideoCategoryFilter): string {
+  return t(CATEGORY_LABEL_KEY[category]);
 }
 
 const THOUSAND = 1000;

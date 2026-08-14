@@ -1,32 +1,38 @@
-import { Image } from 'expo-image';
 import { memo, useCallback, useMemo, type ReactElement } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
-import { formatLikeTotal } from '@/features/discover/discover-catalog';
-import type { TranslationKey } from '@/services/i18n/translations';
-import { useTranslation, type Translate } from '@/stores/language';
+import { formatLikeTotal, translateCategory } from '@/features/discover/discover-catalog';
+import {
+  BADGE_LABEL_KEY,
+  DiscoverPoster,
+  OVERLAY_MAX_FONT_SCALE,
+  resolveVisibleBadges,
+} from '@/features/discover/discover-poster';
 import {
   DISCOVER_GRID_GAP,
-  POSTER_ASPECT_RATIO,
+  POSTER_TITLE_LINE_HEIGHT,
+  POSTER_TITLE_MAX_LINES,
   type DiscoverGrid,
 } from '@/features/discover/use-discover-grid';
-import type { DiscoverBadge, DiscoverSeriesCard } from '@/types/discover';
-
-/** Poster thumbnail width for the compact list rows (New + Rankings). */
-const LIST_ROW_POSTER_WIDTH = 62;
+import { useTranslation, type Translate } from '@/stores/language';
+import type { DiscoverSeriesCard } from '@/types/discover';
 
 /**
- * The poster overlays (rank, badges, episode-count pill) still scale with the
- * user's text size - they are the only visible carrier of the episode count on
- * a poster card - but are capped so they cannot outgrow the poster they sit on.
- * The row they live in is bounded on both sides and wraps, so a capped overlay
- * can never be clipped.
+ * Poster thumbnail width for the compact list rows (New + Rankings). Sized to
+ * fit the access badge on one line without wrapping over the artwork, while
+ * leaving the text column enough width for a long localized metadata line on
+ * a 320pt phone.
  */
-const POSTER_OVERLAY_MAX_FONT_SCALE = 1.4;
+const LIST_ROW_POSTER_WIDTH = 68;
+
+/** Keeps New/Rankings rows readable instead of full-bleed on a tablet. */
+const LIST_ROW_MAX_WIDTH = 620;
 
 type CardLabelExtras = {
   readonly rank?: number;
+  /** Same media surface the card renders, so the label matches what is drawn. */
+  readonly isGrid: boolean;
   /** Announced verbatim, e.g. the ranking metric printed on the card. */
   readonly metric?: string;
   readonly channelName?: string;
@@ -35,72 +41,40 @@ type CardLabelExtras = {
 /**
  * `Pressable` is accessible by default, so this label replaces the card's
  * child text entirely - every visible fact has to be in here, including the
- * episode-count pill and the ranking metric.
+ * episode count and the ranking metric. One card announces as one unit;
+ * nothing inside it is separately focusable.
+ *
+ * Badges come from the same budget the poster renders with, so the label can
+ * never announce a chip the card does not draw.
  */
 function buildCardAccessibilityLabel(
   t: Translate,
   card: DiscoverSeriesCard,
-  { rank, metric, channelName }: CardLabelExtras = {}
+  { rank, metric, channelName, isGrid }: CardLabelExtras
 ): string {
+  // Order matches how the card reads: identity first, then access status,
+  // then size - "Kontrak Cinta CEO Dingin, Premium, 6 episode" - with the
+  // softer metadata trailing.
   const parts = [
     rank ? t('discover.rankA11y', { rank }) : undefined,
     card.title,
-    card.category,
-    channelName,
+    ...resolveVisibleBadges(card.badges, { isGrid, rank }).map((badge) =>
+      t(BADGE_LABEL_KEY[badge])
+    ),
     t('discover.episodeCount', { count: card.episodeCount }),
+    translateCategory(t, card.category),
+    channelName,
     metric,
-    ...card.badges.map((badge) => t(BADGE_LABEL_KEY[badge])),
   ];
 
   return parts.filter(Boolean).join(', ');
 }
 
-/**
- * Badge values are DATA (a `DiscoverBadge` union produced by the catalog), so
- * they are mapped to copy here rather than being translated at the source -
- * the ranking rules keep comparing stable identifiers, not display text.
- */
-const BADGE_LABEL_KEY: Record<DiscoverBadge, TranslationKey> = {
-  Hot: 'discover.badgeHot',
-  Premium: 'discover.badgePremium',
-};
-
-type BadgeRowProps = {
-  readonly badges: readonly DiscoverBadge[];
-  readonly rank?: number;
-};
-
-function BadgeRow({ badges, rank }: BadgeRowProps) {
-  const { t } = useTranslation();
-
-  if (!rank && badges.length === 0) {
-    return null;
-  }
-
-  return (
-    <View style={styles.badgeRow}>
-      {rank ? (
-        <Text
-          maxFontSizeMultiplier={POSTER_OVERLAY_MAX_FONT_SCALE}
-          style={[styles.badge, styles.rankBadge]}>
-          #{rank}
-        </Text>
-      ) : null}
-      {badges.map((badge) => (
-        <Text
-          maxFontSizeMultiplier={POSTER_OVERLAY_MAX_FONT_SCALE}
-          key={badge}
-          style={[styles.badge, badge === 'Premium' ? styles.premiumBadge : styles.hotBadge]}>
-          {t(BADGE_LABEL_KEY[badge])}
-        </Text>
-      ))}
-    </View>
-  );
-}
-
 type DiscoverPosterCardProps = {
   readonly card: DiscoverSeriesCard;
   readonly width: number;
+  /** Two title lines reserved at the current text size, so grid rows align. */
+  readonly titleMinHeight: number;
   readonly onPress: (seriesId: string) => void;
   /** Renders a rank pill on the poster; used by the Rankings featured rail. */
   readonly rank?: number;
@@ -115,6 +89,7 @@ type DiscoverPosterCardProps = {
 export const DiscoverPosterCard = memo(function DiscoverPosterCard({
   card,
   width,
+  titleMinHeight,
   onPress,
   rank,
   subtitle,
@@ -122,34 +97,24 @@ export const DiscoverPosterCard = memo(function DiscoverPosterCard({
   const { t } = useTranslation();
 
   const cardStyle = useMemo(() => ({ width }), [width]);
+  const titleStyle = useMemo(() => ({ minHeight: titleMinHeight }), [titleMinHeight]);
   const handlePress = useCallback(() => onPress(card.seriesId), [card.seriesId, onPress]);
 
   return (
     <Pressable
-      accessibilityLabel={buildCardAccessibilityLabel(t, card, { rank, metric: subtitle })}
+      accessibilityLabel={buildCardAccessibilityLabel(t, card, { rank, metric: subtitle, isGrid: true })}
       accessibilityRole="button"
       onPress={handlePress}
       style={({ pressed }) => [cardStyle, pressed && styles.pressed]}>
-      <View style={styles.poster}>
-        <Image
-          accessible={false}
-          cachePolicy="memory-disk"
-          contentFit="cover"
-          recyclingKey={card.seriesId}
-          source={{ uri: card.posterUrl }}
-          style={styles.posterImage}
-          transition={160}
-        />
-        <BadgeRow badges={card.badges} rank={rank} />
-        <Text allowFontScaling={false} style={styles.episodePill}>
-          {t('discover.episodePill', { count: card.episodeCount })}
-        </Text>
-      </View>
-      <Text numberOfLines={2} style={styles.posterTitle}>
+      <DiscoverPoster card={card} rank={rank} variant="grid" />
+      <Text
+        ellipsizeMode="tail"
+        numberOfLines={POSTER_TITLE_MAX_LINES}
+        style={[styles.posterTitle, titleStyle]}>
         {card.title}
       </Text>
-      <Text numberOfLines={1} style={styles.posterMeta}>
-        {subtitle ?? card.category}
+      <Text ellipsizeMode="tail" numberOfLines={1} style={styles.posterMeta}>
+        {subtitle ?? translateCategory(t, card.category)}
       </Text>
     </Pressable>
   );
@@ -163,6 +128,11 @@ type DiscoverListRowProps = {
   readonly showLikeCount?: boolean;
 };
 
+/**
+ * The horizontal card used by New and Rankings. Its three zones are fixed and
+ * never overlap: an optional rank column, the media surface (which owns every
+ * badge), and the text column (which owns every line of copy).
+ */
 export const DiscoverListRow = memo(function DiscoverListRow({
   card,
   onPress,
@@ -177,38 +147,35 @@ export const DiscoverListRow = memo(function DiscoverListRow({
     <Pressable
       accessibilityLabel={buildCardAccessibilityLabel(t, card, {
         rank,
+        isGrid: false,
         channelName: card.channelName,
         metric: showLikeCount ? formatLikeTotal(t, card.likeCount) : undefined,
       })}
       accessibilityRole="button"
       onPress={handlePress}
       style={({ pressed }) => [styles.listRow, pressed && styles.pressed]}>
-      {rank ? <Text style={styles.listRank}>{rank}</Text> : null}
-      <View style={styles.listPoster}>
-        <Image
-          accessible={false}
-          cachePolicy="memory-disk"
-          contentFit="cover"
-          recyclingKey={card.seriesId}
-          source={{ uri: card.posterUrl }}
-          style={styles.posterImage}
-          transition={160}
-        />
-      </View>
+      {rank ? (
+        // The rank digit is the point of this row, so it scales with the
+        // user's text size - capped, not frozen.
+        <Text maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE} style={styles.listRank}>
+          {rank}
+        </Text>
+      ) : null}
+      <DiscoverPoster card={card} style={styles.listPoster} variant="row" />
       <View style={styles.listBody}>
-        <Text numberOfLines={2} style={styles.listTitle}>
+        <Text ellipsizeMode="tail" numberOfLines={2} style={styles.listTitle}>
           {card.title}
         </Text>
-        <Text numberOfLines={1} style={styles.listMeta}>
-          {card.category} · {t('discover.episodeCount', { count: card.episodeCount })}
+        <Text ellipsizeMode="tail" numberOfLines={1} style={styles.listMeta}>
+          {translateCategory(t, card.category)} ·{' '}
+          {t('discover.episodeCount', { count: card.episodeCount })}
         </Text>
-        <Text numberOfLines={1} style={styles.listChannel}>
+        <Text ellipsizeMode="tail" numberOfLines={1} style={styles.listChannel}>
           {card.channelName}
         </Text>
         {showLikeCount ? (
           <Text style={styles.listMetric}>{formatLikeTotal(t, card.likeCount)}</Text>
         ) : null}
-        <BadgeRow badges={card.badges} />
       </View>
     </Pressable>
   );
@@ -235,9 +202,14 @@ export function DiscoverPosterGrid({
 }: DiscoverPosterGridProps) {
   const renderItem = useCallback(
     ({ item }: { item: DiscoverSeriesCard }) => (
-      <DiscoverPosterCard card={item} onPress={onSelect} width={grid.posterWidth} />
+      <DiscoverPosterCard
+        card={item}
+        onPress={onSelect}
+        titleMinHeight={grid.titleMinHeight}
+        width={grid.posterWidth}
+      />
     ),
-    [grid.posterWidth, onSelect]
+    [grid.posterWidth, grid.titleMinHeight, onSelect]
   );
 
   return (
@@ -260,24 +232,10 @@ export function DiscoverPosterGrid({
 }
 
 const styles = StyleSheet.create({
-  poster: {
-    width: '100%',
-    aspectRatio: POSTER_ASPECT_RATIO,
-    borderRadius: Radius.md,
-    backgroundColor: Palette.backgroundElevated,
-    overflow: 'hidden',
-  },
-  posterImage: {
-    width: '100%',
-    height: '100%',
-  },
   posterTitle: {
     marginTop: 7,
-    // Reserves both lines so a 1-line title does not lift the meta line of its
-    // grid-row neighbours out of alignment.
-    minHeight: 32,
     fontSize: 12.5,
-    lineHeight: 16,
+    lineHeight: POSTER_TITLE_LINE_HEIGHT,
     fontFamily: FontFamily.bold,
     color: Palette.text,
   },
@@ -286,52 +244,6 @@ const styles = StyleSheet.create({
     fontSize: 10.5,
     fontFamily: FontFamily.medium,
     color: Palette.textMuted,
-  },
-  // Bounded on both sides and allowed to wrap so overlay pills can never be
-  // clipped by the poster's `overflow: hidden`. The pills opt out of font
-  // scaling because they are decorative duplicates of the accessibility label.
-  badgeRow: {
-    position: 'absolute',
-    top: 6,
-    left: 6,
-    right: 6,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-  },
-  badge: {
-    fontSize: 9,
-    lineHeight: 12,
-    fontFamily: FontFamily.extraBold,
-    letterSpacing: 0.2,
-    color: Palette.text,
-    borderRadius: 4,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    overflow: 'hidden',
-  },
-  hotBadge: {
-    backgroundColor: Palette.brandRed,
-  },
-  premiumBadge: {
-    backgroundColor: Palette.primary,
-  },
-  rankBadge: {
-    backgroundColor: 'rgba(13, 13, 15, 0.82)',
-  },
-  episodePill: {
-    position: 'absolute',
-    right: 6,
-    bottom: 6,
-    fontSize: 9,
-    lineHeight: 12,
-    fontFamily: FontFamily.bold,
-    color: Palette.text,
-    backgroundColor: 'rgba(13, 13, 15, 0.78)',
-    borderRadius: 4,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    overflow: 'hidden',
   },
   gridContent: {
     gap: DISCOVER_GRID_GAP + 6,
@@ -343,6 +255,12 @@ const styles = StyleSheet.create({
   listRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    // Centred and capped so a tablet does not stretch a 68pt thumbnail across
+    // 700pt of row with the text stranded on the left. Phones are unaffected:
+    // their rows are narrower than the cap.
+    width: '100%',
+    maxWidth: LIST_ROW_MAX_WIDTH,
+    alignSelf: 'center',
     gap: 12,
     padding: 10,
     borderWidth: 1,
@@ -351,19 +269,14 @@ const styles = StyleSheet.create({
     backgroundColor: Palette.surface,
   },
   listRank: {
-    minWidth: 22,
+    minWidth: 24,
     textAlign: 'center',
-    fontSize: 15,
+    fontSize: 17,
     fontFamily: FontFamily.extraBold,
     color: Palette.primaryHover,
   },
   listPoster: {
     width: LIST_ROW_POSTER_WIDTH,
-    aspectRatio: POSTER_ASPECT_RATIO,
-    borderRadius: Radius.sm,
-    backgroundColor: Palette.backgroundElevated,
-    overflow: 'hidden',
-    flexShrink: 0,
   },
   listBody: {
     flex: 1,

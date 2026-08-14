@@ -94,6 +94,37 @@ Both badges are derived, not backend flags:
 The badge describes the content, not the viewer: an entitled user still sees
 `Premium` on a series that contains premium episodes.
 
+**Badge budget (UI refinement slice).** Badges live on the media surface in
+every variant, and `DiscoverPoster` decides how many of them fit:
+
+| Surface | Overlays |
+| --- | --- |
+| Grid poster (unranked) | `Premium`, `Hot`, episode-count pill |
+| Top Hits featured card | rank pill, `Premium` |
+| Compact row (New, Rankings) | `Premium` |
+
+`Premium` is access status and always survives. `Hot` yields when a stronger
+signal or a narrower surface takes over: a ranked card already says "popular"
+with its rank, and a 68pt row poster cannot carry a second chip without
+wrapping it over the artwork. The accessibility label still announces every
+badge the series has earned, so a screen-reader user is never told less than a
+sighted one.
+
+## Artwork and its fallback
+
+`posterUrl` is the representative episode's `thumbnailUrl`, which is
+**optional** on `BackendVideoDto` and is mapped to `''` when the backend omits
+it. `DiscoverPoster` therefore renders a branded fallback - the series initial
+in the app's accent on an elevated surface, with an accent bar - whenever the
+URL is empty, whitespace, or the image fails to load. The frame itself uses
+`Palette.surface` with a hairline border rather than `Palette.backgroundElevated`,
+so a card that is still loading reads as a card instead of a hole in the
+screen.
+
+The fallback invents no URL and adds no image provider. A series with no
+artwork is a **backend data gap**, not a client bug; the client's only job is
+to make that gap look deliberate. See "Backend follow-ups" below.
+
 There is **no `New` badge** - see limitation 1.
 
 ## Known limitations
@@ -182,11 +213,32 @@ There is **no `New` badge** - see limitation 1.
   cards on those events while mounted. That is deliberate - it keeps the like
   totals live - and is a linear pass over the fetched page.
 
+## Backend follow-ups (not done in this slice, no backend change was made)
+
+1. **Poster artwork per series.** `thumbnailUrl` is optional on the feed DTO and
+   is episode-scoped; there is no series-level poster field. Any series whose
+   representative episode has no thumbnail renders the branded fallback. A
+   `posterUrl` (or a guaranteed `thumbnailUrl`) on the series/video contract
+   would remove the fallback from the happy path. Portrait key art would also
+   fit the 2:3 frame better than a 16:9 episode still.
+2. **Publication date.** Still absent - see limitation 1 below.
+
+## Category labels
+
+The chip list is an app-owned constant (`getCategories()`), not backend copy,
+so the chips, the card metadata line and the accessibility labels all render a
+localized label via `translateCategory`. The underlying `VideoCategoryFilter`
+values are untouched: the selected filter, `searchVideos`, and the catalog
+derivations all still compare raw values. Because `searchVideos` matches the
+raw English category, Discover additionally matches the localized label, so the
+search hint's promise to match "kategori" holds in all three languages.
+
 ## Files
 
 ```
 src/app/(tabs)/discover.tsx                     screen: state + which surface to show
 src/features/discover/discover-catalog.ts       derivations: cards, ranking, badges, formatting
+src/features/discover/discover-poster.tsx       media surface: artwork, fallback, all badge overlays
 src/features/discover/use-discover-grid.ts      responsive column/poster sizing
 src/features/discover/discover-header.tsx       search field + Home/New/Rankings sub-nav
 src/features/discover/discover-cards.tsx        poster card, list row, virtualized grid

@@ -69,7 +69,8 @@ export function DiscoverHeader({
           <Pressable
             accessibilityLabel={t('discover.clearSearch')}
             accessibilityRole="button"
-            hitSlop={10}
+            // 26pt control + 11 on each side clears Android's 48dp minimum.
+            hitSlop={11}
             onPress={() => onChangeSearchQuery('')}
             style={({ pressed }) => [styles.clearButton, pressed && styles.pressed]}>
             <SymbolView

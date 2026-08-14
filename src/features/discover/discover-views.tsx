@@ -8,7 +8,7 @@ import {
   DiscoverPosterCard,
   DiscoverPosterGrid,
 } from '@/features/discover/discover-cards';
-import { formatLikeTotal } from '@/features/discover/discover-catalog';
+import { formatLikeTotal, translateCategory } from '@/features/discover/discover-catalog';
 import { DiscoverEmptyState } from '@/features/discover/discover-states';
 import { DISCOVER_GRID_GAP, type DiscoverGrid } from '@/features/discover/use-discover-grid';
 import { getCategories, type VideoCategoryFilter } from '@/services/videos/video-service';
@@ -27,7 +27,9 @@ type SectionIntroProps = {
 function SectionIntro({ title, description }: SectionIntroProps) {
   return (
     <View style={styles.sectionIntro}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <Text accessibilityRole="header" style={styles.sectionTitle}>
+        {title}
+      </Text>
       <Text style={styles.sectionDescription}>{description}</Text>
     </View>
   );
@@ -59,7 +61,9 @@ export function DiscoverHomeView({
       empty={
         <DiscoverEmptyState
           actionLabel={t('discover.showAll')}
-          description={t('discover.categoryEmptyDesc', { category: selectedCategory })}
+          description={t('discover.categoryEmptyDesc', {
+            category: translateCategory(t, selectedCategory),
+          })}
           onAction={onResetCategory}
           symbol={{ ios: 'square.grid.2x2', android: 'grid_view', web: 'grid_view' }}
           title={t('discover.categoryEmptyTitle')}
@@ -96,7 +100,9 @@ function CategoryFilterRow({ selectedCategory, onSelectCategory }: CategoryFilte
 
         return (
           <Pressable
-            accessibilityLabel={t('discover.categoryA11y', { category })}
+            accessibilityLabel={t('discover.categoryA11y', {
+              category: translateCategory(t, category),
+            })}
             accessibilityRole="button"
             accessibilityState={{ selected: isSelected }}
             hitSlop={{ bottom: 8, left: 4, right: 4, top: 8 }}
@@ -108,7 +114,7 @@ function CategoryFilterRow({ selectedCategory, onSelectCategory }: CategoryFilte
               pressed && styles.pressed,
             ]}>
             <Text style={[styles.categoryText, isSelected && styles.categoryTextSelected]}>
-              {category}
+              {translateCategory(t, category)}
             </Text>
           </Pressable>
         );
@@ -205,12 +211,18 @@ export function DiscoverRankingsView({ cards, grid, onSelectSeries }: DiscoverRa
                 onPress={onSelectSeries}
                 rank={index + 1}
                 subtitle={formatLikeTotal(t, card.likeCount)}
+                titleMinHeight={grid.titleMinHeight}
                 width={grid.featuredPosterWidth}
               />
             ))}
           </ScrollView>
+          {/* The heading is the framing that stops a short tail reading as a
+              list that failed to fill, so it always renders - but a plural
+              label over exactly one row would say the opposite. */}
           {remaining.length > 0 ? (
-            <Text style={styles.subsectionTitle}>{t('discover.otherRankings')}</Text>
+            <Text accessibilityRole="header" style={styles.subsectionTitle}>
+              {t(remaining.length > 1 ? 'discover.otherRankings' : 'discover.nextRanking')}
+            </Text>
           ) : null}
         </View>
       }
@@ -274,7 +286,9 @@ export function DiscoverSearchResultsView({
           description={
             selectedCategory === 'All'
               ? t('discover.noResultsDescAll')
-              : t('discover.noResultsDescCategory', { category: selectedCategory })
+              : t('discover.noResultsDescCategory', {
+                  category: translateCategory(t, selectedCategory),
+                })
           }
           onAction={onClearSearch}
           symbol={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}

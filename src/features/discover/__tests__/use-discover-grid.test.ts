@@ -93,6 +93,37 @@ describe('useDiscoverGrid', () => {
     ).toBeLessThanOrEqual(result.current.availableWidth);
   });
 
+  it('reserves two title lines and grows that reservation with the text size', async () => {
+    jest
+      .spyOn(Dimensions, 'get')
+      .mockReturnValue({ width: 375, height: 812, scale: 3, fontScale: 1 });
+
+    const { result: standard } = await renderHook(() => useDiscoverGrid());
+
+    expect(standard.current.titleMinHeight).toBe(32);
+
+    jest.restoreAllMocks();
+    jest
+      .spyOn(Dimensions, 'get')
+      .mockReturnValue({ width: 375, height: 812, scale: 3, fontScale: 2 });
+
+    const { result: enlarged } = await renderHook(() => useDiscoverGrid());
+
+    // A fixed 32dp would stop reserving a second line once the text grew,
+    // dropping short-titled cards out of alignment with their row.
+    expect(enlarged.current.titleMinHeight).toBe(64);
+  });
+
+  it('never shrinks the title reservation below the unscaled two-line box', async () => {
+    jest
+      .spyOn(Dimensions, 'get')
+      .mockReturnValue({ width: 375, height: 812, scale: 3, fontScale: 0.85 });
+
+    const { result } = await renderHook(() => useDiscoverGrid());
+
+    expect(result.current.titleMinHeight).toBe(32);
+  });
+
   it('keeps the featured rail card narrower than a full-width poster', async () => {
     mockWindowWidth(375);
 

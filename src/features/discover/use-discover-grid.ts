@@ -17,6 +17,10 @@ export const MAX_POSTER_COLUMNS = 8;
 /** Portrait poster ratio (width / height) used by every Discover poster. */
 export const POSTER_ASPECT_RATIO = 2 / 3;
 
+/** Line box of a grid card title, and how many lines a card reserves. */
+export const POSTER_TITLE_LINE_HEIGHT = 16;
+export const POSTER_TITLE_MAX_LINES = 2;
+
 export function posterWidthForColumns(availableWidth: number, columns: number): number {
   return (availableWidth - DISCOVER_GRID_GAP * (columns - 1)) / columns;
 }
@@ -54,13 +58,20 @@ export type DiscoverGrid = {
   readonly posterWidth: number;
   /** Width of a Rankings "Top Hits" card in the horizontal featured rail. */
   readonly featuredPosterWidth: number;
+  /**
+   * Height a grid card reserves for its two title lines. Scaled by the user's
+   * text size: a fixed dp value would stop reserving a second line once the
+   * text grew, and the meta line of a short-titled card would ride up out of
+   * alignment with its row neighbours.
+   */
+  readonly titleMinHeight: number;
 };
 
 /** Cards visible at once in the featured rail; the fraction hints scrollability. */
 const FEATURED_CARDS_IN_VIEW = 2.4;
 
 export function useDiscoverGrid(): DiscoverGrid {
-  const { width } = useWindowDimensions();
+  const { width, fontScale } = useWindowDimensions();
 
   return useMemo(() => {
     const availableWidth = Math.max(width - DISCOVER_SCREEN_PADDING * 2, MIN_POSTER_WIDTH);
@@ -74,6 +85,8 @@ export function useDiscoverGrid(): DiscoverGrid {
         MAX_POSTER_WIDTH,
         posterWidthForColumns(availableWidth, FEATURED_CARDS_IN_VIEW)
       ),
+      titleMinHeight:
+        POSTER_TITLE_LINE_HEIGHT * POSTER_TITLE_MAX_LINES * Math.max(fontScale, 1),
     };
-  }, [width]);
+  }, [fontScale, width]);
 }

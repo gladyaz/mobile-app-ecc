@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/react-native';
+import { fireEvent, render, within } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import { Dimensions, StyleSheet } from 'react-native';
 
@@ -186,12 +186,12 @@ describe('DiscoverScreen home grid', () => {
 
     const { getByLabelText, getByText, queryByText } = await render(<DiscoverScreen />);
 
-    await fireEvent.press(getByLabelText('Kategori Romance'));
+    await fireEvent.press(getByLabelText('Kategori Romantis'));
 
     expect(getByText(NONA_TITLE)).toBeTruthy();
     expect(queryByText(CEO_TITLE)).toBeNull();
 
-    await fireEvent.press(getByLabelText('Kategori Action'));
+    await fireEvent.press(getByLabelText('Kategori Aksi'));
 
     expect(getByText('Kategori ini masih kosong')).toBeTruthy();
 
@@ -264,7 +264,9 @@ describe('DiscoverScreen series card metadata (preserved from the previous Disco
     // and it is the stricter assertion, because Pressable is accessible by
     // default and this label REPLACES the child text for a screen reader.
     // Six CEO episodes were fed in, grouped onto one series card.
-    expect(getByLabelText(/Kontrak Cinta CEO Dingin, CEO, 6 episode/)).toBeTruthy();
+    // Badges now sit next to the title so the card announces as
+    // "<title>, Premium, 6 episode" before the softer metadata.
+    expect(getByLabelText(/Kontrak Cinta CEO Dingin, Premium,.*6 episode, CEO/)).toBeTruthy();
     // ...and the category is still visibly rendered on the card itself.
     expect(getAllByText('CEO').length).toBeGreaterThan(0);
   });
@@ -284,6 +286,54 @@ describe('DiscoverScreen new tab', () => {
     // would invert these two.
     expect(rowLabels[0]).toContain(NONA_TITLE);
     expect(rowLabels[1]).toContain(CEO_TITLE);
+  });
+});
+
+describe('DiscoverScreen New tab presentation', () => {
+  it('keeps every badge inside the row poster, never over the row title', async () => {
+    mockCatalog();
+
+    const { getByTestId, getByText, getAllByText } = await render(<DiscoverScreen />);
+
+    await fireEvent.press(getByText('New'));
+
+    const ceoPoster = within(getByTestId('discover-poster-series-ceo-dingin'));
+
+    expect(ceoPoster.getByText('Premium')).toBeTruthy();
+    expect(ceoPoster.queryByText(CEO_TITLE)).toBeNull();
+    expect(getAllByText(CEO_TITLE).length).toBeGreaterThan(0);
+    // Exactly one Premium in the whole row: the overlap bug was a SECOND,
+    // absolutely-positioned badge rendered inside the text column.
+    expect(getAllByText('Premium')).toHaveLength(1);
+  });
+
+  it('bounds a long row title to two lines', async () => {
+    const longTitle =
+      'Kontrak Cinta CEO Dingin yang Menikahi Sekretaris Rahasianya di Malam Bersalju Panjang';
+
+    mockCatalog({
+      videos: [buildVideo({ id: 'long-ep-1', seriesId: 'series-long', title: longTitle })],
+    });
+
+    const { getByText } = await render(<DiscoverScreen />);
+
+    await fireEvent.press(getByText('New'));
+
+    expect(getByText(longTitle).props.numberOfLines).toBe(2);
+  });
+
+  it('shows no release-date claim anywhere in the tab', async () => {
+    mockCatalog();
+
+    const { getByText, queryByText } = await render(<DiscoverScreen />);
+
+    await fireEvent.press(getByText('New'));
+
+    // The catalog contract carries no createdAt/publishedAt, so nothing may
+    // render a date, a "today", or a relative-recency phrase.
+    expect(queryByText(/\d{1,2}\/\d{1,2}\/\d{2,4}/)).toBeNull();
+    expect(queryByText(/\d{4}-\d{2}-\d{2}/)).toBeNull();
+    expect(queryByText(/hari lalu|days ago|天前/i)).toBeNull();
   });
 });
 
@@ -336,6 +386,55 @@ describe('DiscoverScreen rankings tab', () => {
   });
 });
 
+describe('DiscoverScreen rankings with the real four-series catalog', () => {
+  /** Mirrors production today: four real series, no more. */
+  const fourSeriesFeed: readonly Video[] = ['a', 'b', 'c', 'd'].flatMap((suffix, index) =>
+    [1, 2].map((episodeNumber) =>
+      buildVideo({
+        id: `${suffix}-ep-${episodeNumber}`,
+        seriesId: `series-${suffix}`,
+        episodeNumber,
+        title: `Drama ${suffix.toUpperCase()}`,
+        likeCount: 4000 - index * 500,
+      })
+    )
+  );
+
+  it('fills Top Hits and still shows the remaining rank rather than looking truncated', async () => {
+    mockCatalog({ videos: fourSeriesFeed });
+
+    const { getAllByRole, getByText, queryByText } = await render(<DiscoverScreen />);
+
+    await fireEvent.press(getByText('Rankings'));
+
+    const rankedLabels = cardLabels(getAllByRole('button'));
+
+    expect(rankedLabels).toHaveLength(4);
+    expect(rankedLabels[0]).toContain('Peringkat 1');
+    expect(rankedLabels[3]).toContain('Peringkat 4');
+    // Three featured + one trailing row: a plural "other rankings" heading
+    // over a single row would read as a list that failed to fill.
+    expect(queryByText('Peringkat lainnya')).toBeNull();
+  });
+
+
+  it('keeps the rank indicator out of the poster on ranked rows', async () => {
+    mockCatalog({ videos: fourSeriesFeed });
+
+    const { getByTestId, getByText } = await render(<DiscoverScreen />);
+
+    await fireEvent.press(getByText('Rankings'));
+
+    // Rank 4 is a list row: its number sits in its own leading column, so it
+    // cannot land on the artwork or on the title.
+    const rowPoster = within(getByTestId('discover-poster-series-d'));
+
+    expect(rowPoster.queryByText('4')).toBeNull();
+    expect(rowPoster.queryByText('Drama D')).toBeNull();
+    expect(getByText('4')).toBeTruthy();
+  });
+});
+
 describe('DiscoverScreen search', () => {
   it('filters the catalog with the existing in-memory search', async () => {
     mockCatalog();
@@ -347,6 +446,43 @@ describe('DiscoverScreen search', () => {
     expect(getByText('1 hasil untuk “Nona”')).toBeTruthy();
     expect(getByText(NONA_TITLE)).toBeTruthy();
     expect(queryByText(CEO_TITLE)).toBeNull();
+  });
+
+  it('matches the localized category label the chips actually display', async () => {
+    mockCatalog();
+
+    const { getByLabelText, getByText, queryByText } = await render(<DiscoverScreen />);
+
+    // The chip and the card meta both read "Romantis"; searching the raw
+    // English "Romance" is not something a user of the Indonesian UI can be
+    // expected to do.
+    await fireEvent.changeText(getByLabelText('Cari drama'), 'Romantis');
+
+    expect(getByText(NONA_TITLE)).toBeTruthy();
+    expect(queryByText(CEO_TITLE)).toBeNull();
+  });
+
+  it('still matches the raw category value, so English input keeps working', async () => {
+    mockCatalog();
+
+    const { getByLabelText, getByText } = await render(<DiscoverScreen />);
+
+    await fireEvent.changeText(getByLabelText('Cari drama'), 'Romance');
+
+    expect(getByText(NONA_TITLE)).toBeTruthy();
+  });
+
+  it('never lets a localized category match escape the selected category', async () => {
+    mockCatalog();
+
+    const { getByLabelText, getByText } = await render(<DiscoverScreen />);
+
+    await fireEvent.press(getByLabelText('Kategori Romantis'));
+    await fireEvent.changeText(getByLabelText('Cari drama'), 'CEO');
+
+    // "CEO" matches the CEO series by title, category and localized label, but
+    // the Romance filter still excludes it.
+    expect(getByText('Tidak ada hasil')).toBeTruthy();
   });
 
   it('matches on channel name the same way the previous screen did', async () => {
@@ -377,14 +513,14 @@ describe('DiscoverScreen search', () => {
 
     const { getByLabelText, getByText, queryByText } = await render(<DiscoverScreen />);
 
-    await fireEvent.press(getByLabelText('Kategori Romance'));
+    await fireEvent.press(getByLabelText('Kategori Romantis'));
     await fireEvent.changeText(getByLabelText('Cari drama'), 'CEO');
 
     // "CEO" matches the CEO series by title and category, but the Romance
     // filter is still in force and the chips stay visible while searching.
     expect(getByText('Tidak ada hasil')).toBeTruthy();
     expect(queryByText(CEO_TITLE)).toBeNull();
-    expect(getByLabelText('Kategori Romance')).toBeTruthy();
+    expect(getByLabelText('Kategori Romantis')).toBeTruthy();
   });
 
   it('leaves search when a sub-tab is selected, so the tab strip never lies', async () => {
@@ -428,6 +564,65 @@ describe('DiscoverScreen search', () => {
     await fireEvent.press(getByText('Hapus pencarian'));
 
     expect(getByText(CEO_TITLE)).toBeTruthy();
+  });
+});
+
+describe('DiscoverScreen touch targets', () => {
+  it('gives the narrow sub-tab labels a 44pt-class hit area', async () => {
+    mockCatalog();
+
+    const { getAllByRole } = await render(<DiscoverScreen />);
+
+    for (const tab of getAllByRole('tab')) {
+      const style = StyleSheet.flatten(tab.props.style) ?? {};
+      const hitSlop = tab.props.hitSlop ?? {};
+      const height = (style.minHeight ?? 0) + (hitSlop.top ?? 0) + (hitSlop.bottom ?? 0);
+
+      expect(height).toBeGreaterThanOrEqual(48);
+      expect((hitSlop.left ?? 0) + (hitSlop.right ?? 0)).toBeGreaterThanOrEqual(16);
+    }
+  });
+
+  it('extends the category chips past their text box', async () => {
+    mockCatalog();
+
+    const { getByLabelText } = await render(<DiscoverScreen />);
+    const chip = getByLabelText('Kategori Romantis');
+    const style = StyleSheet.flatten(chip.props.style) ?? {};
+    const hitSlop = chip.props.hitSlop ?? {};
+
+    expect((style.minHeight ?? 0) + (hitSlop.top ?? 0) + (hitSlop.bottom ?? 0)).toBeGreaterThanOrEqual(
+      48
+    );
+  });
+
+  it('gives the clear-search control an Android-sized hit area', async () => {
+    mockCatalog();
+
+    const { getByLabelText } = await render(<DiscoverScreen />);
+
+    await fireEvent.changeText(getByLabelText('Cari drama'), 'Nona');
+
+    const clear = getByLabelText('Hapus pencarian');
+    const style = StyleSheet.flatten(clear.props.style) ?? {};
+    const slop = clear.props.hitSlop;
+    const inset = typeof slop === 'number' ? slop : (slop?.top ?? 0);
+
+    expect((style.height ?? 0) + inset * 2).toBeGreaterThanOrEqual(48);
+  });
+
+  it('keeps a whole series card as one interactive unit', async () => {
+    mockCatalog();
+
+    const { getAllByRole } = await render(<DiscoverScreen />);
+    const cards = getAllByRole('button').filter((node) => cardLabels([node]).length > 0);
+
+    expect(cards.length).toBeGreaterThan(0);
+    for (const card of cards) {
+      // One label, one target - no separately focusable decorative children.
+      expect(typeof card.props.accessibilityLabel).toBe('string');
+      expect(within(card).queryAllByRole('button')).toHaveLength(0);
+    }
   });
 });
 

@@ -1,22 +1,35 @@
 import { StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
-import { RewardCta, RewardNotice } from '@/features/rewards/components/rewards-primitives';
+import { RewardCta } from '@/features/rewards/components/rewards-primitives';
 import { formatPoints } from '@/features/rewards/format-points';
 import { RewardAccent, scaledLineHeight } from '@/features/rewards/rewards-theme';
-import { useTranslation } from '@/stores/language';
 import type { TranslationKey } from '@/services/i18n/translations';
+import { useTranslation } from '@/stores/language';
 import type { RewardRedemption, RewardRedemptionAvailability } from '@/types/rewards';
 
 /**
- * A VIP redemption offer.
+ * A VIP redemption offer, as a comparable row.
  *
  * This file deliberately imports nothing from `@/stores/entitlement` or
  * `@/services/entitlement`. Redemption is a server-side transaction - the
  * backend debits the ledger and issues the entitlement change atomically,
  * or neither happens. A client that flips a premium flag locally would be
  * both wrong and trivially abusable, so the wiring does not exist here even
- * as a placeholder.
+ * as a placeholder, and a boundary test fails if it ever appears.
+ *
+ * The UX pass made the three offers comparable at a glance: cost is the
+ * prominent figure on a consistent right edge, so 1.000 / 2.500 / 5.000 line
+ * up down the column. The per-card "redemption is not active" paragraph is
+ * gone; availability is one short phrase and the page-level banner carries
+ * the preview status.
+ *
+ * INTEGRATION NOTE: `redemption.grantsDays` is intentionally not rendered.
+ * Today every fixture title already spells the duration out ("VIP 1 Hari"),
+ * so showing both would just repeat it. If a real backend ever sends a
+ * generic title ("VIP Access") with `grantsDays` as the only source of
+ * truth, the tiers would become indistinguishable except by cost - render
+ * the field then.
  */
 
 const AVAILABILITY_LABEL_KEY: Record<RewardRedemptionAvailability, TranslationKey> = {
@@ -34,79 +47,67 @@ export function RedeemCard({ redemption, onPressCta }: RedeemCardProps) {
   const { t } = useTranslation();
 
   return (
-    <View style={styles.card} testID={`redeem-card-${redemption.id}`}>
-      <View style={styles.headerRow}>
-        <View style={styles.titleBlock}>
-          <Text style={styles.title}>{redemption.title}</Text>
-          <Text style={styles.description}>{redemption.description}</Text>
-        </View>
-        <View style={styles.durationChip}>
-          <Text style={styles.durationValue}>{redemption.grantsDays}</Text>
-          <Text style={styles.durationUnit}>{t('rewards.daysUnit')}</Text>
-        </View>
+    <View style={styles.row} testID={`redeem-card-${redemption.id}`}>
+      <View style={styles.body}>
+        <Text style={styles.title}>{redemption.title}</Text>
+        <Text style={styles.description}>{redemption.description}</Text>
+        {/* Availability is a word, never a colour cue on its own.
+            Only AVAILABLE is downgraded, and only while redemption is
+            unsupported: "Bisa ditukar"/"Redeemable" is a promise this
+            preview cannot keep. With a 1.250-point preview balance sitting
+            above a 1.000-point cost, that word makes the offer read as real
+            AND affordable, and the grey button alone is too quiet to correct
+            it. When redemption goes live, `isRedeemSupported` flips and the
+            true label appears with no copy change here. */}
+        <Text style={styles.availability} testID={`redeem-availability-${redemption.id}`}>
+          {t(
+            redemption.availability === 'AVAILABLE' && !redemption.isRedeemSupported
+              ? 'rewards.availComingSoon'
+              : AVAILABILITY_LABEL_KEY[redemption.availability]
+          )}
+        </Text>
       </View>
 
-      <View style={styles.footerRow}>
-        <View style={styles.costBlock}>
-          <Text style={styles.costValue} testID={`redeem-cost-${redemption.id}`}>
-            {t('rewards.pointsValue', { points: formatPoints(redemption.costPoints) })}
-          </Text>
-          <Text style={styles.availability} testID={`redeem-availability-${redemption.id}`}>
-            {/* Only AVAILABLE is downgraded. "Bisa ditukar" is a promise
-                this slice cannot keep - with a 1250-point preview balance
-                sitting above a 1000-point cost it reads as a real, affordable
-                redemption, and the retraction is only in the smaller notice
-                below. The other two states are already truthful ("not enough
-                points", "coming soon") and stay as they are, so downgrading
-                them would throw away real information. Once a backend can
-                actually redeem, `isRedeemSupported` flips and AVAILABLE
-                speaks for itself. */}
-            {t(
-              redemption.availability === 'AVAILABLE' && !redemption.isRedeemSupported
-                ? 'rewards.availComingSoon'
-                : AVAILABILITY_LABEL_KEY[redemption.availability]
-            )}
-          </Text>
-        </View>
+      <View style={styles.trailing}>
+        <Text style={styles.costValue} testID={`redeem-cost-${redemption.id}`}>
+          {t('rewards.costPoints', { points: formatPoints(redemption.costPoints) })}
+        </Text>
         <RewardCta
+          // Two of the three offers ship the same CTA word, so the announced
+          // name carries the tier ("Tukar: VIP 3 Hari").
+          accessibilityLabel={t('rewards.ctaA11y', {
+            label: redemption.ctaLabel,
+            title: redemption.title,
+          })}
+          compact
           isSupported={redemption.isRedeemSupported}
           label={redemption.ctaLabel}
           onPress={() => onPressCta(redemption)}
           testID={`redeem-cta-${redemption.id}`}
         />
       </View>
-
-      {redemption.isRedeemSupported ? null : (
-        <RewardNotice
-          message={t('rewards.redeemNotSupported')}
-          testID={`redeem-notice-${redemption.id}`}
-        />
-      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    padding: 14,
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 12,
+    padding: 12,
     borderWidth: 1,
     borderColor: Palette.border,
     borderRadius: Radius.xl,
     backgroundColor: Palette.surface,
   },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  titleBlock: {
+  body: {
     flex: 1,
     minWidth: 0,
-    gap: 3,
+    gap: 2,
   },
   title: {
-    fontSize: 15,
+    fontSize: 14.5,
     fontFamily: FontFamily.extraBold,
     color: Palette.text,
   },
@@ -116,45 +117,19 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.regular,
     color: Palette.textSecondary,
   },
-  durationChip: {
-    minWidth: 56,
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: RewardAccent.goldBorder,
-    backgroundColor: RewardAccent.goldSoft,
-  },
-  durationValue: {
-    fontSize: 20,
-    fontFamily: FontFamily.extraBold,
-    color: RewardAccent.gold,
-  },
-  durationUnit: {
-    fontSize: 10,
+  availability: {
+    marginTop: 1,
+    fontSize: 11,
     fontFamily: FontFamily.bold,
-    color: RewardAccent.gold,
+    color: Palette.textSecondary,
   },
-  footerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  costBlock: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
+  trailing: {
+    alignItems: 'flex-end',
+    gap: 8,
   },
   costValue: {
-    fontSize: 15,
+    fontSize: 14,
     fontFamily: FontFamily.extraBold,
-    color: Palette.text,
-  },
-  availability: {
-    fontSize: 11,
-    fontFamily: FontFamily.semiBold,
-    color: Palette.textSecondary,
+    color: RewardAccent.gold,
   },
 });

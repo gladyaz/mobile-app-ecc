@@ -1,18 +1,21 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
-import { FontFamily, Palette } from '@/constants/theme';
 import { RedeemCard } from '@/features/rewards/components/redeem-card';
 import { RewardEmptyState } from '@/features/rewards/components/rewards-primitives';
 import { useTranslation } from '@/stores/language';
 import type { RewardRedemption, RewardsPrototypeAction } from '@/types/rewards';
 
 /**
- * The "Tukar Poin" (redeem) tab.
+ * The Redeem list.
  *
- * Like every other surface in this slice, pressing a CTA only reports the
- * press. No points are debited and no entitlement is granted - that pair is
- * a single server-side transaction, described in
- * `docs/rewards-domain-contract.md`.
+ * Previously the far side of a tab, which hid the answer to "what can I
+ * eventually get for these points?" behind an extra tap. It is now a plain
+ * section on the same scroll, so the reward loop reads top to bottom:
+ * balance -> daily -> earn -> watch -> redeem.
+ *
+ * Like every other surface here, pressing a CTA only reports the press. No
+ * points are debited and no entitlement is granted - that pair is a single
+ * server-side transaction, described in `docs/rewards-domain-contract.md`.
  */
 
 type RedeemPanelProps = {
@@ -24,13 +27,7 @@ export function RedeemPanel({ redemptions, onAction }: RedeemPanelProps) {
   const { t } = useTranslation();
 
   return (
-    // No `tabpanel` role: that is a web ARIA role with no React Native
-    // equivalent. The `header`-role heading below is how a screen reader
-    // user recognises they have landed in this panel.
-    <View style={styles.section} testID="rewards-redeem-panel">
-      <Text accessibilityRole="header" style={styles.sectionHeading}>
-        {t('rewards.redeemHeading')}
-      </Text>
+    <View style={styles.list} testID="rewards-redeem-panel">
       {redemptions.length > 0 ? (
         redemptions.map((redemption) => (
           <RedeemCard
@@ -52,13 +49,7 @@ export function RedeemPanel({ redemptions, onAction }: RedeemPanelProps) {
 }
 
 const styles = StyleSheet.create({
-  section: {
-    gap: 12,
-  },
-  sectionHeading: {
-    marginTop: 4,
-    fontSize: 16,
-    fontFamily: FontFamily.extraBold,
-    color: Palette.text,
+  list: {
+    gap: 10,
   },
 });

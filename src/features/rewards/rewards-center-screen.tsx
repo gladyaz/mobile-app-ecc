@@ -11,24 +11,37 @@ import {
 } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { DailyCheckInCard } from '@/features/rewards/components/daily-check-in-card';
 import { EarnPanel } from '@/features/rewards/components/earn-panel';
 import { PointsBalanceCard } from '@/features/rewards/components/points-balance-card';
 import { RedeemPanel } from '@/features/rewards/components/redeem-panel';
-import { PreviewBadge } from '@/features/rewards/components/rewards-primitives';
+import {
+  PreviewBadge,
+  PreviewBanner,
+  RewardEmptyState,
+  RewardsSection,
+} from '@/features/rewards/components/rewards-primitives';
+import { WatchTimeCard } from '@/features/rewards/components/watch-time-card';
 import { buildFixtureRewardsSnapshot } from '@/features/rewards/rewards-fixtures';
 import { scaledLineHeight } from '@/features/rewards/rewards-theme';
 import { useTranslation, type Translate } from '@/stores/language';
 import type { RewardsPrototypeAction, RewardsViewState } from '@/types/rewards';
 
 /**
- * Rewards Center - foundation slice.
+ * Rewards Center.
  *
- * Standalone on purpose. It lives under `src/features/` rather than
- * `src/app/` because Expo Router is file-based: a file in `src/app/` would
- * register a live route in the root `<Stack>`, and root/bottom navigation
- * is out of scope for this slice. Wiring it up is one file
- * (`src/app/rewards.tsx` re-exporting this component) plus a `Stack.Screen`
- * entry, done in the integration slice.
+ * INFORMATION ARCHITECTURE - one scroll, five blocks, in the order a
+ * first-time user asks the questions:
+ *   1. balance hero      -> "how many points do I have?"
+ *   2. Daily Reward      -> "what can I do today?"
+ *   3. Earn Points       -> "how do I get more?"
+ *   4. Watch Rewards     -> "...and by watching?"
+ *   5. Redeem            -> "what is this worth eventually?"
+ *
+ * The previous layout split these across an Earn/Redeem tab pair, which
+ * meant the answer to question 5 was one tap out of sight and questions 2-4
+ * shared a single heading. Tabs are gone; each block now has its own
+ * heading, and the whole reward loop reads top to bottom.
  *
  * WHAT THIS SCREEN DOES NOT DO - and must not start doing without the
  * backend contract in `docs/rewards-domain-contract.md` being implemented
@@ -38,17 +51,9 @@ import type { RewardsPrototypeAction, RewardsViewState } from '@/types/rewards';
  *   - it never touches the entitlement system
  *   - it never starts an ad, opens a social link, or runs a watch timer
  *
- * The single piece of state it owns beyond the active tab is
- * `pendingAction`: which CTA the user last tapped, so the screen can say
- * why nothing happened.
+ * The only state it owns is `pendingAction`: which CTA the user last
+ * tapped, so a press is acknowledged rather than silently ignored.
  */
-
-const TABS = [
-  { key: 'earn', labelKey: 'rewards.tabEarn' },
-  { key: 'redeem', labelKey: 'rewards.tabRedeem' },
-] as const;
-
-type RewardsTabKey = (typeof TABS)[number]['key'];
 
 function describePendingAction(t: Translate, action: RewardsPrototypeAction): string {
   return t('rewards.actionUnavailable', { label: action.label });
@@ -59,6 +64,12 @@ type ActionBannerProps = {
   readonly onDismiss: () => void;
 };
 
+/**
+ * Feedback for a tap on a preview-only control. One short sentence - the
+ * "why" is already stated once at the top of the page, and repeating the
+ * full explanation on every press is what made the old screen feel like it
+ * was arguing with the user.
+ */
 function ActionBanner({ action, onDismiss }: ActionBannerProps) {
   const { t } = useTranslation();
 
@@ -91,14 +102,13 @@ export type RewardsCenterScreenProps = {
    * Defaults to the placeholder snapshot so the screen is renderable before
    * any service exists.
    *
-   * INTEGRATION NOTE: when `src/app/rewards.tsx` is added, make this prop
+   * INTEGRATION NOTE: when a real rewards service lands, make this prop
    * REQUIRED and delete the default. Otherwise a caller that forgets to
-   * thread real state silently ships a plausible-looking balance whose only
-   * tell is the preview badge.
+   * thread real state silently ships a plausible-looking balance.
    */
   readonly state?: RewardsViewState;
   readonly onRetry?: () => void;
-  /** When provided, renders a back control. Omitted = standalone/embedded. */
+  /** When provided, renders a back control. Omitted = tab root. */
   readonly onClose?: () => void;
   readonly onPrototypeAction?: (action: RewardsPrototypeAction) => void;
 };
@@ -110,7 +120,6 @@ export function RewardsCenterScreen({
   onPrototypeAction,
 }: RewardsCenterScreenProps) {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<RewardsTabKey>('earn');
   const [pendingAction, setPendingAction] = useState<RewardsPrototypeAction | null>(null);
   // Built per language rather than read from a module constant, so switching
   // the app language re-renders the preview copy with everything else.
@@ -121,10 +130,9 @@ export function RewardsCenterScreen({
 
   const handlePrototypeAction = useCallback(
     (action: RewardsPrototypeAction) => {
-      // The entire effect of every CTA in this slice. No balance, no claim,
+      // The entire effect of every CTA on this screen. No balance, no claim,
       // no entitlement - just a record of what was tapped, an announcement
-      // for screen-reader users, plus an optional notification to the host
-      // so integration work has a seam to use.
+      // for screen-reader users, plus an optional notification to the host.
       setPendingAction(action);
 
       if (Platform.OS === 'ios') {
@@ -149,7 +157,11 @@ export function RewardsCenterScreen({
             <Text style={styles.backButtonText}>‹</Text>
           </Pressable>
         ) : null}
-        <Text style={styles.title}>{t('rewards.title')}</Text>
+        {/* The page-level heading, so a rotor/heading walk starts here
+            rather than jumping straight to the first section. */}
+        <Text accessibilityRole="header" style={styles.title}>
+          {t('rewards.title')}
+        </Text>
         <PreviewBadge />
       </View>
 
@@ -173,51 +185,68 @@ export function RewardsCenterScreen({
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.content}>
-          <PointsBalanceCard wallet={resolvedState.snapshot.wallet} />
+          {/* The one place the preview status is explained. */}
+          <PreviewBanner />
+
+          <PointsBalanceCard
+            streakDays={resolvedState.snapshot.dailyCheckIn?.currentStreakDays ?? null}
+            wallet={resolvedState.snapshot.wallet}
+          />
 
           {pendingAction ? (
             <ActionBanner action={pendingAction} onDismiss={() => setPendingAction(null)} />
           ) : null}
 
-          <View accessibilityRole="tablist" style={styles.tabBar}>
-            {TABS.map((tab) => {
-              const isActive = tab.key === activeTab;
+          <RewardsSection title={t('rewards.sectionDaily')} testID="rewards-section-daily">
+            {resolvedState.snapshot.dailyCheckIn ? (
+              <DailyCheckInCard
+                checkIn={resolvedState.snapshot.dailyCheckIn}
+                onPressCta={() =>
+                  handlePrototypeAction({
+                    kind: 'DAILY_CHECK_IN',
+                    id: 'daily_check_in',
+                    label: resolvedState.snapshot.dailyCheckIn?.ctaLabel ?? '',
+                  })
+                }
+              />
+            ) : (
+              <RewardEmptyState
+                message={t('rewards.checkInEmpty')}
+                testID="rewards-check-in-empty"
+              />
+            )}
+          </RewardsSection>
 
-              return (
-                <Pressable
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: isActive }}
-                  key={tab.key}
-                  onPress={() => setActiveTab(tab.key)}
-                  style={({ pressed }) => [
-                    styles.tab,
-                    isActive && styles.tabActive,
-                    pressed && styles.pressed,
-                  ]}
-                  testID={`rewards-tab-${tab.key}`}>
-                  <Text style={[styles.tabText, isActive && styles.tabTextActive]}>
-                    {t(tab.labelKey)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          <RewardsSection title={t('rewards.sectionEarn')} testID="rewards-section-earn">
+            <EarnPanel onAction={handlePrototypeAction} tasks={resolvedState.snapshot.tasks} />
+          </RewardsSection>
 
-          {activeTab === 'earn' ? (
-            <EarnPanel
-              dailyCheckIn={resolvedState.snapshot.dailyCheckIn}
-              onAction={handlePrototypeAction}
-              tasks={resolvedState.snapshot.tasks}
-              watchTime={resolvedState.snapshot.watchTime}
-            />
-          ) : (
+          <RewardsSection title={t('rewards.sectionWatch')} testID="rewards-section-watch">
+            {resolvedState.snapshot.watchTime ? (
+              <WatchTimeCard
+                onPressCta={() =>
+                  handlePrototypeAction({
+                    kind: 'WATCH_TIME',
+                    id: 'watch_time',
+                    label: t('rewards.watchTimeCta'),
+                  })
+                }
+                watchTime={resolvedState.snapshot.watchTime}
+              />
+            ) : (
+              <RewardEmptyState
+                message={t('rewards.watchTimeEmpty')}
+                testID="rewards-watch-time-empty"
+              />
+            )}
+          </RewardsSection>
+
+          <RewardsSection title={t('rewards.sectionRedeem')} testID="rewards-section-redeem">
             <RedeemPanel
               onAction={handlePrototypeAction}
               redemptions={resolvedState.snapshot.redemptions}
             />
-          )}
-
-          <Text style={styles.footerDisclaimer}>{t('rewards.footerDisclaimer')}</Text>
+          </RewardsSection>
         </ScrollView>
       )}
     </View>
@@ -262,8 +291,10 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 16,
-    paddingBottom: 40,
-    gap: 16,
+    paddingBottom: 48,
+    // Sections breathe more than the cards inside them, which is what makes
+    // the five blocks readable as five blocks.
+    gap: 22,
   },
   centered: {
     flex: 1,
@@ -311,8 +342,8 @@ const styles = StyleSheet.create({
   actionBannerText: {
     flex: 1,
     minWidth: 0,
-    fontSize: 12,
-    lineHeight: scaledLineHeight(12),
+    fontSize: 12.5,
+    lineHeight: scaledLineHeight(12.5),
     fontFamily: FontFamily.semiBold,
     color: Palette.primaryHover,
   },
@@ -327,41 +358,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: FontFamily.bold,
     color: Palette.primaryHover,
-  },
-  tabBar: {
-    flexDirection: 'row',
-    gap: 6,
-    padding: 4,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Palette.border,
-    backgroundColor: Palette.surfaceMuted,
-  },
-  tab: {
-    flex: 1,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: Radius.md,
-  },
-  tabActive: {
-    backgroundColor: Palette.surface,
-  },
-  tabText: {
-    fontSize: 13,
-    fontFamily: FontFamily.bold,
-    color: Palette.textSecondary,
-  },
-  tabTextActive: {
-    color: Palette.text,
-  },
-  footerDisclaimer: {
-    marginTop: 4,
-    fontSize: 11,
-    lineHeight: scaledLineHeight(11),
-    fontFamily: FontFamily.regular,
-    color: Palette.textSecondary,
-    textAlign: 'center',
   },
   pressed: {
     opacity: 0.75,

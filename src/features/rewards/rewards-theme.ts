@@ -12,11 +12,17 @@ import { Palette } from '@/constants/theme';
  * not speculatively now.
  *
  * The warm gold accent is the "reward" signal called for by the design
- * direction. Contrast against `Palette.surface` (#18181B):
- *   gold #F5B321  -> 9.6:1  (passes AA for body text, AAA for large text)
- *   Palette.text  -> 15.9:1
- * Gold is used for values and progress fill only; it is never the sole
- * carrier of meaning - every accented state also has a text label.
+ * direction. Contrast, measured against the two backdrops it actually sits
+ * on - cards use `Palette.surface` (#18181B), while anything rendered
+ * directly in the screen's ScrollView sits on `Palette.background` (#0D0D0F):
+ *   gold #F5B321 on surface     -> 9.6:1
+ *   gold #F5B321 on background  -> 10.5:1
+ *   Palette.text on surface     -> 15.9:1
+ * Gold means "this figure is worth something": it is reserved for values and
+ * progress fill. Preview and disclaimer surfaces deliberately use the orange
+ * `Palette.primaryHover` family instead, so the two signals never blur. Gold
+ * is never the sole carrier of meaning either - every accented state also
+ * has a text label.
  */
 export const RewardAccent = {
   gold: '#F5B321',

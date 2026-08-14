@@ -3,7 +3,6 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import {
   RewardCta,
-  RewardNotice,
   RewardProgressBar,
   RewardsCard,
 } from '@/features/rewards/components/rewards-primitives';
@@ -18,18 +17,20 @@ import type {
 } from '@/types/rewards';
 
 /**
- * Watch-time milestone progress.
+ * Watch-time milestones: progress, then tiers, then what each tier pays.
  *
  * IMPORTANT - there is no timer in this file, and there must never be one.
  * `watchedMinutes` is displayed exactly as supplied. A client-side stopwatch
  * is manipulable (system clock, backgrounded app, patched bundle) and can
  * never be the basis of a real award; production progress has to come from
- * server-side watch analytics. See "Watch-time" in
- * `docs/rewards-domain-contract.md`.
+ * server-side watch analytics. `WatchTimeProgressSource` has no
+ * `LOCAL_TIMER` member for exactly this reason, and a test asserts this
+ * feature schedules no timer at all.
  *
- * `source` makes that visible to the user: anything other than 'SERVER'
- * renders a caveat instead of quietly passing fixture data off as tracked
- * viewing time.
+ * The UX pass removed the paragraph that explained all of the above to the
+ * user. It was true, but it was engineering rationale sitting in a consumer
+ * screen; it now lives here, in the tests, and in the domain contract, while
+ * the page-level preview banner tells the user the one thing they need.
  */
 
 const MILESTONE_STATE_LABEL_KEY: Record<WatchTimeMilestoneStatus, TranslationKey> = {
@@ -46,28 +47,23 @@ function MilestoneChip({ milestone }: MilestoneChipProps) {
   const { t } = useTranslation();
   const isReached = milestone.status === 'REACHED';
   const isClaimed = milestone.status === 'CLAIMED';
-  const stateLabel = t(MILESTONE_STATE_LABEL_KEY[milestone.status]);
 
   return (
     <View
       accessible
-      // toLocaleLowerCase() (not toLowerCase) so the spoken label lowercases
-      // correctly in every app language; it is a no-op for Chinese, which
-      // has no letter case at all.
       accessibilityLabel={t('rewards.milestoneA11y', {
         minutes: milestone.minutes,
         points: formatPoints(milestone.rewardPoints),
-        state: stateLabel.toLocaleLowerCase(),
+        state: t(MILESTONE_STATE_LABEL_KEY[milestone.status]).toLowerCase(),
       })}
       style={[styles.chip, isClaimed && styles.chipClaimed, isReached && styles.chipReached]}
       testID={`watch-time-milestone-${milestone.id}`}>
       <Text style={styles.chipMinutes}>
         {t('rewards.minutesShort', { minutes: milestone.minutes })}
       </Text>
-      <Text style={styles.chipPoints}>
-        {t('rewards.pointsValue', { points: formatPoints(milestone.rewardPoints) })}
-      </Text>
-      <Text style={styles.chipState}>{stateLabel}</Text>
+      <Text style={styles.chipPoints}>+{formatPoints(milestone.rewardPoints)}</Text>
+      {/* Status is never carried by color alone - every chip has a word. */}
+      <Text style={styles.chipState}>{t(MILESTONE_STATE_LABEL_KEY[milestone.status])}</Text>
     </View>
   );
 }
@@ -87,21 +83,28 @@ export function WatchTimeCard({ watchTime, onPressCta }: WatchTimeCardProps) {
   );
 
   return (
-    <RewardsCard
-      caption={t('rewards.watchTimeCaption')}
-      testID="rewards-watch-time"
-      title={t('rewards.watchTimeTitle')}>
+    <RewardsCard testID="rewards-watch-time">
       <View style={styles.summaryRow}>
+        {/* An empty milestone list is type-legal, and "7 of 0 minutes" is
+            self-contradictory - so the target half is dropped entirely
+            rather than rendered as a zero. */}
         <Text style={styles.summaryValue} testID="watch-time-watched-minutes">
-          {t('rewards.watchedMinutes', { minutes: formatPoints(watchTime.watchedMinutes) })}
+          {finalMinutes > 0
+            ? t('rewards.watchSummary', {
+                current: formatPoints(watchTime.watchedMinutes),
+                target: formatPoints(finalMinutes),
+              })
+            : t('rewards.watchSummaryNoTarget', {
+                current: formatPoints(watchTime.watchedMinutes),
+              })}
         </Text>
-        {/* An empty milestone list is type-legal; "dari 0 menit" would be
-            nonsense, so the target half is simply omitted. */}
-        {finalMinutes > 0 ? (
-          <Text style={styles.summaryTarget}>
-            {t('rewards.watchTarget', { minutes: formatPoints(finalMinutes) })}
-          </Text>
-        ) : null}
+        <RewardCta
+          compact
+          isSupported={watchTime.isClaimSupported}
+          label={t('rewards.watchTimeCta')}
+          onPress={onPressCta}
+          testID="watch-time-cta"
+        />
       </View>
 
       <RewardProgressBar
@@ -119,17 +122,6 @@ export function WatchTimeCard({ watchTime, onPressCta }: WatchTimeCardProps) {
           <MilestoneChip key={milestone.id} milestone={milestone} />
         ))}
       </ScrollView>
-
-      <RewardCta
-        isSupported={watchTime.isClaimSupported}
-        label={t('rewards.watchTimeCta')}
-        onPress={onPressCta}
-        testID="watch-time-cta"
-      />
-
-      {watchTime.source === 'SERVER' && watchTime.isClaimSupported ? null : (
-        <RewardNotice message={t('rewards.watchTimePlaceholderSource')} testID="watch-time-notice" />
-      )}
     </RewardsCard>
   );
 }
@@ -137,30 +129,28 @@ export function WatchTimeCard({ watchTime, onPressCta }: WatchTimeCardProps) {
 const styles = StyleSheet.create({
   summaryRow: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 8,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
   summaryValue: {
-    fontSize: 22,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 17,
     fontFamily: FontFamily.extraBold,
-    color: RewardAccent.gold,
-  },
-  summaryTarget: {
-    fontSize: 12,
-    fontFamily: FontFamily.semiBold,
-    color: Palette.textSecondary,
+    color: Palette.text,
   },
   chipStrip: {
     gap: 8,
     paddingVertical: 2,
   },
   chip: {
-    minWidth: 78,
+    minWidth: 70,
     flexShrink: 0,
     alignItems: 'center',
     gap: 2,
     paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderRadius: Radius.lg,
     borderWidth: 1,
     borderColor: Palette.border,
@@ -174,12 +164,12 @@ const styles = StyleSheet.create({
     borderColor: RewardAccent.gold,
   },
   chipMinutes: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontFamily: FontFamily.extraBold,
     color: Palette.text,
   },
   chipPoints: {
-    fontSize: 11,
+    fontSize: 11.5,
     fontFamily: FontFamily.bold,
     color: RewardAccent.gold,
   },

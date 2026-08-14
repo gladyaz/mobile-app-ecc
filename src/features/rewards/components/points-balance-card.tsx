@@ -1,28 +1,44 @@
 import { StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
-import { RewardNotice } from '@/features/rewards/components/rewards-primitives';
 import { formatPoints } from '@/features/rewards/format-points';
 import { RewardAccent } from '@/features/rewards/rewards-theme';
 import { useTranslation } from '@/stores/language';
 import type { RewardWallet } from '@/types/rewards';
 
 /**
- * The balance hero. Reads every number off `wallet` - it has no default,
- * no fallback figure, and no notion of what a point is worth.
+ * The balance hero - the strongest element on the page, and the answer to
+ * the first question a user arrives with ("how many points do I have?").
  *
- * Deliberately shows points only. No rupiah equivalent, no "senilai Rp X"
- * line: points have no approved cash value, and rendering one would be a
+ * Reads every number off `wallet`: no default, no fallback figure, and no
+ * notion of what a point is worth. Points only - no rupiah equivalent,
+ * because points have no approved cash value and rendering one would be a
  * misleading cash-value visual.
+ *
+ * Two things were deliberately REMOVED from this card in the UX pass:
+ *   - the "total earned" / "last updated" metadata row, which competed with
+ *     the number that actually matters;
+ *   - the paragraph-length "this balance is not authoritative" notice. The
+ *     preview status is now a compact tag here plus the page-level banner
+ *     above, so it is stated without shouting.
+ * The honesty itself is unchanged: `isServerAuthoritative` is still what
+ * decides whether the preview tag shows, and the fixture ships it `false`.
  */
 
 type PointsBalanceCardProps = {
   readonly wallet: RewardWallet;
+  /**
+   * Current check-in streak, surfaced here rather than inside the check-in
+   * card so the hero answers "how am I doing?" in one glance. `null` when
+   * there is no streak data to show.
+   */
+  readonly streakDays?: number | null;
 };
 
-export function PointsBalanceCard({ wallet }: PointsBalanceCardProps) {
+export function PointsBalanceCard({ wallet, streakDays = null }: PointsBalanceCardProps) {
   const { t } = useTranslation();
   const balanceLabel = formatPoints(wallet.balancePoints);
+  const hasStreak = typeof streakDays === 'number' && streakDays > 0;
 
   return (
     <View style={styles.card} testID="rewards-balance-card">
@@ -36,37 +52,27 @@ export function PointsBalanceCard({ wallet }: PointsBalanceCardProps) {
         </View>
       </View>
 
-      {/* Each pair is one accessible node, so a screen reader announces
-          "Total didapat 8.400 poin" rather than two disjoint stops. */}
-      <View style={styles.metaRow}>
-        <View
-          accessible
-          accessibilityLabel={t('rewards.totalEarnedA11y', {
-            points: formatPoints(wallet.lifetimeEarnedPoints),
-          })}
-          style={styles.metaItem}>
-          <Text style={styles.metaLabel}>{t('rewards.totalEarned')}</Text>
-          <Text style={styles.metaValue} testID="rewards-lifetime-value">
-            {formatPoints(wallet.lifetimeEarnedPoints)}
-          </Text>
-        </View>
-        {wallet.updatedAtLabel ? (
+      <View style={styles.chipRow}>
+        {/* Preview status travels with the number itself, so the figure is
+            never seen without its qualifier - even mid-scroll. */}
+        {wallet.isServerAuthoritative ? null : (
+          <View style={styles.previewTag} testID="rewards-balance-preview-tag">
+            <Text style={styles.previewTagText}>{t('rewards.balancePreviewTag')}</Text>
+          </View>
+        )}
+
+        {hasStreak ? (
           <View
             accessible
-            accessibilityLabel={t('rewards.updatedA11y', { value: wallet.updatedAtLabel })}
-            style={styles.metaItem}>
-            <Text style={styles.metaLabel}>{t('rewards.updated')}</Text>
-            <Text style={styles.metaValue}>{wallet.updatedAtLabel}</Text>
+            accessibilityLabel={t('rewards.streakChipA11y', { days: streakDays })}
+            style={styles.streakChip}
+            testID="rewards-streak-chip">
+            <Text style={styles.streakChipText}>
+              {t('rewards.streakChip', { days: streakDays })}
+            </Text>
           </View>
         ) : null}
       </View>
-
-      {wallet.isServerAuthoritative ? null : (
-        <RewardNotice
-          message={t('rewards.balanceNotAuthoritative')}
-          testID="rewards-balance-notice"
-        />
-      )}
     </View>
   );
 }
@@ -74,7 +80,7 @@ export function PointsBalanceCard({ wallet }: PointsBalanceCardProps) {
 const styles = StyleSheet.create({
   card: {
     padding: 18,
-    gap: 14,
+    gap: 12,
     borderWidth: 1,
     borderColor: RewardAccent.goldBorder,
     borderRadius: Radius.xxl,
@@ -90,36 +96,52 @@ const styles = StyleSheet.create({
     marginTop: 4,
     flexDirection: 'row',
     alignItems: 'flex-end',
+    flexWrap: 'wrap',
     gap: 8,
   },
   balanceValue: {
-    fontSize: 40,
-    // No literal lineHeight: at 40px a fixed 46px line box left almost no
-    // headroom, and it would not have grown with the OS text-size setting.
+    fontSize: 44,
+    // No literal lineHeight: at this size a fixed line box leaves no
+    // headroom, and it would not grow with the OS text-size setting.
     fontFamily: FontFamily.extraBold,
     color: RewardAccent.gold,
   },
   balanceUnit: {
-    paddingBottom: 7,
+    paddingBottom: 8,
     fontSize: 14,
     fontFamily: FontFamily.bold,
     color: Palette.textSecondary,
   },
-  metaRow: {
+  chipRow: {
     flexDirection: 'row',
-    gap: 24,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
   },
-  metaItem: {
-    gap: 2,
+  previewTag: {
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 122, 26, 0.4)',
+    backgroundColor: 'rgba(255, 122, 26, 0.09)',
   },
-  metaLabel: {
-    fontSize: 11,
-    fontFamily: FontFamily.semiBold,
-    color: Palette.textSecondary,
+  previewTagText: {
+    fontSize: 11.5,
+    fontFamily: FontFamily.bold,
+    color: Palette.primaryHover,
   },
-  metaValue: {
-    fontSize: 14,
-    fontFamily: FontFamily.extraBold,
+  streakChip: {
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Palette.border,
+    backgroundColor: Palette.surfaceMuted,
+  },
+  streakChipText: {
+    fontSize: 11.5,
+    fontFamily: FontFamily.bold,
     color: Palette.text,
   },
 });

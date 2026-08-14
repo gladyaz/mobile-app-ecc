@@ -1,12 +1,7 @@
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
-import {
-  PointsPill,
-  RewardCta,
-  RewardNotice,
-  RewardsCard,
-} from '@/features/rewards/components/rewards-primitives';
+import { PointsPill, RewardCta, RewardsCard } from '@/features/rewards/components/rewards-primitives';
 import { formatPoints } from '@/features/rewards/format-points';
 import { RewardAccent } from '@/features/rewards/rewards-theme';
 import type { TranslationKey } from '@/services/i18n/translations';
@@ -14,7 +9,7 @@ import { useTranslation } from '@/stores/language';
 import type { DailyCheckIn, DailyCheckInDay } from '@/types/rewards';
 
 /**
- * Daily check-in progression.
+ * Daily check-in progression, compact form.
  *
  * The day strip renders whatever `checkIn.days` contains - 7 entries is the
  * fixture's choice, not this component's. A 14- or 30-day curve renders
@@ -24,6 +19,12 @@ import type { DailyCheckIn, DailyCheckInDay } from '@/types/rewards';
  * Each day's `state` is supplied by the model. This component never derives
  * "is today claimed" from a device clock: the daily boundary and the streak
  * are server decisions (see `docs/rewards-domain-contract.md`).
+ *
+ * Trimmed in the UX pass: the streak/record pair moved up into the balance
+ * hero (one prominent streak beats two competing numbers), the card title
+ * moved to the section heading, and the caveat paragraph gave way to the
+ * page-level preview banner. The CTA stays visually primary even though it
+ * is preview-only, because burying it would misrepresent the page's shape.
  */
 
 const DAY_STATE_SUFFIX_KEY: Record<DailyCheckInDay['state'], TranslationKey> = {
@@ -64,7 +65,7 @@ function DayChip({ day }: DayChipProps) {
         {formatPoints(day.rewardPoints)}
       </Text>
       {/* State is never carried by color alone - every chip also has a word.
-          "Hari ini" outranks "Bonus" so the today cue is never lost on a day
+          "Today" outranks "Bonus" so the today cue is never lost on a day
           that happens to be both. */}
       <Text style={[styles.dayState, isToday && styles.dayStateToday]}>
         {isClaimed
@@ -88,34 +89,7 @@ export function DailyCheckInCard({ checkIn, onPressCta }: DailyCheckInCardProps)
   const { t } = useTranslation();
 
   return (
-    <RewardsCard
-      caption={checkIn.resetsAtLabel}
-      testID="rewards-daily-check-in"
-      title={t('rewards.checkInTitle')}>
-      {/* Grouped so a screen reader announces two facts, not four fragments
-          ("6", "hari beruntun", "19", "rekor terpanjang"). */}
-      <View style={styles.streakRow}>
-        <View
-          accessible
-          accessibilityLabel={t('rewards.streakCurrentA11y', { days: checkIn.currentStreakDays })}
-          style={styles.streakItem}>
-          <Text style={styles.streakValue} testID="check-in-current-streak">
-            {checkIn.currentStreakDays}
-          </Text>
-          <Text style={styles.streakLabel}>{t('rewards.streakCurrentLabel')}</Text>
-        </View>
-        <View style={styles.streakDivider} />
-        <View
-          accessible
-          accessibilityLabel={t('rewards.streakLongestA11y', { days: checkIn.longestStreakDays })}
-          style={styles.streakItem}>
-          <Text style={styles.streakValueMuted} testID="check-in-longest-streak">
-            {checkIn.longestStreakDays}
-          </Text>
-          <Text style={styles.streakLabel}>{t('rewards.streakLongestLabel')}</Text>
-        </View>
-      </View>
-
+    <RewardsCard testID="rewards-daily-check-in">
       <ScrollView
         contentContainerStyle={styles.dayStrip}
         horizontal
@@ -129,9 +103,7 @@ export function DailyCheckInCard({ checkIn, onPressCta }: DailyCheckInCardProps)
         <View style={styles.todayText}>
           <Text style={styles.todayLabel}>{t('rewards.todayReward')}</Text>
           <Text style={styles.todayStatus}>
-            {checkIn.isTodayClaimed
-              ? t('rewards.checkedInToday')
-              : t('rewards.notCheckedInToday')}
+            {checkIn.isTodayClaimed ? t('rewards.checkedInToday') : t('rewards.notCheckedInToday')}
           </Text>
         </View>
         <PointsPill points={checkIn.todayRewardPoints} testID="check-in-today-reward" />
@@ -143,56 +115,23 @@ export function DailyCheckInCard({ checkIn, onPressCta }: DailyCheckInCardProps)
         onPress={onPressCta}
         testID="check-in-cta"
       />
-
-      {checkIn.isClaimSupported ? null : (
-        <RewardNotice message={t('rewards.checkInUnverified')} testID="check-in-notice" />
-      )}
     </RewardsCard>
   );
 }
 
 const styles = StyleSheet.create({
-  streakRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  streakItem: {
-    gap: 1,
-  },
-  streakDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: Palette.border,
-  },
-  streakValue: {
-    fontSize: 24,
-    fontFamily: FontFamily.extraBold,
-    color: RewardAccent.gold,
-  },
-  streakValueMuted: {
-    fontSize: 24,
-    fontFamily: FontFamily.extraBold,
-    color: Palette.text,
-  },
-  streakLabel: {
-    fontSize: 11,
-    fontFamily: FontFamily.semiBold,
-    color: Palette.textSecondary,
-  },
   dayStrip: {
     gap: 8,
     paddingVertical: 2,
   },
   dayChip: {
     // min-, not fixed, so the three stacked labels can grow with the OS
-    // text-size setting instead of wrapping inside a 66pt column. Matches
-    // the sibling milestone chip in watch-time-card.tsx.
-    minWidth: 66,
+    // text-size setting instead of wrapping inside a narrow column.
+    minWidth: 58,
     paddingHorizontal: 6,
     alignItems: 'center',
     gap: 2,
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderRadius: Radius.lg,
     borderWidth: 1,
     borderColor: Palette.border,
@@ -218,7 +157,7 @@ const styles = StyleSheet.create({
     color: 'rgba(13, 13, 15, 0.75)',
   },
   dayPoints: {
-    fontSize: 16,
+    fontSize: 15,
     fontFamily: FontFamily.extraBold,
     color: Palette.text,
   },

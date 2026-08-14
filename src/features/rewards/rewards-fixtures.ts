@@ -142,7 +142,10 @@ function buildTasks(t: Translate): readonly RewardTask[] {
       title: t('rewards.fixtureCampaignTitle'),
       description: t('rewards.fixtureCampaignDesc'),
       rewardPoints: 150,
-      progress: { current: 0, target: 1 },
+      // No progress: a one-shot campaign has no meaningful "x of y", and a
+      // 0/1 bar rendered as a permanently-empty track on the least
+      // actionable row - the visually busiest row for the least reason.
+      progress: null,
       status: 'LOCKED',
       ctaLabel: t('rewards.ctaLocked'),
       isClaimSupported: false,
@@ -155,7 +158,7 @@ function buildRedemptions(t: Translate): readonly RewardRedemption[] {
     {
       id: 'redeem_vip_1d',
       title: t('rewards.fixtureVip1Title'),
-      description: t('rewards.fixtureVip1Desc'),
+      description: t('rewards.fixtureVipDesc'),
       costPoints: 1000,
       grantsDays: 1,
       availability: 'AVAILABLE',
@@ -165,7 +168,7 @@ function buildRedemptions(t: Translate): readonly RewardRedemption[] {
     {
       id: 'redeem_vip_3d',
       title: t('rewards.fixtureVip3Title'),
-      description: t('rewards.fixtureVip3Desc'),
+      description: t('rewards.fixtureVipDesc'),
       costPoints: 2500,
       grantsDays: 3,
       availability: 'INSUFFICIENT_POINTS',
@@ -175,7 +178,7 @@ function buildRedemptions(t: Translate): readonly RewardRedemption[] {
     {
       id: 'redeem_vip_7d',
       title: t('rewards.fixtureVip7Title'),
-      description: t('rewards.fixtureVip7Desc'),
+      description: t('rewards.fixtureVipDesc'),
       costPoints: 5000,
       grantsDays: 7,
       availability: 'COMING_SOON',

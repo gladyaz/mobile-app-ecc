@@ -34,16 +34,32 @@ describe('Rewards tab route', () => {
     expect(queryByTestId('rewards-back-button')).toBeNull();
   });
 
-  it('states that its figures are unapproved preview values', async () => {
-    const { getByText } = await render(<RewardsRoute />);
+  it('states the preview status once, at the top of the page', async () => {
+    const { getByTestId, getByText } = await render(<RewardsRoute />);
 
-    expect(getByText(idCopy['rewards.footerDisclaimer'])).toBeTruthy();
+    expect(getByTestId('rewards-preview-banner')).toBeTruthy();
+    expect(getByText(idCopy['rewards.previewBannerTitle'])).toBeTruthy();
+    expect(getByText(idCopy['rewards.previewBannerBody'])).toBeTruthy();
   });
 
-  it('labels the balance as non-authoritative preview data', async () => {
+  it('labels the balance itself as a preview value', async () => {
+    // The tag sits with the number, so the figure is never seen without its
+    // qualifier even when the banner has scrolled off.
     const { getByTestId } = await render(<RewardsRoute />);
 
-    expect(getByTestId('rewards-balance-notice')).toBeTruthy();
+    expect(getByTestId('rewards-balance-preview-tag')).toBeTruthy();
+  });
+
+  it('does not put backend or SDK terminology in front of the user', async () => {
+    // The old screen explained ledgers, backends and ad SDKs on six separate
+    // cards. That detail belongs in docs and code comments, not in a
+    // consumer rewards page.
+    const { queryByText } = await render(<RewardsRoute />);
+    const bannedFragments = ['backend', 'ledger', 'SDK', 'server', 'timer'];
+
+    for (const fragment of bannedFragments) {
+      expect(queryByText(new RegExp(fragment, 'i'))).toBeNull();
+    }
   });
 
   it('leaves the balance untouched when a reward CTA is pressed', async () => {

@@ -66,6 +66,19 @@ jest.mock('expo-router', () => {
   return {};
 });
 
+/**
+ * There is deliberately NO import tripwire for AsyncStorage or
+ * `@/services/storage/local-storage` here, and the omission is not an
+ * oversight: the rewards components import `useTranslation` from
+ * `@/stores/language`, which legitimately persists the chosen language, so
+ * both modules are genuinely in this graph. An import-shaped assertion
+ * cannot separate "persisted the locale" from "persisted a streak".
+ *
+ * The prohibition that matters - no CTA may persist anything - is asserted
+ * behaviourally instead, in `rewards-center-screen.test.tsx`: every CTA is
+ * pressed and `AsyncStorage.setItem` must not be called.
+ */
+
 describe('rewards economics boundary', () => {
   it('keeps every economic value out of the presentational components', () => {
     // A component importing the fixtures would be re-introducing hardcoded

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
-import { formatPoints } from '@/features/rewards/format-points';
+import { useFormatPoints } from '@/features/rewards/format-points';
 import { RewardAccent, RewardUnavailable, scaledLineHeight } from '@/features/rewards/rewards-theme';
 import { useTranslation } from '@/stores/language';
 
@@ -100,6 +100,7 @@ type PointsPillProps = {
 /** "+50" reward chip. The `+` is presentational; it never implies a credit. */
 export function PointsPill({ points, testID }: PointsPillProps) {
   const { t } = useTranslation();
+  const formatPoints = useFormatPoints();
 
   return (
     // Grouped with a unit-bearing label: the visible chip is just "+50", and

@@ -6,7 +6,7 @@ import {
   RewardProgressBar,
   RewardsCard,
 } from '@/features/rewards/components/rewards-primitives';
-import { formatPoints } from '@/features/rewards/format-points';
+import { useFormatPoints } from '@/features/rewards/format-points';
 import { RewardAccent } from '@/features/rewards/rewards-theme';
 import type { TranslationKey } from '@/services/i18n/translations';
 import { useTranslation } from '@/stores/language';
@@ -45,6 +45,7 @@ type MilestoneChipProps = {
 
 function MilestoneChip({ milestone }: MilestoneChipProps) {
   const { t } = useTranslation();
+  const formatPoints = useFormatPoints();
   const isReached = milestone.status === 'REACHED';
   const isClaimed = milestone.status === 'CLAIMED';
 
@@ -75,6 +76,7 @@ type WatchTimeCardProps = {
 
 export function WatchTimeCard({ watchTime, onPressCta }: WatchTimeCardProps) {
   const { t } = useTranslation();
+  const formatPoints = useFormatPoints();
   // The bar spans up to the largest configured milestone. Derived from the
   // supplied milestones, so a re-tuned curve needs no code change here.
   const finalMinutes = watchTime.milestones.reduce(

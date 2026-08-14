@@ -117,6 +117,11 @@ const id = {
   'rewards.sectionWatch': 'Hadiah Menonton',
   'rewards.sectionRedeem': 'Tukar Hadiah',
 
+  // Indonesian groups thousands with a dot; English and Chinese use a
+  // comma. Hardcoding "." made an English balance read as a decimal
+  // ("1.250 points" = one point two five), understating it 1000x.
+  'rewards.groupSeparator': '.',
+
   'rewards.pointsPill': '+{points}',
   // The visible chip is just "+50"; a screen reader needs the unit, because
   // out of context a bare "+50" is ambiguous.
@@ -341,6 +346,8 @@ const en: Copy = {
   'rewards.sectionWatch': 'Watch Rewards',
   'rewards.sectionRedeem': 'Redeem',
 
+  'rewards.groupSeparator': ',',
+
   'rewards.pointsPill': '+{points}',
   'rewards.pointsPillA11y': '+{points} points',
   'rewards.ctaA11y': '{label}: {title}',
@@ -548,6 +555,8 @@ const zh: Copy = {
   'rewards.sectionEarn': '赚取积分',
   'rewards.sectionWatch': '观看奖励',
   'rewards.sectionRedeem': '兑换',
+
+  'rewards.groupSeparator': ',',
 
   'rewards.pointsPill': '+{points}',
   'rewards.pointsPillA11y': '+{points} 积分',

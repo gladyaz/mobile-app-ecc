@@ -1,5 +1,19 @@
 import { formatPoints } from '@/features/rewards/format-points';
 
+describe('formatPoints - localized grouping', () => {
+  it('groups with the separator it is given, not a hardcoded one', () => {
+    // English and Chinese group with a comma. Emitting "1.250" to an English
+    // reader states a different number, not merely a different style.
+    expect(formatPoints(1250, ',')).toBe('1,250');
+    expect(formatPoints(1234567, ',')).toBe('1,234,567');
+    expect(formatPoints(1250, '.')).toBe('1.250');
+  });
+
+  it('still defaults to the Indonesian dot when no separator is supplied', () => {
+    expect(formatPoints(1250)).toBe('1.250');
+  });
+});
+
 describe('formatPoints', () => {
   it('groups thousands with a dot, matching the app language', () => {
     expect(formatPoints(1250)).toBe('1.250');

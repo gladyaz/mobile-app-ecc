@@ -506,6 +506,20 @@ describe('RewardsCenterScreen - preview safety is stated once, not everywhere', 
     }
   });
 
+  it('uses each language own thousands separator, never a hardcoded one', async () => {
+    // Device QA caught this in English: "1.250 points" reads as one point
+    // two five, understating the balance by three orders of magnitude.
+    // Indonesian groups with "." and English/Chinese with ",".
+    expect(translations.id['rewards.groupSeparator']).toBe('.');
+    expect(translations.en['rewards.groupSeparator']).toBe(',');
+    expect(translations.zh['rewards.groupSeparator']).toBe(',');
+
+    // The default render is Indonesian, so the dot form is what appears here.
+    const { getByText } = await renderReady();
+
+    expect(getByText('4.242')).toBeTruthy();
+  });
+
   it('keeps engineering vocabulary out of EVERY language, not just the default', async () => {
     // The rendered check above can only see the fallback language. This one
     // reads the tables directly, so an English or Chinese string carrying

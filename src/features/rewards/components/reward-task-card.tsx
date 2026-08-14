@@ -6,7 +6,7 @@ import {
   RewardCta,
   RewardProgressBar,
 } from '@/features/rewards/components/rewards-primitives';
-import { formatPoints } from '@/features/rewards/format-points';
+import { useFormatPoints } from '@/features/rewards/format-points';
 import { RewardAccent, scaledLineHeight } from '@/features/rewards/rewards-theme';
 import { useTranslation } from '@/stores/language';
 import type { RewardTask, RewardTaskType, SocialPlatform } from '@/types/rewards';
@@ -48,9 +48,11 @@ const TYPE_MARK: Record<RewardTaskType, string> = {
   SOCIAL_FOLLOW: 'SNS',
   REWARDED_AD: 'AD',
   WATCH_TIME: 'MIN',
-  // Not "NEW": a campaign row also renders a locked "Coming Soon" CTA, and
-  // a NEW badge beside it read as a contradiction.
-  CAMPAIGN: 'MISI',
+  // Language-neutral on purpose. These marks are NOT localized, so an
+  // Indonesian word like "MISI" appeared verbatim in the English and
+  // Chinese UI. "NEW" was wrong too - it contradicted the locked
+  // "Coming Soon" CTA sitting right beside it.
+  CAMPAIGN: '★',
   DAILY_CHECK_IN: 'DAY',
 };
 
@@ -61,6 +63,7 @@ type RewardTaskCardProps = {
 
 export function RewardTaskCard({ task, onPressCta }: RewardTaskCardProps) {
   const { t } = useTranslation();
+  const formatPoints = useFormatPoints();
   const mark = task.socialPlatform ? PLATFORM_MARK[task.socialPlatform] : TYPE_MARK[task.type];
 
   return (

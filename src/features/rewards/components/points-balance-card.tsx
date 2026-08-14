@@ -1,7 +1,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
-import { formatPoints } from '@/features/rewards/format-points';
+import { useFormatPoints } from '@/features/rewards/format-points';
 import { RewardAccent } from '@/features/rewards/rewards-theme';
 import { useTranslation } from '@/stores/language';
 import type { RewardWallet } from '@/types/rewards';
@@ -37,6 +37,7 @@ type PointsBalanceCardProps = {
 
 export function PointsBalanceCard({ wallet, streakDays = null }: PointsBalanceCardProps) {
   const { t } = useTranslation();
+  const formatPoints = useFormatPoints();
   const balanceLabel = formatPoints(wallet.balancePoints);
   const hasStreak = typeof streakDays === 'number' && streakDays > 0;
 

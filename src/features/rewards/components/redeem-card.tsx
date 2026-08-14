@@ -2,7 +2,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { RewardCta } from '@/features/rewards/components/rewards-primitives';
-import { formatPoints } from '@/features/rewards/format-points';
+import { useFormatPoints } from '@/features/rewards/format-points';
 import { RewardAccent, scaledLineHeight } from '@/features/rewards/rewards-theme';
 import type { TranslationKey } from '@/services/i18n/translations';
 import { useTranslation } from '@/stores/language';
@@ -45,6 +45,7 @@ type RedeemCardProps = {
 
 export function RedeemCard({ redemption, onPressCta }: RedeemCardProps) {
   const { t } = useTranslation();
+  const formatPoints = useFormatPoints();
 
   return (
     <View style={styles.row} testID={`redeem-card-${redemption.id}`}>

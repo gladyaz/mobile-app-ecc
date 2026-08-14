@@ -106,9 +106,16 @@ every variant, and `DiscoverPoster` decides how many of them fit:
 `Premium` is access status and always survives. `Hot` yields when a stronger
 signal or a narrower surface takes over: a ranked card already says "popular"
 with its rank, and a 68pt row poster cannot carry a second chip without
-wrapping it over the artwork. The accessibility label still announces every
-badge the series has earned, so a screen-reader user is never told less than a
-sighted one.
+wrapping it over the artwork. The accessibility label is built from this same
+budget (`resolveVisibleBadges`), so it announces exactly the badges the card
+draws - never a chip that is not on screen, and never a chip the sighted user
+can see but the label omits.
+
+Measured against the live catalog (2026-08-14): like totals are 716/714/714/714,
+so the lower median is 714, the threshold is `max(1428, 100)`, and **no series
+currently earns `Hot`**. That is the gate behaving as designed on a flat
+catalog, not a bug - but it means the `Hot` overlay is unreachable in production
+until the catalog develops a real leader.
 
 ## Artwork and its fallback
 
@@ -124,6 +131,25 @@ screen.
 The fallback invents no URL and adds no image provider. A series with no
 artwork is a **backend data gap**, not a client bug; the client's only job is
 to make that gap look deliberate. See "Backend follow-ups" below.
+
+**Recovery after a failed load.** The failure is remembered against the artwork
+URL that failed, so new artwork for a series retries while a URL that just
+failed does not. Nothing sets state during render or from an effect, so there
+is no timer to leak and no retry loop.
+
+Keying on the *card object* instead was investigated and rejected. It would
+self-clear and look like free recovery, but `cards` is rebuilt on a catalog
+refetch **and** on every like or save anywhere in the app - and since Discover
+has no pull-to-refresh, the like/save path is the one that actually fires.
+Object-identity keying would therefore re-issue a request for every failed
+poster in the render window on every unrelated tap, against a URL that just
+failed, from a screen the user is not looking at.
+
+**Known limit:** a transient failure holds the fallback until that cell remounts
+(tab switch, or scrolling out of the render window). The failure direction is the
+safe one - a branded tile, never a black rectangle. Clean recovery needs a
+catalog-generation token threaded from the screen to the poster; that is a
+follow-up, not something to bolt on.
 
 There is **no `New` badge** - see limitation 1.
 
@@ -193,7 +219,7 @@ There is **no `New` badge** - see limitation 1.
   375pt up, more on tablet widths. Posters use `aspectRatio`, not fixed heights,
   so large accessibility font sizes do not clip the image. The poster's overlay
   pills (rank, badges, `N EP`) still scale with the user's text size but are
-  capped at `POSTER_OVERLAY_MAX_FONT_SCALE` (1.4x); the badge row is bounded on
+  capped at `OVERLAY_MAX_FONT_SCALE` (1.4x); the badge row is bounded on
   both sides and wraps, so a capped overlay cannot be clipped by the poster's
   `overflow: hidden`.
 - Card accessibility labels carry every visible fact, including the episode
@@ -215,13 +241,28 @@ There is **no `New` badge** - see limitation 1.
 
 ## Backend follow-ups (not done in this slice, no backend change was made)
 
-1. **Poster artwork per series.** `thumbnailUrl` is optional on the feed DTO and
-   is episode-scoped; there is no series-level poster field. Any series whose
-   representative episode has no thumbnail renders the branded fallback. A
+1. **Poster artwork per series — currently missing for 100% of rows.** Measured
+   against the live local backend on 2026-08-14: `GET /videos/feed` returned 42
+   rows and **not one carried a `thumbnailUrl` key at all**. `thumbnailUrl` is
+   optional on the feed DTO, so the mapper coerces it to `''`, and every one of
+   the four Discover series therefore renders the branded fallback rather than
+   artwork. This is a backend data gap, not a client bug: Discover has no URL to
+   render. It also means the "black card" symptom from simulator QA was total,
+   not intermittent. `thumbnailUrl` is also episode-scoped; there is no
+   series-level poster field. A
    `posterUrl` (or a guaranteed `thumbnailUrl`) on the series/video contract
    would remove the fallback from the happy path. Portrait key art would also
    fit the 2:3 frame better than a 16:9 episode still.
-2. **Publication date.** Still absent - see limitation 1 below.
+2. **Series-level title.** Every title in the live feed ends with an episode
+   suffix (`"Malapetaka Datang: Benteng Bergerakku - Episode 1"`), because the
+   card takes the representative episode's `title` - there is no series title on
+   the contract. Discover shows it verbatim and MUST keep doing so: stripping a
+   `/ - Episode \d+$/` suffix client-side is content rewriting, it would break
+   search coherence (`videoMatchesSearch` matches the raw title, so a card could
+   stop containing the query that matched it), and the pattern is not stable if
+   the backend ever localizes it. The fix belongs on the contract: a series title
+   distinct from the episode title.
+3. **Publication date.** Still absent - see limitation 1 below.
 
 ## Category labels
 

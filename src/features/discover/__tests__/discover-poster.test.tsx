@@ -161,6 +161,49 @@ describe('poster fallback', () => {
     expect(queryByTestId('discover-poster-image-series-a')).toBeNull();
   });
 
+  it('does not re-request a failed url when the catalog rebuilds the same card', async () => {
+    const card = buildCard();
+
+    const { getByTestId, queryByTestId, rerender } = await render(
+      <DiscoverPoster card={card} variant="grid" />
+    );
+
+    await fireEvent(getByTestId('discover-poster-image-series-a'), 'error', {
+      nativeEvent: { error: 'Offline' },
+    });
+
+    // `cards` is rebuilt on every like/save anywhere in the app, so a fresh
+    // card object with identical artwork must NOT remount the Image - that
+    // would turn unrelated like churn into a re-request storm against a URL
+    // that just failed.
+    await rerender(<DiscoverPoster card={{ ...card }} variant="grid" />);
+
+    expect(queryByTestId('discover-poster-image-series-a')).toBeNull();
+  });
+
+  it('retries when the series is given new artwork', async () => {
+    const card = buildCard();
+
+    const { getByTestId, queryByTestId, rerender } = await render(
+      <DiscoverPoster card={card} variant="grid" />
+    );
+
+    await fireEvent(getByTestId('discover-poster-image-series-a'), 'error', {
+      nativeEvent: { error: 'Not found' },
+    });
+
+    expect(queryByTestId('discover-poster-image-series-a')).toBeNull();
+
+    await rerender(
+      <DiscoverPoster
+        card={{ ...card, posterUrl: 'https://cdn.example.com/series-a-v2.jpg' }}
+        variant="grid"
+      />
+    );
+
+    expect(getByTestId('discover-poster-image-series-a')).toBeTruthy();
+  });
+
   it('keeps the badges readable on the fallback surface', async () => {
     const card = buildCard({ posterUrl: '' });
 

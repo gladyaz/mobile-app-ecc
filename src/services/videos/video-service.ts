@@ -60,10 +60,13 @@ function videoMatchesSearch(video: Video, normalizedQuery: string) {
  * catalog provider) surface them as a visible error state.
  */
 /**
- * THE single catalog boundary.
+ * THE catalog boundary for the EPISODE feed.
  *
- * Home, Discover and Series Detail all read the catalog through
- * `VideoCatalogProvider`, which calls exactly this function - so filtering
+ * Home reads the catalog through `VideoCatalogProvider`, which calls exactly
+ * this function. Discover and Series Detail no longer route through it: they
+ * read `GET /series` and `GET /series/:id`, where the backend applies its own
+ * published/drama restriction, and `mapBackendSeriesDetail` keeps the same
+ * fixture exclusion on the episodes it returns - so filtering
  * here is what keeps those three surfaces derived from one identical source.
  * Filtering per-screen instead would let them drift, and Series Detail (which
  * resolves a series out of the same array) could still surface a fixture.

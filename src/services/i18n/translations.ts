@@ -35,10 +35,9 @@ const id = {
   'home.addedToSaved': 'Disimpan ke Saved',
 
   'discover.title': 'Discover',
-  // Widened with the content-hub redesign: the underlying `searchVideos`
-  // matcher has always covered channel and category as well as title, so the
-  // old "Cari judul drama…" understated what typing here actually does.
-  'discover.searchPlaceholder': 'Cari judul, kategori, atau channel…',
+  // Discover searches the Series catalog: canonical title and category. It has
+  // no episodes behind it any more, so it cannot promise channel or caption.
+  'discover.searchPlaceholder': 'Cari judul atau kategori…',
   'discover.noResults': 'Tidak ada hasil',
   'discover.searchA11y': 'Cari drama',
   'discover.categoryA11y': 'Kategori {category}',
@@ -85,7 +84,7 @@ const id = {
   'discover.categoryDrama': 'Drama',
   'discover.likeTotal': '{count} suka total',
   'discover.resultCount': '{count} hasil untuk “{query}”',
-  'discover.searchHint': 'Dicocokkan dengan judul, deskripsi episode, channel, dan kategori.',
+  'discover.searchHint': 'Dicocokkan dengan judul seri dan kategori.',
   'discover.noResultsDescAll': 'Coba kata kunci lain, atau telusuri katalog lewat kategori.',
   'discover.noResultsDescCategory':
     'Tidak ada hasil pada kategori {category}. Coba kata kunci lain, atau pilih kategori All.',
@@ -296,7 +295,7 @@ const en: Copy = {
   'home.addedToSaved': 'Added to Saved',
 
   'discover.title': 'Discover',
-  'discover.searchPlaceholder': 'Search titles, categories, or channels…',
+  'discover.searchPlaceholder': 'Search titles or categories…',
   'discover.searchA11y': 'Search dramas',
   'discover.categoryA11y': 'Category {category}',
   'discover.clearSearch': 'Clear search',
@@ -333,7 +332,7 @@ const en: Copy = {
   'discover.categoryDrama': 'Drama',
   'discover.likeTotal': '{count} likes total',
   'discover.resultCount': '{count} results for “{query}”',
-  'discover.searchHint': 'Matched against title, episode description, channel, and category.',
+  'discover.searchHint': 'Matched against series title and category.',
   'discover.noResultsDescAll': 'Try another keyword, or browse the catalog by category.',
   'discover.noResultsDescCategory':
     'No results in the {category} category. Try another keyword, or pick the All category.',
@@ -519,7 +518,7 @@ const zh: Copy = {
   'home.addedToSaved': '已加入收藏',
 
   'discover.title': '发现',
-  'discover.searchPlaceholder': '搜索剧名、分类或频道…',
+  'discover.searchPlaceholder': '搜索剧名或分类…',
   'discover.searchA11y': '搜索短剧',
   'discover.categoryA11y': '{category} 分类',
   'discover.clearSearch': '清除搜索',
@@ -553,7 +552,7 @@ const zh: Copy = {
   'discover.categoryDrama': '剧情',
   'discover.likeTotal': '共 {count} 个赞',
   'discover.resultCount': '“{query}”的 {count} 个结果',
-  'discover.searchHint': '匹配范围包括剧名、剧集简介、频道和分类。',
+  'discover.searchHint': '匹配范围包括剧名和分类。',
   'discover.noResultsDescAll': '换个关键词试试，或按分类浏览目录。',
   'discover.noResultsDescCategory': '「{category}」分类下没有结果。换个关键词，或选择 All 分类。',
   'discover.rankA11y': '第 {rank} 名',

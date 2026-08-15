@@ -288,11 +288,6 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.medium,
     color: Palette.textMuted,
   },
-  listChannel: {
-    fontSize: 11,
-    fontFamily: FontFamily.regular,
-    color: Palette.textDisabled,
-  },
   listMetric: {
     fontSize: 11.5,
     fontFamily: FontFamily.bold,

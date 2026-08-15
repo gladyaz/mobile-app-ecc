@@ -122,7 +122,7 @@ export default function SeriesDetailScreen() {
         <Text style={styles.category}>{series.category ?? ''}</Text>
       </View>
       <Text style={styles.title}>{series.title}</Text>
-      <Text style={styles.episodeCount}>{t('series.episodeCount', { count: series.episodeCount })}</Text>
+      <Text style={styles.episodeCount}>{t('series.episodeCount', { count: episodes.length })}</Text>
 
       {primaryPlaybackEpisode ? (
         <Pressable
@@ -230,11 +230,6 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.bold,
     color: Palette.primaryHover,
   },
-  channel: {
-    fontSize: 13,
-    fontFamily: FontFamily.regular,
-    color: Palette.textSecondary,
-  },
   title: {
     marginTop: 8,
     paddingHorizontal: 20,
@@ -249,14 +244,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: FontFamily.bold,
     color: Palette.textMuted,
-  },
-  description: {
-    marginTop: 10,
-    paddingHorizontal: 20,
-    fontSize: 15,
-    lineHeight: 22,
-    fontFamily: FontFamily.regular,
-    color: Palette.textSecondary,
   },
   playButton: {
     marginTop: 16,

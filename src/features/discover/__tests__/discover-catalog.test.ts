@@ -129,6 +129,29 @@ describe('buildDiscoverCards', () => {
     expect(cards.every((card) => !card.badges.includes('Hot'))).toBe(true);
   });
 
+  it('awards Hot to a clear leader on a two-series catalog', () => {
+    // The LOWER median exists for exactly this case: averaging the two middle
+    // values makes the gate unreachable when there are only two series.
+    const cards = buildDiscoverCards([
+      buildSeries({ id: 'a', totalLikes: 12_000 }),
+      buildSeries({ id: 'b', totalLikes: 500 }),
+    ]);
+
+    expect(cards[0].badges).toContain('Hot');
+    expect(cards[1].badges).not.toContain('Hot');
+  });
+
+  it('awards Hot to no one when the catalog slopes gently', () => {
+    // 6k/5k/4k/3k/2k: the leader is 1.5x the median, under the 2x gate.
+    const cards = buildDiscoverCards(
+      [6000, 5000, 4000, 3000, 2000].map((totalLikes, index) =>
+        buildSeries({ id: `slope-${index}`, totalLikes })
+      )
+    );
+
+    expect(cards.every((card) => !card.badges.includes('Hot'))).toBe(true);
+  });
+
   it('awards Hot to at most three series', () => {
     const cards = buildDiscoverCards(
       [9000, 8000, 7000, 6000, 100, 100, 100, 100, 100].map((totalLikes, index) =>

@@ -142,13 +142,14 @@ export function buildDiscoverCards(
 }
 
 /**
- * Ranking for the Rankings tab. Metric: total like count (`likeCount` from
- * `/videos/feed`, summed across the series' episodes in the fetched catalog,
- * including the local optimistic +1 the rest of the app already displays).
- * The UI labels it "total suka" precisely because it is a sum, not a
- * per-episode figure like the one the Home feed shows. No view counts, watch
- * time, or trending score exist in the mobile-visible contract, and none are
- * invented here.
+ * Ranking for the Rankings tab. Metric: the backend's own `totalLikes`
+ * aggregate from `GET /series` - a per-series total the server computes from
+ * that series' published drama episodes. The client does not re-sum episode
+ * likes, and a viewer's own optimistic like no longer moves this number:
+ * Rankings now reflects backend truth, which is refetched, not patched
+ * locally. The UI still labels it "total suka" because it is a total, not a
+ * per-episode figure. No view counts, watch time or trending score exist in
+ * the contract, and none are invented here.
  */
 export function rankDiscoverCards(
   cards: readonly DiscoverSeriesCard[]
@@ -165,7 +166,7 @@ export function filterDiscoverCardsByCategory(
   }
 
   // A null-category series matches no chip - it is not reassigned to one.
-  return cards.filter((card) => card.category !== null && card.category === category);
+  return cards.filter((card) => card.category === category);
 }
 
 /**

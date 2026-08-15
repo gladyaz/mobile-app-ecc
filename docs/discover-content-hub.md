@@ -20,7 +20,42 @@ Home, Discover, Saved, Rewards, Profile (`src/app/(tabs)/_layout.tsx`, added in
 the Rewards integration slice). Discover's own header still carries no Rewards
 or VIP entry point.
 
-## Data sources per surface
+## Data sources per surface (Series API integration)
+
+Discover and Series Detail now read the authoritative Series endpoints. Home
+still reads the episode feed.
+
+| Surface | Endpoint |
+| --- | --- |
+| Home | `GET /videos/feed` (unchanged) |
+| Discover | `GET /series` -> `CatalogSeries[]` |
+| Series Detail | `GET /series/:id` -> metadata + episodes |
+
+`title`, `coverUrl`, `category`, `episodeCount`, `totalLikes` and
+`hasPremiumEpisodes` are all backend-owned. Nothing on these two surfaces is
+derived from a representative episode any more. `groupVideosIntoSeries` is
+retained for exactly one purpose: the offline/demo path, where there is no
+backend to ask.
+
+**Two gaps this integration exposes and CANNOT close client-side:**
+
+1. **Per-episode premium tier is not on the wire.** The series badge uses the
+   backend's `hasPremiumEpisodes`, which honours `Video.accessTierOverride`.
+   The per-episode lock on Series Detail still uses the client rule
+   (`episodeNumber > FREE_EPISODE_LIMIT`) because `VideoResponseDto` does not
+   expose the override. They agree for every episode today - the backfill set
+   each override equal to the derived tier - but an admin using
+   `PATCH /admin/media/:id/access-tier` can make them disagree, and then a
+   locked episode would look free (stream returns 403) or a free one would sit
+   behind the premium modal. Fix: expose the resolved tier on the episode DTO.
+2. **The two mappers disagree on an unknown category.** `mapBackendSeries`
+   resolves an unrecognised category to `null` by design; `mapBackendVideoToVideo`
+   throws on the same value. A series whose category is outside the mobile
+   union therefore renders fine in Discover and fails hard when opened. Fix:
+   agree on one tolerance - either constrain the backend category, or relax the
+   video mapper (which is on Home's path, so it is out of this slice's scope).
+
+## Legacy: how Discover derived its cards before this integration
 
 Everything below is derived from the already-fetched `/videos/feed` result via
 `buildDiscoverCards` (`src/features/discover/discover-catalog.ts`), which reuses

@@ -55,7 +55,7 @@ export async function getSeriesCatalog(): Promise<readonly CatalogSeries[]> {
 
   if (!response || !Array.isArray(response.items)) {
     throw new ApiError(
-      200,
+      0,
       'INVALID_RESPONSE',
       '[series-catalog] GET /series did not return an { items: [] } envelope.'
     );

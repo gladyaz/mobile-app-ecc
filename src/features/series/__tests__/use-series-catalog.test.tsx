@@ -101,6 +101,38 @@ describe('useSeriesDetail', () => {
     expect(result.current.isNotFound).toBe(true);
   });
 
+  it('never renders the previous series under a new id', async () => {
+    const other: CatalogSeriesDetail = { ...detail, id: 'series-010', title: 'Kue Gulung' };
+    // The second response is held open so the in-flight window is observable:
+    // that window is exactly where a stale render would show.
+    let resolveSecond: (value: CatalogSeriesDetail) => void = () => {};
+    mockGetSeriesDetail
+      .mockResolvedValueOnce(detail)
+      .mockReturnValueOnce(
+        new Promise<CatalogSeriesDetail>((resolve) => {
+          resolveSecond = resolve;
+        })
+      );
+
+    const { result, rerender } = await renderHook(
+      ({ id }: { id: string }) => useSeriesDetail(id),
+      { initialProps: { id: 'series-104' } }
+    );
+
+    await waitFor(() => expect(result.current.data?.id).toBe('series-104'));
+
+    await rerender({ id: 'series-010' });
+
+    // The settled result belongs to the OLD id, so it is invalidated by
+    // comparison rather than briefly rendered under the new one.
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(true);
+
+    resolveSecond(other);
+
+    await waitFor(() => expect(result.current.data?.id).toBe('series-010'));
+  });
+
   it('refetches when the id changes', async () => {
     mockGetSeriesDetail.mockResolvedValue(detail);
 

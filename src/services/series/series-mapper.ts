@@ -103,6 +103,12 @@ export function mapBackendSeriesDetail(dto: BackendSeriesDetailDto): CatalogSeri
 
   return {
     ...mapBackendSeries(dto),
-    episodes: dto.episodes.map(mapBackendVideoToVideo),
+    // Same user-facing boundary `selectUserFacingCatalog` applies to the feed:
+    // a QA fixture episode must not reach a normal surface just because it
+    // shares a seriesId. The backend is expected to exclude them here too;
+    // this keeps the client's own guarantee rather than assuming it.
+    episodes: dto.episodes
+      .filter((episode) => episode.contentKind === 'drama')
+      .map(mapBackendVideoToVideo),
   };
 }

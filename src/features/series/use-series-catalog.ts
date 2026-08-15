@@ -92,10 +92,19 @@ export type SeriesDetailResource = AsyncResource<CatalogSeriesDetail | undefined
  * deep link into /series/<id> renders the same as a tap from the catalog.
  */
 export function useSeriesDetail(id: string | undefined): SeriesDetailResource {
-  const [detail, setDetail] = useState<CatalogSeriesDetail | undefined>(undefined);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isNotFound, setIsNotFound] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+  /**
+   * The settled result carries the id it belongs to. A route param change
+   * therefore invalidates it by comparison instead of by an effect that
+   * resets state - so the screen can never render the previous series under
+   * the new id while the next request is in flight.
+   */
+  const [settled, setSettled] = useState<{
+    readonly id: string;
+    readonly detail: CatalogSeriesDetail | undefined;
+  } | null>(null);
+  const [error, setErrorState] = useState<{ readonly id: string; readonly error: Error } | null>(
+    null
+  );
   const requestIdRef = useRef(0);
   const isMountedRef = useRef(true);
 
@@ -124,18 +133,15 @@ export function useSeriesDetail(id: string | undefined): SeriesDetailResource {
           return;
         }
 
-        setDetail(fetched);
-        setIsNotFound(fetched === undefined);
-        setError(null);
-        setIsLoading(false);
+        setErrorState(null);
+        setSettled({ id, detail: fetched });
       })
       .catch((caught: unknown) => {
         if (!isMountedRef.current || requestIdRef.current !== requestId) {
           return;
         }
 
-        setError(toError(caught, 'Failed to load the series.'));
-        setIsLoading(false);
+        setErrorState({ id, error: toError(caught, 'Failed to load the series.') });
       });
   }, [hasId, id]);
 
@@ -144,17 +150,21 @@ export function useSeriesDetail(id: string | undefined): SeriesDetailResource {
   }, [fetchDetail]);
 
   const refresh = useCallback(() => {
-    setIsLoading(true);
-    setIsNotFound(false);
-    setError(null);
+    setSettled(null);
+    setErrorState(null);
     void fetchDetail();
   }, [fetchDetail]);
 
+  // Everything below is derived from "does the settled result belong to the id
+  // being asked about right now?".
+  const settledForId = hasId && settled?.id === id ? settled : null;
+  const errorForId = hasId && error?.id === id ? error.error : null;
+
   return {
-    data: hasId ? detail : undefined,
-    isLoading: hasId ? isLoading : false,
-    error,
-    isNotFound: hasId ? isNotFound : true,
+    data: settledForId?.detail,
+    isLoading: hasId && settledForId === null && errorForId === null,
+    error: errorForId,
+    isNotFound: !hasId || (settledForId !== null && settledForId.detail === undefined),
     refresh,
   };
 }

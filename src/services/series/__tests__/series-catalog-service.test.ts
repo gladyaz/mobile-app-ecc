@@ -9,6 +9,13 @@ import {
 import type { BackendVideoDto } from '@/services/videos/video-mapper';
 
 const mockRequest = jest.fn();
+const mockShouldUseMockData = jest.fn(() => false);
+const mockGetVideoFeed = jest.fn();
+
+jest.mock('@/services/videos/video-service', () => ({
+  shouldUseMockData: () => mockShouldUseMockData(),
+  getVideoFeed: () => mockGetVideoFeed(),
+}));
 
 jest.mock('@/services/api/client', () => {
   class MockApiError extends Error {
@@ -137,6 +144,10 @@ describe('mapBackendSeriesDetail', () => {
   });
 });
 
+beforeEach(() => {
+  mockShouldUseMockData.mockReturnValue(false);
+});
+
 describe('getSeriesCatalog', () => {
   it('requests GET /series and maps the items envelope', async () => {
     mockRequest.mockResolvedValueOnce({ items: [buildSeriesDto()] });
@@ -209,5 +220,68 @@ describe('getSeriesDetail', () => {
     mockRequest.mockRejectedValueOnce(new ApiError(500, 'SERVER_ERROR', 'boom'));
 
     await expect(getSeriesDetail('series-104')).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+
+describe('offline / demo mode', () => {
+  it('never touches the network for the catalog', async () => {
+    mockShouldUseMockData.mockReturnValue(true);
+    mockGetVideoFeed.mockResolvedValueOnce([
+      {
+        id: 'mock-ep-1',
+        seriesId: 'series-mock',
+        storageKey: 'k',
+        playbackUrl: 'file://mock.mp4',
+        thumbnailUrl: 'file://mock.jpg',
+        title: 'Drama Offline',
+        episodeNumber: 1,
+        channelName: 'Bundled',
+        category: 'Romance',
+        sourceLanguage: 'Mandarin',
+        hasEmbeddedIndonesianSubtitle: true,
+        processingStatus: 'completed',
+        caption: 'c',
+        likeCount: 12,
+        isSaved: false,
+        contentKind: 'drama',
+      },
+    ]);
+
+    const catalog = await getSeriesCatalog();
+
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(catalog).toHaveLength(1);
+    expect(catalog[0].title).toBe('Drama Offline');
+    expect(catalog[0].totalLikes).toBe(12);
+  });
+
+  it('never touches the network for a detail either', async () => {
+    mockShouldUseMockData.mockReturnValue(true);
+    mockGetVideoFeed.mockResolvedValueOnce([
+      {
+        id: 'mock-ep-1',
+        seriesId: 'series-mock',
+        storageKey: 'k',
+        playbackUrl: 'file://mock.mp4',
+        thumbnailUrl: 'file://mock.jpg',
+        title: 'Drama Offline',
+        episodeNumber: 1,
+        channelName: 'Bundled',
+        category: 'Romance',
+        sourceLanguage: 'Mandarin',
+        hasEmbeddedIndonesianSubtitle: true,
+        processingStatus: 'completed',
+        caption: 'c',
+        likeCount: 12,
+        isSaved: false,
+        contentKind: 'drama',
+      },
+    ]);
+
+    const detail = await getSeriesDetail('series-mock');
+
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(detail?.episodes).toHaveLength(1);
   });
 });

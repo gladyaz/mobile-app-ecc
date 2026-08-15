@@ -1,10 +1,12 @@
 import { render, fireEvent, act, within } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import type { ReactElement } from 'react';
-import { AppState, Platform, StyleSheet } from 'react-native';
+import { AccessibilityInfo, AppState, Platform, StyleSheet } from 'react-native';
 
 import { DramaFeedItem, touchDistance } from '@/components/drama-feed-item';
+import { AUTO_CLEAR_DISPLAY_DELAY_MS } from '@/constants/clear-display';
 import { FeedBottomGap } from '@/constants/theme';
+import { useClearDisplayState } from '@/hooks/use-clear-display-state';
 import { ApiError } from '@/services/api/client';
 import { resetPlaybackInvariantForTests } from '@/services/debug/playback-invariant';
 import type { Episode } from '@/types/series';
@@ -625,21 +627,31 @@ describe('DramaFeedItem', () => {
       <DramaFeedItem video={video} {...baseProps} isClearDisplay />
     );
 
-    // Assert: the metadata and action rail are both invisible and untappable,
-    // while the progress bar survives - that pairing is the whole feature.
-    const overlay = getByTestId('feed-item-bottom-overlay');
-    const titleOverlay = getByTestId('feed-item-title-overlay');
+    // Assert: the metadata and action rail are invisible, untappable, AND
+    // absent from the accessibility tree (clear-display-idle-v2 review fix:
+    // opacity 0 alone left invisible-but-focusable ghost controls for
+    // VoiceOver/TalkBack), while the progress bar survives - that pairing
+    // is the whole feature. The hidden containers are therefore excluded
+    // from default queries and need includeHiddenElements to inspect.
+    const overlay = getByTestId('feed-item-bottom-overlay', { includeHiddenElements: true });
+    const titleOverlay = getByTestId('feed-item-title-overlay', { includeHiddenElements: true });
 
     expect(StyleSheet.flatten(overlay.props.style).opacity).toBe(0);
     expect(overlay.props.pointerEvents).toBe('none');
+    expect(overlay.props.accessibilityElementsHidden).toBe(true);
+    expect(overlay.props.importantForAccessibility).toBe('no-hide-descendants');
     // The upper-left title block and the episode cluster step aside the
     // same way.
     expect(StyleSheet.flatten(titleOverlay.props.style).opacity).toBe(0);
     expect(titleOverlay.props.pointerEvents).toBe('none');
-    const episodeCluster = getByTestId('feed-item-episode-cluster');
+    expect(titleOverlay.props.accessibilityElementsHidden).toBe(true);
+    const episodeCluster = getByTestId('feed-item-episode-cluster', {
+      includeHiddenElements: true,
+    });
 
     expect(StyleSheet.flatten(episodeCluster.props.style).opacity).toBe(0);
     expect(episodeCluster.props.pointerEvents).toBe('none');
+    expect(episodeCluster.props.accessibilityElementsHidden).toBe(true);
     expect(getByTestId('feed-item-progress-track')).toBeTruthy();
   });
 
@@ -708,14 +720,16 @@ describe('DramaFeedItem', () => {
     );
 
     // Nothing but the video is left. The rail steps aside the way it always
-    // has - opacity 0 and pointerEvents none, not unmounted - while the two
-    // controls the old design kept ON SCREEN during clear display (the exit
-    // pill and the speed strip) are gone outright.
+    // has - opacity 0 and pointerEvents none, not unmounted (and, since the
+    // clear-display-idle-v2 review fix, also hidden from the accessibility
+    // tree, which is why inspecting it needs includeHiddenElements) - while
+    // the two controls the old design kept ON SCREEN during clear display
+    // (the exit pill and the speed strip) are gone outright.
     expect(queryByLabelText('Kecepatan 1x')).toBeNull();
     expect(queryByLabelText('Keluar dari tampilan bersih')).toBeNull();
     expect(queryByLabelText('Pengaturan pemutaran')).toBeNull();
 
-    const overlay = getByTestId('feed-item-bottom-overlay');
+    const overlay = getByTestId('feed-item-bottom-overlay', { includeHiddenElements: true });
 
     expect(StyleSheet.flatten(overlay.props.style).opacity).toBe(0);
     expect(overlay.props.pointerEvents).toBe('none');
@@ -4059,6 +4073,783 @@ describe('DramaFeedItem', () => {
 
         expect(player.play).not.toHaveBeenCalled();
       });
+    });
+  });
+});
+
+/**
+ * AUTO CLEAR DISPLAY ON IDLE (feat/clear-display-idle-v2).
+ *
+ * These are integration tests through the real ownership shape: the harness
+ * below owns clear-display state exactly the way Home does (via
+ * `useClearDisplayState`), so tap -> hide -> restore -> countdown cycles and
+ * swipe generations run against the production wiring, not a re-mock of it.
+ * Timer mechanics in isolation live in use-auto-clear-display-idle.test.tsx.
+ */
+function AutoClearHarness({
+  videos,
+  activeVideoId,
+  isScreenFocused = true,
+}: {
+  readonly videos: readonly Video[];
+  readonly activeVideoId: string;
+  readonly isScreenFocused?: boolean;
+}) {
+  const { isClearDisplay, setClearDisplay } = useClearDisplayState(activeVideoId);
+
+  return (
+    <>
+      {videos.map((video) => (
+        <DramaFeedItem
+          key={video.id}
+          video={video}
+          {...baseProps}
+          isActive={video.id === activeVideoId}
+          isScreenFocused={isScreenFocused}
+          isClearDisplay={isClearDisplay}
+          onToggleClearDisplay={setClearDisplay}
+        />
+      ))}
+    </>
+  );
+}
+
+describe('auto clear display on idle', () => {
+  const KEBAB_TEST_ID = 'feed-item-playback-settings';
+  const SURFACE_TEST_ID = 'feed-item-clear-display-surface';
+
+  beforeEach(() => {
+    // This is a TOP-LEVEL describe - the `DramaFeedItem` describe's own
+    // beforeEach does not apply here, so every cross-cutting default it
+    // arms has to be re-armed explicitly (relying on sticky return values
+    // from earlier tests would make this block order-dependent and break
+    // `-t` filtered runs).
+    jest.useFakeTimers();
+    resetPlaybackInvariantForTests();
+    jest
+      .spyOn(AppState, 'addEventListener')
+      .mockImplementation((() => ({ remove: jest.fn() })) as never);
+    // Sticky across tests unless re-armed (clearMocks clears calls, not
+    // implementations): the screen-reader case below flips this to true,
+    // and every test after it would silently run with the passive
+    // countdown disabled - the chrome would just never hide.
+    jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(false);
+    jest.spyOn(AccessibilityInfo, 'isAccessibilityServiceEnabled').mockResolvedValue(false);
+    mockUseEntitlement.mockReturnValue({ isPremium: false, refresh: jest.fn() });
+    mockIsHlsPlaybackEnabled.mockReturnValue(true);
+    (
+      jest.requireMock<typeof import('@/services/demo/demo-mode')>('@/services/demo/demo-mode')
+        .isDemoMode as jest.Mock
+    ).mockReturnValue(false);
+    (
+      jest.requireMock<typeof import('@/services/auth/token-store')>('@/services/auth/token-store')
+        .getTokens as jest.Mock
+    ).mockReturnValue({ accessToken: 'test-access-token', refreshToken: 'test-refresh' });
+    mockGetPlaybackAuthorization.mockImplementation((videoId: string) =>
+      Promise.resolve(
+        buildPlaybackAuthorization({ playbackUrl: `https://media.example.com/${videoId}.mp4` })
+      )
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  function mediaUriFor(videoId: string) {
+    return `https://media.example.com/${videoId}.mp4`;
+  }
+
+  /**
+   * Renders the harness with one video, resolves its (cold-mount, exempt
+   * from the settle debounce) playback authorization, and confirms real
+   * frames are advancing - the state the idle countdown requires.
+   */
+  async function renderPlayingItem(videoOverrides: Partial<Video> = {}) {
+    const video = buildVideo(videoOverrides);
+    const view = await renderFeedItem(
+      <AutoClearHarness videos={[video]} activeVideoId={video.id} />
+    );
+    const player = findPlayerByUri(mediaUriFor(video.id))! as unknown as {
+      play: jest.Mock;
+      pause: jest.Mock;
+      seekBy: jest.Mock;
+      playing: boolean;
+      currentTime: number;
+      rateWrites: number[];
+    };
+
+    player.playing = true;
+    await act(async () => {
+      view.rerender(<AutoClearHarness videos={[video]} activeVideoId={video.id} />);
+    });
+
+    return { video, view, player };
+  }
+
+  async function advanceIdleTime(ms: number) {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  describe('basic countdown', () => {
+    it('keeps chrome visible before the threshold and hides it exactly at the threshold', async () => {
+      const { view } = await renderPlayingItem();
+
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+
+    it('is purely presentational: player identity, commands, position, speed and authorization are untouched', async () => {
+      const { view, player } = await renderPlayingItem();
+      const authCallsBeforeHide = mockGetPlaybackAuthorization.mock.calls.length;
+
+      player.play.mockClear();
+      player.pause.mockClear();
+      player.seekBy.mockClear();
+      const positionBeforeHide = player.currentTime;
+
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+
+      // Same player instance for the same source - never a new generation.
+      expect(findPlayerByUri(mediaUriFor('video-1'))).toBe(player);
+      // No playback commands of any kind from the auto-hide.
+      expect(player.play).not.toHaveBeenCalled();
+      expect(player.pause).not.toHaveBeenCalled();
+      expect(player.seekBy).not.toHaveBeenCalled();
+      expect(player.currentTime).toBe(positionBeforeHide);
+      expect(player.rateWrites).toEqual([]);
+      // ZERO additional authorization requests - UI visibility is not an
+      // authorization event.
+      expect(mockGetPlaybackAuthorization.mock.calls.length).toBe(authCallsBeforeHide);
+    });
+
+    it('hides exactly once - hidden chrome stays hidden without further toggle churn', async () => {
+      // Controlled variant so the number of toggle calls is observable.
+      const video = buildVideo();
+      const onToggleClearDisplay = jest.fn();
+      const { rerender } = await renderFeedItem(
+        <DramaFeedItem
+          video={video}
+          {...baseProps}
+          isClearDisplay={false}
+          onToggleClearDisplay={onToggleClearDisplay}
+        />
+      );
+      const player = findPlayerByUri(mediaUriFor(video.id))! as unknown as { playing: boolean };
+
+      player.playing = true;
+      await act(async () => {
+        rerender(
+          <DramaFeedItem
+            video={video}
+            {...baseProps}
+            isClearDisplay={false}
+            onToggleClearDisplay={onToggleClearDisplay}
+          />
+        );
+      });
+
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS);
+      expect(onToggleClearDisplay).toHaveBeenCalledTimes(1);
+      expect(onToggleClearDisplay).toHaveBeenCalledWith(true, 'auto');
+
+      // Parent applies the hide; from here the item is ineligible and the
+      // timer must never re-arm.
+      await act(async () => {
+        rerender(
+          <DramaFeedItem
+            video={video}
+            {...baseProps}
+            isClearDisplay
+            onToggleClearDisplay={onToggleClearDisplay}
+          />
+        );
+      });
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+
+      expect(onToggleClearDisplay).toHaveBeenCalledTimes(1);
+    });
+
+    it('never starts a countdown while the video is only buffering (not yet watchable)', async () => {
+      const video = buildVideo();
+      const view = await renderFeedItem(
+        <AutoClearHarness videos={[video]} activeVideoId={video.id} />
+      );
+
+      // Authorized and intending to play, but the player has never reported
+      // real frames (playing stays false - cold start/buffering).
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+    });
+
+    it('suspends the countdown on a mid-stream player error, independent of event ordering', async () => {
+      // Review fix cycle 1 (Reviewer A, MEDIUM 1): a player-level error on
+      // an already-playing source must stop the countdown even if the
+      // native `playingChange: false` event were delayed or lost - the
+      // predicate states `status !== 'error'` directly rather than
+      // assuming the two events arrive in lockstep.
+      const { view, player } = await renderPlayingItem();
+
+      await advanceIdleTime(1500);
+
+      // The stream dies mid-playback; simulate the worst ordering, where
+      // status flips to error while `playing` still (staleley) reads true.
+      (player as unknown as { status: string }).status = 'error';
+      const video = buildVideo();
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={[video]} activeVideoId={video.id} />);
+      });
+
+      // The kebab is gone for the ERROR reason (hasPlaybackError unmounts
+      // it) - what must NOT happen is clear display engaging on top of the
+      // error UI. The title is chrome that still renders during an error,
+      // so it is the observable: it stays present (i.e. not accessibility-
+      // hidden by clear display) far past the threshold.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+      expect(view.queryByText(video.title)).not.toBeNull();
+    });
+
+    it('never lets the chrome vanish under a held, uncommitted two-finger pinch', async () => {
+      // Review fix cycle 1 (Reviewer A MEDIUM 2 / Reviewer B M1): two
+      // fingers resting on the glass are the opposite of idle.
+      const { view } = await renderPlayingItem();
+      const container = view.root!;
+      const twoTouches = [
+        { pageX: 100, pageY: 300 },
+        { pageX: 160, pageY: 360 },
+      ];
+
+      await advanceIdleTime(1500);
+
+      // Two fingers land and HOLD - the spread never crosses the
+      // activation ratio, so the pinch never commits.
+      await act(async () => {
+        container.props.onStartShouldSetResponderCapture({
+          nativeEvent: { touches: twoTouches },
+        });
+      });
+
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      // Fingers lift without committing: a fresh, full countdown begins.
+      await act(async () => {
+        container.props.onResponderRelease();
+      });
+
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+  });
+
+  describe('manual tap interplay', () => {
+    it('visible + tap hides immediately; hidden + tap restores and starts a FRESH full countdown', async () => {
+      const { view } = await renderPlayingItem();
+
+      await act(async () => {
+        fireEvent.press(view.getByTestId(SURFACE_TEST_ID));
+      });
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+
+      await act(async () => {
+        fireEvent.press(view.getByTestId(SURFACE_TEST_ID));
+      });
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+
+    it('a stale pre-tap timer can never fire early after the chrome is restored', async () => {
+      const { view } = await renderPlayingItem();
+
+      // 1.5s into the original countdown, hide manually and restore.
+      await advanceIdleTime(1500);
+      await act(async () => {
+        fireEvent.press(view.getByTestId(SURFACE_TEST_ID));
+      });
+      await act(async () => {
+        fireEvent.press(view.getByTestId(SURFACE_TEST_ID));
+      });
+
+      // The ORIGINAL timer would have fired 1.5s from now. If it leaked,
+      // the chrome would vanish here - it must not.
+      await advanceIdleTime(1500);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      // The fresh countdown completes a full delay after the restore.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1500);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+
+    it('a rail interaction (Like) restarts the countdown from zero', async () => {
+      const { view } = await renderPlayingItem();
+
+      await advanceIdleTime(2000);
+      await act(async () => {
+        fireEvent.press(view.getByLabelText('Like'));
+      });
+
+      // 2s already elapsed before the tap; without the reset the chrome
+      // would hide 1s from now.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+  });
+
+  describe('pause', () => {
+    it('a paused video keeps its controls up indefinitely; resume restarts the countdown from zero', async () => {
+      const { view, player } = await renderPlayingItem();
+
+      await advanceIdleTime(1500);
+
+      // The viewer taps pause. (The mock player's `playing` does not flip
+      // itself - mirror what the native player would report.)
+      await act(async () => {
+        fireEvent.press(view.getAllByTestId('feed-item-play-pause')[0]);
+      });
+      expect(player.pause).toHaveBeenCalled();
+      player.playing = false;
+      const { video } = { video: buildVideo() };
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={[video]} activeVideoId={video.id} />);
+      });
+
+      // Far beyond the threshold: paused controls must remain visible.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      // Resume.
+      await act(async () => {
+        fireEvent.press(view.getAllByTestId('feed-item-play-pause')[0]);
+      });
+      expect(player.play).toHaveBeenCalled();
+      player.playing = true;
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={[video]} activeVideoId={video.id} />);
+      });
+
+      // Fresh, full countdown - never the pre-pause remainder.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+  });
+
+  describe('playback settings sheet', () => {
+    it('an open sheet suspends auto-hide entirely; closing it starts a fresh countdown', async () => {
+      const { view } = await renderPlayingItem();
+
+      await advanceIdleTime(1500);
+      await act(async () => {
+        fireEvent.press(view.getByTestId(KEBAB_TEST_ID));
+      });
+
+      // The menu must never disappear from under the viewer's finger.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+      expect(view.queryByTestId('playback-settings-sheet')).not.toBeNull();
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await act(async () => {
+        fireEvent.press(view.getByTestId('playback-settings-scrim'));
+      });
+
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+
+    it('selecting a speed keeps the sheet up, writes only the rate, and never triggers a surprise hide', async () => {
+      const { view, player } = await renderPlayingItem();
+
+      await act(async () => {
+        fireEvent.press(view.getByTestId(KEBAB_TEST_ID));
+      });
+      await act(async () => {
+        fireEvent.press(view.getByLabelText('Kecepatan 1.5x'));
+      });
+
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+      expect(view.queryByTestId('playback-settings-sheet')).not.toBeNull();
+      expect(player.rateWrites).toEqual([1.5]);
+      expect(player.pause).not.toHaveBeenCalled();
+
+      await act(async () => {
+        fireEvent.press(view.getByTestId('playback-settings-scrim'));
+      });
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+  });
+
+  describe('swipe / active-item generations', () => {
+    const videoA = () => buildVideo();
+    const videoB = () => buildVideo({ id: 'video-2', title: 'Episode 2' });
+
+    it("A's timer dies on swipe; B starts visible with its OWN fresh countdown", async () => {
+      const videos = [videoA(), videoB()];
+      const view = await renderFeedItem(
+        <AutoClearHarness videos={videos} activeVideoId="video-1" />
+      );
+      const playerA = findPlayerByUri(mediaUriFor('video-1'))! as unknown as { playing: boolean };
+
+      playerA.playing = true;
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-1" />);
+      });
+
+      // 1.5s into A's countdown, swipe to B.
+      await advanceIdleTime(1500);
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-2" />);
+      });
+
+      // B lands, waits out the settle debounce, authorizes, and starts
+      // playing.
+      await advanceIdleTime(TEST_PLAYBACK_AUTH_SETTLE_MS);
+      const playerB = findPlayerByUri(mediaUriFor('video-2'))! as unknown as { playing: boolean };
+
+      playerB.playing = true;
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-2" />);
+      });
+
+      // A's original timer would fire at t=3000 total - 1100ms from now.
+      // If it leaked, the shared clear-display state would hide B's chrome.
+      await advanceIdleTime(1100);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(2);
+
+      // B's own countdown started when B became watchable (1100ms ago), so
+      // it completes 1900ms from now.
+      await advanceIdleTime(1900);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(0);
+    });
+
+    it('an auto-hidden display un-clears on swipe, and A -> B -> A gives A a fresh generation', async () => {
+      const videos = [videoA(), videoB()];
+      const view = await renderFeedItem(
+        <AutoClearHarness videos={videos} activeVideoId="video-1" />
+      );
+      const playerA = findPlayerByUri(mediaUriFor('video-1'))! as unknown as { playing: boolean };
+
+      playerA.playing = true;
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-1" />);
+      });
+
+      // A idles out.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(0);
+
+      // Swipe to B: an AUTO clear is not an expressed intent, so the next
+      // video starts with visible chrome.
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-2" />);
+      });
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(2);
+
+      await advanceIdleTime(TEST_PLAYBACK_AUTH_SETTLE_MS);
+      const playerB = findPlayerByUri(mediaUriFor('video-2'))! as unknown as { playing: boolean };
+
+      playerB.playing = true;
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-2" />);
+      });
+
+      // 1s into B's countdown, swipe back to A.
+      await advanceIdleTime(1000);
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-1" />);
+      });
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(2);
+
+      // Neither B's cancelled timer (2s remaining) nor any older A-era
+      // timer may fire; only A's OWN fresh countdown - a full delay from
+      // the swipe-back - hides the chrome.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(2);
+
+      await advanceIdleTime(1);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(0);
+    });
+
+    it('a fast A -> B -> C transit never authorizes, times, or hides on behalf of the pass-through item', async () => {
+      const videos = [videoA(), videoB(), buildVideo({ id: 'video-3', title: 'Episode 3' })];
+      const view = await renderFeedItem(
+        <AutoClearHarness videos={videos} activeVideoId="video-1" />
+      );
+      const playerA = findPlayerByUri(mediaUriFor('video-1'))! as unknown as { playing: boolean };
+
+      playerA.playing = true;
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-1" />);
+      });
+
+      await advanceIdleTime(1000);
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-2" />);
+      });
+      // B is only in transit: 100ms < the settle window.
+      await advanceIdleTime(100);
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-3" />);
+      });
+      await advanceIdleTime(TEST_PLAYBACK_AUTH_SETTLE_MS);
+
+      // The transit item never authorized at all.
+      expect(mockGetPlaybackAuthorization).not.toHaveBeenCalledWith('video-2');
+
+      const playerC = findPlayerByUri(mediaUriFor('video-3'))! as unknown as { playing: boolean };
+
+      playerC.playing = true;
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-3" />);
+      });
+
+      // Advance past every A/B-era ghost threshold: nothing may hide.
+      await advanceIdleTime(1500);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(3);
+
+      // C's own countdown (1500ms already elapsed) completes and hides.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1500);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(0);
+    });
+  });
+
+  describe('app lifecycle', () => {
+    it('backgrounding cancels the countdown; foregrounding starts a fresh one', async () => {
+      const appStateListeners: ((state: string) => void)[] = [];
+
+      jest.spyOn(AppState, 'addEventListener').mockImplementation(((
+        _event: string,
+        listener: (state: string) => void
+      ) => {
+        appStateListeners.push(listener);
+        return { remove: jest.fn() };
+      }) as never);
+
+      const { view } = await renderPlayingItem();
+
+      await advanceIdleTime(1500);
+      await act(async () => {
+        appStateListeners.forEach((listener) => listener('background'));
+      });
+
+      // A timer expiring in the background must not mutate the UI.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await act(async () => {
+        appStateListeners.forEach((listener) => listener('active'));
+      });
+
+      // Fresh countdown, never "remaining time while backgrounded".
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+
+    it('unmount cancels the countdown - no late callback, no state update after unmount', async () => {
+      const video = buildVideo();
+      const onToggleClearDisplay = jest.fn();
+      const { rerender, unmount } = await renderFeedItem(
+        <DramaFeedItem
+          video={video}
+          {...baseProps}
+          isClearDisplay={false}
+          onToggleClearDisplay={onToggleClearDisplay}
+        />
+      );
+      const player = findPlayerByUri(mediaUriFor(video.id))! as unknown as { playing: boolean };
+
+      player.playing = true;
+      await act(async () => {
+        rerender(
+          <DramaFeedItem
+            video={video}
+            {...baseProps}
+            isClearDisplay={false}
+            onToggleClearDisplay={onToggleClearDisplay}
+          />
+        );
+      });
+
+      await advanceIdleTime(1500);
+      await act(async () => {
+        unmount();
+      });
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+
+      expect(onToggleClearDisplay).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('fullscreen', () => {
+    it('fullscreen suspends the countdown; returning to the feed restarts it fresh', async () => {
+      const { view, player } = await renderPlayingItem({ width: 1280, height: 720 });
+
+      await advanceIdleTime(1500);
+      await act(async () => {
+        mockLatestVideoViewProps.onFullscreenEnter?.();
+      });
+
+      // No stale idle action during the whole fullscreen stay.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+      expect(player.pause).not.toHaveBeenCalled();
+
+      await act(async () => {
+        mockLatestVideoViewProps.onFullscreenExit?.();
+      });
+
+      // Deterministic on return: chrome visible, fresh full countdown.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+  });
+
+  describe('accessibility', () => {
+    it('a running screen reader disables the passive countdown without touching manual clear display', async () => {
+      jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(true);
+
+      const { view } = await renderPlayingItem();
+
+      // The passive timer never removes UI from under assistive focus.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS * 10);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      // Manual clear display remains fully available.
+      await act(async () => {
+        fireEvent.press(view.getByTestId(SURFACE_TEST_ID));
+      });
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+
+    it('the chrome keeps its existing accessibility labels', async () => {
+      const { view } = await renderPlayingItem();
+
+      expect(view.getByLabelText('Mute')).toBeTruthy();
+      expect(view.getByLabelText('Like')).toBeTruthy();
+      expect(view.getByLabelText('Save')).toBeTruthy();
+      expect(view.getByLabelText('Share')).toBeTruthy();
+      expect(view.getByLabelText('Pengaturan pemutaran')).toBeTruthy();
+      expect(view.getByLabelText('Sembunyikan kontrol')).toBeTruthy();
+    });
+
+    it('auto-hidden chrome leaves NO ghost controls in the accessibility tree', async () => {
+      // Review fix cycle 1 (Reviewer B, C1): opacity-0 chrome previously
+      // stayed focusable for VoiceOver/TalkBack - invisible controls a
+      // screen-reader user could land on and activate. RNTL queries respect
+      // accessibility hiding, so absence here is absence from the a11y tree.
+      const { video, view } = await renderPlayingItem();
+
+      expect(view.queryByLabelText('Like')).not.toBeNull();
+      expect(view.queryByText(video.title)).not.toBeNull();
+
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS);
+
+      expect(view.queryByLabelText('Like')).toBeNull();
+      expect(view.queryByLabelText('Share')).toBeNull();
+      expect(view.queryByLabelText('Mute')).toBeNull();
+      expect(view.queryByText(video.title)).toBeNull();
+    });
+  });
+
+  describe('stress sequence', () => {
+    it('interaction -> menu -> close -> swipe: only the CURRENT generation ever changes state', async () => {
+      const videos = [buildVideo(), buildVideo({ id: 'video-2', title: 'Episode 2' })];
+      const view = await renderFeedItem(
+        <AutoClearHarness videos={videos} activeVideoId="video-1" />
+      );
+      const playerA = findPlayerByUri(mediaUriFor('video-1'))! as unknown as {
+        playing: boolean;
+        pause: jest.Mock;
+      };
+
+      playerA.playing = true;
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-1" />);
+      });
+
+      // t+1.5s: a rail interaction resets the countdown.
+      await advanceIdleTime(1500);
+      await act(async () => {
+        fireEvent.press(view.getAllByLabelText('Like')[0]);
+      });
+
+      // t+2.5s: the viewer opens the Playback Settings sheet...
+      await advanceIdleTime(1000);
+      await act(async () => {
+        fireEvent.press(view.getAllByTestId(KEBAB_TEST_ID)[0]);
+      });
+
+      // ...and reads it for 5s. Nothing may hide, under any earlier timer.
+      await advanceIdleTime(5000);
+      expect(view.queryByTestId('playback-settings-sheet')).not.toBeNull();
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(2);
+
+      // Close the sheet; 1s of the fresh countdown elapses.
+      await act(async () => {
+        fireEvent.press(view.getByTestId('playback-settings-scrim'));
+      });
+      await advanceIdleTime(1000);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(2);
+
+      // Swipe to B; B settles, authorizes, and starts playing.
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-2" />);
+      });
+      await advanceIdleTime(TEST_PLAYBACK_AUTH_SETTLE_MS);
+      const playerB = findPlayerByUri(mediaUriFor('video-2'))! as unknown as { playing: boolean };
+
+      playerB.playing = true;
+      await act(async () => {
+        view.rerender(<AutoClearHarness videos={videos} activeVideoId="video-2" />);
+      });
+
+      // Every ghost threshold from the A era (post-like, post-close) falls
+      // inside this window; none may act.
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(2);
+
+      // Only B's CURRENT countdown hides the chrome.
+      await advanceIdleTime(1);
+      expect(view.queryAllByTestId(KEBAB_TEST_ID)).toHaveLength(0);
+
+      // And the whole sequence issued exactly the two legitimate
+      // authorization requests - one per genuinely-landed video.
+      const authorizedIds = mockGetPlaybackAuthorization.mock.calls.map(
+        ([videoId]: [string]) => videoId
+      );
+
+      expect(authorizedIds).toEqual(['video-1', 'video-2']);
     });
   });
 });

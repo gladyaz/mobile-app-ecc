@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DramaFeedItem } from '@/components/drama-feed-item';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
+import { useClearDisplayState } from '@/hooks/use-clear-display-state';
 import { useFeedPagingGuard } from '@/hooks/use-feed-paging-guard';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { onVideoTransition } from '@/services/ads/ad-controller';
@@ -69,10 +70,6 @@ export default function HomeScreen() {
   const { getProgress, recordProgress } = useSeriesProgress();
   const { showToast } = useToast();
   const [feedHeight, setFeedHeight] = useState(height);
-  // Clear display lives here rather than inside a feed item so it survives
-  // swiping between episodes - someone who cleared the screen expects it to
-  // stay cleared, not to reappear on the next video.
-  const [isClearDisplay, setIsClearDisplay] = useState(false);
   const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
   // Web browsers block audible autoplay without a prior user gesture, so
   // the feed has to start muted there and let the sound toggle be the
@@ -85,6 +82,13 @@ export default function HomeScreen() {
     requestedVideoId != null && videos.some((video) => video.id === requestedVideoId);
   const resolvedActiveVideoId =
     activeVideoId ?? (requestedVideoIsInCatalog ? requestedVideoId : videos[0]?.id);
+  // Clear display lives here rather than inside a feed item so it survives
+  // swiping between episodes. The hook adds the origin rule for the idle
+  // auto-hide: a MANUAL clear persists across swipes exactly as before,
+  // while an AUTO (idle-timer) clear un-clears when the active video
+  // changes, so every newly-active video starts with visible chrome and its
+  // own fresh countdown.
+  const { isClearDisplay, setClearDisplay } = useClearDisplayState(resolvedActiveVideoId);
   const flatListRef = useRef<FlatList<Video>>(null);
   const handledRequestedVideoIdRef = useRef<string | undefined>(undefined);
 
@@ -306,7 +310,7 @@ export default function HomeScreen() {
           firstFreeEpisodeInSeries={firstFreeEpisodeInSeries}
           resumePositionSeconds={resumePositionSeconds}
           isClearDisplay={isClearDisplay}
-          onToggleClearDisplay={setIsClearDisplay}
+          onToggleClearDisplay={setClearDisplay}
           onShare={() => {
             void handleShare(item);
           }}
@@ -340,6 +344,7 @@ export default function HomeScreen() {
       isScreenFocused,
       feedHeight,
       isClearDisplay,
+      setClearDisplay,
       t,
       getInteraction,
       getLikeCount,

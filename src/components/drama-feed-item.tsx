@@ -10,9 +10,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PlaybackSettingsSheet } from '@/components/playback-settings-sheet';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
+import { AUTO_CLEAR_DISPLAY_DELAY_MS, type ClearDisplayOrigin } from '@/constants/clear-display';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { FeedProgressBar } from '@/components/feed-progress-bar';
 import { useAppForeground } from '@/hooks/use-app-foreground';
+import { useAssistiveTechEnabled } from '@/hooks/use-assistive-tech-enabled';
+import { useAutoClearDisplayIdle } from '@/hooks/use-auto-clear-display-idle';
 import { useFeedBottomAnchor } from '@/hooks/use-feed-bottom-anchor';
 import {
   playbackPlayerLabel,
@@ -238,10 +241,17 @@ type DramaFeedItemProps = {
   /**
    * Clear display: everything except the video and the progress bar steps
    * aside. Owned by the feed rather than the item so it survives swiping to
-   * the next episode.
+   * the next episode. `origin` says who asked: every manual entry point
+   * (tap, pinch, sheet switch) omits it and defaults to 'manual'; only the
+   * idle timer passes 'auto', which is what lets the owner (Home's
+   * `useClearDisplayState`) un-clear an auto-hide on the next swipe while
+   * manual clears keep their baseline persist-across-swipes behavior.
    */
   readonly isClearDisplay?: boolean;
-  readonly onToggleClearDisplay?: (nextIsClearDisplay: boolean) => void;
+  readonly onToggleClearDisplay?: (
+    nextIsClearDisplay: boolean,
+    origin?: ClearDisplayOrigin
+  ) => void;
 };
 
 export function formatLikeCount(likeCount: number) {
@@ -276,6 +286,13 @@ export function DramaFeedItem({
   // fired so one gesture toggles clear display exactly once, however far the
   // fingers keep travelling.
   const pinchStartDistanceRef = useRef(0);
+  // Whether a two-finger gesture is currently on the glass (from capture
+  // until release/terminate). Real state, not a ref: the auto-clear idle
+  // eligibility below must RE-EVALUATE when it changes - fingers resting on
+  // the screen mid-pinch are the opposite of idle, and the chrome must
+  // never vanish underneath them (review fix cycle 1, Reviewer A finding 2 /
+  // Reviewer B finding M1).
+  const [isPinchInProgress, setIsPinchInProgress] = useState(false);
   // Per-item, not session-scoped (product decision 2026-08-13, reversing the
   // session-wide store that had itself reversed an earlier per-clip design).
   // A rate is a way to skim THIS clip, not a standing preference: landing on
@@ -892,6 +909,67 @@ export function DramaFeedItem({
   // the genuine "tap to resume" affordance.
   const isWaitingToStartPlayback = shouldPlay && !isPlaying;
 
+  // ===== AUTO CLEAR DISPLAY ON IDLE ==================================
+  // Purely presentational: the countdown's only output is
+  // `onToggleClearDisplay(true, 'auto')` - the exact state change a manual
+  // tap already performs - so it can never touch the player, the source,
+  // authorization, position, or speed by construction.
+  const isAssistiveTechEnabled = useAssistiveTechEnabled();
+
+  // Bumped by meaningful chrome interactions (the action rail) so "the
+  // viewer is actively using the controls" restarts the countdown. Play/
+  // pause, the kebab, the sheet, fullscreen and clear-display taps all
+  // already flip one of the eligibility inputs below, which is its own
+  // cancel-and-restart - only interactions that leave eligibility unchanged
+  // need the nonce.
+  const [chromeInteractionNonce, setChromeInteractionNonce] = useState(0);
+
+  const noteChromeInteraction = useCallback(() => {
+    setChromeInteractionNonce((current) => current + 1);
+  }, []);
+
+  // Auto-hide may run ONLY while every one of these holds:
+  // - `shouldPlay`: the one authoritative playback predicate - already
+  //   folds in active item, screen focus, app foreground, no manual pause,
+  //   no interstitial ad, and a real playable source.
+  // - `isPlaying`: the player has genuinely confirmed frames are advancing,
+  //   so buffering/cold-start (where controls matter) never counts as idle,
+  //   and neither does any paused state (isPlaying is false there).
+  // - `status !== 'error'` (Reviewer A, fix cycle 1): an AUTH failure is
+  //   covered transitively (it nulls the source, so shouldPlay is false),
+  //   but a mid-stream PLAYER error on an already-valid source is only
+  //   covered if `isPlaying` flips false in lockstep with it - an event-
+  //   ordering assumption, not an invariant. Stating the error condition
+  //   directly removes the assumption: error UI never idles away.
+  // - chrome is visible, and no sheet/modal/fullscreen owns the screen.
+  // - no in-progress pinch (Reviewer A+B, fix cycle 1): two fingers
+  //   resting on the glass mid-gesture are the OPPOSITE of idle - the
+  //   chrome must never vanish under a held, not-yet-committed pinch.
+  // - no detected assistive tech: a passive timer must never yank the
+  //   control an assistive user is focused on (see useAssistiveTechEnabled).
+  const isAutoClearDisplayEligible =
+    shouldPlay &&
+    isPlaying &&
+    status !== 'error' &&
+    !isClearDisplay &&
+    !isSettingsSheetVisible &&
+    !isPremiumModalVisible &&
+    !isInFullscreen &&
+    !isPinchInProgress &&
+    !isAssistiveTechEnabled;
+
+  const handleAutoClearDisplay = useCallback(() => {
+    onToggleClearDisplay?.(true, 'auto');
+  }, [onToggleClearDisplay]);
+
+  useAutoClearDisplayIdle({
+    isEligible: isAutoClearDisplayEligible,
+    delayMs: AUTO_CLEAR_DISPLAY_DELAY_MS,
+    interactionNonce: chromeInteractionNonce,
+    onAutoHide: handleAutoClearDisplay,
+  });
+  // ===== end auto clear display on idle ==============================
+
   // 11R PLAYBACK-STABILITY REMEDIATION: flips exactly once per video (see
   // the `hasStartedPlaying` reset above) the first time a real
   // `playingChange` event confirms frames are actually advancing - the
@@ -1396,6 +1474,13 @@ export function DramaFeedItem({
     handleEnterFullscreen();
   }, [handleEnterFullscreen]);
 
+  // Idle-countdown note (review fix cycle 1, both reviewers' LOW): between
+  // the sheet closing and iOS fullscreen actually engaging, eligibility is
+  // briefly true and a fresh idle timer arms. Harmless by arithmetic: the
+  // Modal dismiss animation (low hundreds of ms) is far shorter than
+  // AUTO_CLEAR_DISPLAY_DELAY_MS (3000ms), and the moment fullscreen engages
+  // `isInFullscreen` suspends the countdown again. If that delay were ever
+  // reduced near typical animation durations, revisit this window.
   const handleSettingsSheetDismissed = useCallback(() => {
     if (!pendingFullscreenRef.current) {
       return;
@@ -1485,6 +1570,7 @@ export function DramaFeedItem({
         }
 
         pinchStartDistanceRef.current = touchDistance(touches);
+        setIsPinchInProgress(true);
 
         return true;
       }}
@@ -1502,6 +1588,8 @@ export function DramaFeedItem({
         if (pinchStartDistanceRef.current <= 0) {
           pinchStartDistanceRef.current = touchDistance(touches);
         }
+
+        setIsPinchInProgress(true);
 
         return true;
       }}
@@ -1525,9 +1613,11 @@ export function DramaFeedItem({
       }}
       onResponderRelease={() => {
         pinchStartDistanceRef.current = 0;
+        setIsPinchInProgress(false);
       }}
       onResponderTerminate={() => {
         pinchStartDistanceRef.current = 0;
+        setIsPinchInProgress(false);
       }}>
       <View style={styles.videoLayer}>
         {hasPlaybackError ? (
@@ -1679,6 +1769,13 @@ export function DramaFeedItem({
       <View
         testID="feed-item-title-overlay"
         pointerEvents={isClearDisplay ? 'none' : 'box-none'}
+        // Review fix cycle 1 (Reviewer B, C1): opacity 0 + pointerEvents
+        // 'none' hides chrome from SIGHT and TOUCH but not from
+        // VoiceOver/TalkBack - without these two props, clear display left
+        // invisible-but-focusable ghost controls in the accessibility tree
+        // (same pattern the sheet already uses for its redundant Switch).
+        accessibilityElementsHidden={isClearDisplay}
+        importantForAccessibility={isClearDisplay ? 'no-hide-descendants' : 'auto'}
         style={[
           styles.titleOverlay,
           { top: insets.top + TITLE_OVERLAY_TOP_OFFSET },
@@ -1733,6 +1830,9 @@ export function DramaFeedItem({
       <View
         testID="feed-item-episode-cluster"
         pointerEvents={isClearDisplay ? 'none' : 'box-none'}
+        // Same accessibility-tree hiding as the title overlay above.
+        accessibilityElementsHidden={isClearDisplay}
+        importantForAccessibility={isClearDisplay ? 'no-hide-descendants' : 'auto'}
         style={[
           styles.episodeCluster,
           { top: insets.top + NEXT_EPISODE_TOP_OFFSET },
@@ -1762,6 +1862,9 @@ export function DramaFeedItem({
       <View
         testID="feed-item-bottom-overlay"
         pointerEvents={isClearDisplay ? 'none' : 'box-none'}
+        // Same accessibility-tree hiding as the title overlay above.
+        accessibilityElementsHidden={isClearDisplay}
+        importantForAccessibility={isClearDisplay ? 'no-hide-descendants' : 'auto'}
         style={[styles.content, { bottom: overlayBottom }, isClearDisplay && styles.contentHidden]}>
         <View testID="feed-item-actions-rail" style={styles.actions}>
           {/* Fullscreen is NOT in this rail any more (product decision
@@ -1775,7 +1878,13 @@ export function DramaFeedItem({
             <Pressable
               accessibilityLabel={isMuted ? t('feed.unmute') : t('feed.mute')}
               accessibilityRole="button"
-              onPress={onToggleMute}
+              // Rail taps are "meaningful interaction" for the idle
+              // countdown: the viewer is using the chrome, so the auto
+              // clear-display timer starts over from a full delay.
+              onPress={() => {
+                noteChromeInteraction();
+                onToggleMute();
+              }}
               style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
               <SymbolView
                 name={{
@@ -1792,7 +1901,10 @@ export function DramaFeedItem({
           <Pressable
             accessibilityLabel={isLiked ? t('feed.unlike') : t('feed.like')}
             accessibilityRole="button"
-            onPress={onToggleLike}
+            onPress={() => {
+              noteChromeInteraction();
+              onToggleLike();
+            }}
             style={({ pressed }) => [styles.actionItem, pressed && styles.buttonPressed]}>
             <View style={styles.actionButton}>
               <SymbolView
@@ -1813,7 +1925,10 @@ export function DramaFeedItem({
           <Pressable
             accessibilityLabel={isSaved ? t('feed.unsave') : t('feed.save')}
             accessibilityRole="button"
-            onPress={onToggleSave}
+            onPress={() => {
+              noteChromeInteraction();
+              onToggleSave();
+            }}
             style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
             <SymbolView
               name={{
@@ -1829,7 +1944,10 @@ export function DramaFeedItem({
           <Pressable
             accessibilityLabel={t('feed.share')}
             accessibilityRole="button"
-            onPress={onShare}
+            onPress={() => {
+              noteChromeInteraction();
+              onShare();
+            }}
             style={({ pressed }) => [styles.actionButton, pressed && styles.buttonPressed]}>
             <SymbolView
               name={{ ios: 'square.and.arrow.up', android: 'share', web: 'share' }}

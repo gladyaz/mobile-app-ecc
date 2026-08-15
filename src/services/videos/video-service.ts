@@ -30,7 +30,12 @@ const categoryFilters: readonly VideoCategoryFilter[] = [
  * EXPO_PUBLIC_USE_MOCK_DATA does. Folding it in here means a demo build
  * needs one flag set, not two kept in sync.
  */
-function shouldUseMockData(): boolean {
+/**
+ * Exported so the Series catalog service can honour the SAME offline rule
+ * rather than keeping a second copy of it. An offline showcase build must
+ * never reach the network from any catalog surface.
+ */
+export function shouldUseMockData(): boolean {
   return process.env.EXPO_PUBLIC_USE_MOCK_DATA === 'true' || isDemoMode();
 }
 

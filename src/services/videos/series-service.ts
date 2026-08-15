@@ -8,7 +8,11 @@ export function getEpisodeAccessType(episodeNumber: number): EpisodeAccessType {
   return episodeNumber <= FREE_EPISODE_LIMIT ? 'free' : 'premium';
 }
 
-function toEpisode(video: Video): Episode {
+/**
+ * Exported so Series Detail can shape `GET /series/:id`'s episodes with the
+ * SAME rule the derived/mock path uses, instead of a second copy of it.
+ */
+export function toEpisode(video: Video): Episode {
   return {
     videoId: video.id,
     seriesId: video.seriesId,

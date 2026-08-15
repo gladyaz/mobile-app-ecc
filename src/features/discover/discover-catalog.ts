@@ -1,9 +1,8 @@
 import type { TranslationKey } from '@/services/i18n/translations';
 import type { Translate } from '@/stores/language';
-import { groupVideosIntoSeries } from '@/services/videos/series-service';
 import type { VideoCategoryFilter } from '@/services/videos/video-service';
+import type { CatalogSeries } from '@/types/series-catalog';
 import type { DiscoverBadge, DiscoverSeriesCard } from '@/types/discover';
-import type { Video } from '@/types/video';
 
 /**
  * How many top-ranked series can earn the `Hot` badge. Kept small so the
@@ -26,25 +25,7 @@ export const HOT_BADGE_MEDIAN_MULTIPLIER = 2;
  */
 export const HOT_BADGE_MIN_LIKE_TOTAL = 100;
 
-/** Matches `useVideoInteractions().getLikeCount`. */
-export type LikeCountResolver = (video: Video) => number;
-
 type DiscoverSeriesCardDraft = Omit<DiscoverSeriesCard, 'badges'>;
-
-function sumLikeCountsBySeriesId(
-  videos: readonly Video[],
-  resolveLikeCount: LikeCountResolver
-): ReadonlyMap<string, number> {
-  const likeCountsBySeriesId = new Map<string, number>();
-
-  for (const video of videos) {
-    const runningTotal = likeCountsBySeriesId.get(video.seriesId) ?? 0;
-
-    likeCountsBySeriesId.set(video.seriesId, runningTotal + resolveLikeCount(video));
-  }
-
-  return likeCountsBySeriesId;
-}
 
 /**
  * Sorts by the documented ranking metric (like count) with fully
@@ -124,40 +105,36 @@ function buildBadges(
 }
 
 /**
- * Projects the already-fetched `/videos/feed` catalog into Discover series
- * cards.
+ * Projects the authoritative `GET /series` catalog into Discover cards.
  *
- * Order is the backend's own catalog order: `groupVideosIntoSeries` keeps
- * first-seen `seriesId` order, and nothing here re-sorts. That matters
- * because the New tab presents this order as-is - see
- * docs/discover-content-hub.md for why no truthful publication-date sort is
- * possible today.
+ * Order is the backend's own response order; nothing here re-sorts. That
+ * matters because the New tab presents this order as-is - the Series contract
+ * deliberately carries no createdAt/updatedAt, so no truthful
+ * publication-date sort is possible. See docs/discover-content-hub.md.
  *
- * `Hot` is computed once over the whole catalog (never over a filtered or
- * searched subset) so the badge means the same thing on every screen.
+ * Every value is backend-owned: `title`, `coverUrl`, `category`,
+ * `episodeCount`, `totalLikes` and `hasPremiumEpisodes` come straight from
+ * the series row. Nothing is derived from a representative episode.
  *
- * `likeCount` here is the SUM of the series' episode like counts in the
- * fetched catalog page, which is what the Rankings tab labels as
- * "total suka". It is therefore sensitive to how many episodes of a series
- * that page happens to contain - see docs/discover-content-hub.md.
+ * `Hot` is the one client-side rule left, and it is presentation only: it
+ * ranks the backend's own totals and is computed once over the whole catalog
+ * (never a filtered or searched subset) so the badge means the same thing
+ * everywhere.
  */
 export function buildDiscoverCards(
-  videos: readonly Video[],
-  resolveLikeCount: LikeCountResolver
+  series: readonly CatalogSeries[]
 ): readonly DiscoverSeriesCard[] {
-  const likeCountsBySeriesId = sumLikeCountsBySeriesId(videos, resolveLikeCount);
-  const drafts: readonly DiscoverSeriesCardDraft[] = groupVideosIntoSeries(videos).map(
-    (series) => ({
-      seriesId: series.id,
-      title: series.title,
-      posterUrl: series.coverUrl,
-      category: series.category,
-      channelName: series.channelName,
-      episodeCount: series.episodeCount,
-      likeCount: likeCountsBySeriesId.get(series.id) ?? 0,
-      hasPremiumEpisodes: series.episodes.some((episode) => episode.accessType === 'premium'),
-    })
-  );
+  const drafts: readonly DiscoverSeriesCardDraft[] = series.map((entry) => ({
+    seriesId: entry.id,
+    // Verbatim. The canonical title is exactly what this endpoint exists to
+    // provide; nothing here strips, splits or rewrites it.
+    title: entry.title,
+    posterUrl: entry.coverUrl,
+    category: entry.category,
+    episodeCount: entry.episodeCount,
+    likeCount: entry.totalLikes,
+    hasPremiumEpisodes: entry.hasPremiumEpisodes,
+  }));
 
   const hotSeriesIds = resolveHotSeriesIds(drafts);
 
@@ -187,7 +164,8 @@ export function filterDiscoverCardsByCategory(
     return cards;
   }
 
-  return cards.filter((card) => card.category === category);
+  // A null-category series matches no chip - it is not reassigned to one.
+  return cards.filter((card) => card.category !== null && card.category === category);
 }
 
 /**

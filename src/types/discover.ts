@@ -27,21 +27,27 @@ export type DiscoverTabKey = 'home' | 'new' | 'rankings';
 export type DiscoverBadge = 'Hot' | 'Premium';
 
 /**
- * One Discover catalog entry: a series, derived entirely from the already
- * fetched `/videos/feed` response. Every field maps to a real value - no
- * placeholder view counts, ratings, or release dates.
+ * One Discover catalog entry, projected from the authoritative `CatalogSeries`
+ * the backend returns from `GET /series`. Every field maps to a real
+ * backend-owned value - no placeholder view counts, ratings, or release dates,
+ * and nothing derived from a representative episode.
  */
 export type DiscoverSeriesCard = {
   readonly seriesId: string;
+  /** Canonical backend title, rendered verbatim. */
   readonly title: string;
-  readonly posterUrl: string;
-  readonly category: VideoCategory;
-  readonly channelName: string;
-  /** Episodes for this series present in the fetched catalog page. */
+  /** Backend artwork, or `null` when none is uploaded - then the branded fallback. */
+  readonly posterUrl: string | null;
+  /**
+   * `null` when the backend reports no shared category for the series. Never
+   * guessed: a null-category series simply matches no category chip.
+   */
+  readonly category: VideoCategory | null;
+  /** Backend-owned count of published drama episodes. */
   readonly episodeCount: number;
   /**
-   * Sum of the app's displayed like count across those episodes - a total, not
-   * a per-episode figure. Always labelled "total suka" in the UI.
+   * The backend's own `totalLikes` aggregate - a total across the series'
+   * episodes, not a per-episode figure. Always labelled "total suka" in the UI.
    */
   readonly likeCount: number;
   readonly hasPremiumEpisodes: boolean;

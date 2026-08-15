@@ -35,7 +35,6 @@ type CardLabelExtras = {
   readonly isGrid: boolean;
   /** Announced verbatim, e.g. the ranking metric printed on the card. */
   readonly metric?: string;
-  readonly channelName?: string;
 };
 
 /**
@@ -50,7 +49,7 @@ type CardLabelExtras = {
 function buildCardAccessibilityLabel(
   t: Translate,
   card: DiscoverSeriesCard,
-  { rank, metric, channelName, isGrid }: CardLabelExtras
+  { rank, metric, isGrid }: CardLabelExtras
 ): string {
   // Order matches how the card reads: identity first, then access status,
   // then size - "Kontrak Cinta CEO Dingin, Premium, 6 episode" - with the
@@ -62,8 +61,7 @@ function buildCardAccessibilityLabel(
       t(BADGE_LABEL_KEY[badge])
     ),
     t('discover.episodeCount', { count: card.episodeCount }),
-    translateCategory(t, card.category),
-    channelName,
+    card.category ? translateCategory(t, card.category) : undefined,
     metric,
   ];
 
@@ -114,7 +112,7 @@ export const DiscoverPosterCard = memo(function DiscoverPosterCard({
         {card.title}
       </Text>
       <Text ellipsizeMode="tail" numberOfLines={1} style={styles.posterMeta}>
-        {subtitle ?? translateCategory(t, card.category)}
+        {subtitle ?? (card.category ? translateCategory(t, card.category) : '')}
       </Text>
     </Pressable>
   );
@@ -148,7 +146,6 @@ export const DiscoverListRow = memo(function DiscoverListRow({
       accessibilityLabel={buildCardAccessibilityLabel(t, card, {
         rank,
         isGrid: false,
-        channelName: card.channelName,
         metric: showLikeCount ? formatLikeTotal(t, card.likeCount) : undefined,
       })}
       accessibilityRole="button"
@@ -167,11 +164,8 @@ export const DiscoverListRow = memo(function DiscoverListRow({
           {card.title}
         </Text>
         <Text ellipsizeMode="tail" numberOfLines={1} style={styles.listMeta}>
-          {translateCategory(t, card.category)} ·{' '}
+          {card.category ? `${translateCategory(t, card.category)} · ` : ''}
           {t('discover.episodeCount', { count: card.episodeCount })}
-        </Text>
-        <Text ellipsizeMode="tail" numberOfLines={1} style={styles.listChannel}>
-          {card.channelName}
         </Text>
         {showLikeCount ? (
           <Text style={styles.listMetric}>{formatLikeTotal(t, card.likeCount)}</Text>

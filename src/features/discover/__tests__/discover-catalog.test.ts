@@ -1,105 +1,80 @@
-import { DEFAULT_LANGUAGE, translations } from '@/services/i18n/translations';
-import type { Translate } from '@/stores/language';
 import {
   buildDiscoverCards,
   filterDiscoverCardsByCategory,
   formatCompactCount,
   formatLikeTotal,
   rankDiscoverCards,
+  translateCategory,
 } from '@/features/discover/discover-catalog';
-import type { Video } from '@/types/video';
+import { DEFAULT_LANGUAGE, translations } from '@/services/i18n/translations';
+import type { Translate } from '@/stores/language';
+import type { CatalogSeries } from '@/types/series-catalog';
 
-function buildVideo(overrides: Partial<Video> & Pick<Video, 'id' | 'seriesId'>): Video {
+const t = ((key: string, params?: Record<string, string | number>) =>
+  Object.entries(params ?? {}).reduce(
+    (text, [name, value]) => text.split(`{${name}}`).join(String(value)),
+    translations[DEFAULT_LANGUAGE][key as keyof (typeof translations)['id']]
+  )) as Translate;
+
+/** Canonical backend title - no "- Episode 1" suffix anywhere. */
+const CANONICAL_TITLE = 'Malapetaka Datang: Benteng Bergerakku';
+
+function buildSeries(overrides: Partial<CatalogSeries> = {}): CatalogSeries {
   return {
-    storageKey: `key-${overrides.id}`,
-    playbackUrl: `https://media.example.com/${overrides.id}.mp4`,
-    thumbnailUrl: `https://cdn.example.com/${overrides.id}.jpg`,
-    title: 'Kontrak Cinta CEO Dingin',
-    episodeNumber: 1,
-    channelName: 'Mandarin Drama ID',
-    category: 'CEO',
-    sourceLanguage: 'Mandarin',
-    hasEmbeddedIndonesianSubtitle: true,
-    processingStatus: 'completed',
-    caption: 'Pertemuan pertama yang mengubah hidup Lin Yue.',
-    likeCount: 100,
-    isSaved: false,
-    // Real content by default; a case that needs a fixture says so.
-    contentKind: 'drama',
+    id: 'series-104',
+    title: CANONICAL_TITLE,
+    coverUrl: 'https://cdn.example.com/series-104.jpg',
+    category: 'Action',
+    sourceLanguage: 'zh',
+    episodeCount: 10,
+    totalLikes: 716,
+    hasPremiumEpisodes: true,
     ...overrides,
   };
 }
 
-/**
- * Catalog order below is a, b, c, d - the order `/videos/feed` returned. Like
- * totals: a = 600, b = 200, c = 200, d = 0, so the catalog median is 200 and
- * only `a` clears the Hot threshold (2x median).
- */
-const feedVideos: readonly Video[] = [
-  ...[1, 2, 3, 4, 5, 6].map((episodeNumber) =>
-    buildVideo({
-      id: `a-ep-${episodeNumber}`,
-      seriesId: 'series-a',
-      episodeNumber,
-      title: 'Kontrak Cinta CEO Dingin',
-      likeCount: 100,
-    })
-  ),
-  buildVideo({
-    id: 'b-ep-1',
-    seriesId: 'series-b',
-    title: 'Zeta Drama',
-    category: 'Romance',
-    likeCount: 200,
-  }),
-  buildVideo({
-    id: 'c-ep-1',
-    seriesId: 'series-c',
-    title: 'Alpha Drama',
-    category: 'Revenge',
-    likeCount: 200,
-  }),
-  buildVideo({
-    id: 'd-ep-1',
-    seriesId: 'series-d',
-    title: 'Drama Tanpa Suka',
-    category: 'Family',
-    likeCount: 0,
-  }),
+/** Backend response order: the New tab presents it as-is. */
+const catalog: readonly CatalogSeries[] = [
+  buildSeries(),
+  buildSeries({ id: 'series-010', title: 'Kue Gulung Kaya Raya', category: 'Comedy', totalLikes: 714 }),
+  buildSeries({ id: 'series-101', title: 'Hidup Bahagiaku', category: 'Romance', totalLikes: 714 }),
+  buildSeries({ id: 'series-105', title: 'Hati Yin yang Jahat', category: 'Drama', totalLikes: 714 }),
 ];
 
-const resolveBackendLikeCount = (video: Video) => video.likeCount;
-
 describe('buildDiscoverCards', () => {
-  it('keeps the catalog order the backend returned', () => {
-    const cards = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
+  it('renders the canonical backend title verbatim', () => {
+    const [card] = buildDiscoverCards(catalog);
 
-    expect(cards.map((card) => card.seriesId)).toEqual([
-      'series-a',
-      'series-b',
-      'series-c',
-      'series-d',
+    expect(card.title).toBe(CANONICAL_TITLE);
+    expect(card.title).not.toMatch(/Episode/);
+  });
+
+  it('produces exactly one card per series, in backend order', () => {
+    expect(buildDiscoverCards(catalog).map((card) => card.seriesId)).toEqual([
+      'series-104',
+      'series-010',
+      'series-101',
+      'series-105',
     ]);
   });
 
-  it('derives episode count and like total from real feed fields only', () => {
-    const cards = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
-    const seriesA = cards[0];
+  it('takes every field from the authoritative series, never a representative episode', () => {
+    const [card] = buildDiscoverCards(catalog);
 
-    expect(seriesA.episodeCount).toBe(6);
-    expect(seriesA.likeCount).toBe(600);
-    expect(seriesA.title).toBe('Kontrak Cinta CEO Dingin');
-    expect(seriesA.category).toBe('CEO');
-    expect(seriesA.posterUrl).toBe('https://cdn.example.com/a-ep-1.jpg');
+    expect(card.posterUrl).toBe('https://cdn.example.com/series-104.jpg');
+    expect(card.category).toBe('Action');
+    expect(card.episodeCount).toBe(10);
+    // The backend aggregate, used as-is: no client-side re-summing.
+    expect(card.likeCount).toBe(716);
+    expect(card.hasPremiumEpisodes).toBe(true);
   });
 
-  it('exposes no invented backend fields', () => {
-    const [card] = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
+  it('exposes no invented fields, and no channelName the contract lacks', () => {
+    const [card] = buildDiscoverCards(catalog);
 
     expect(Object.keys(card).sort()).toEqual([
       'badges',
       'category',
-      'channelName',
       'episodeCount',
       'hasPremiumEpisodes',
       'likeCount',
@@ -109,201 +84,107 @@ describe('buildDiscoverCards', () => {
     ]);
   });
 
-  it('flags Premium only for a series that actually has a premium episode', () => {
-    const cards = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
-    const seriesA = cards[0];
-    const seriesB = cards[1];
+  it('keeps a null cover as null so the branded fallback can take over', () => {
+    const [card] = buildDiscoverCards([buildSeries({ coverUrl: null })]);
 
-    expect(seriesA.hasPremiumEpisodes).toBe(true);
-    expect(seriesA.badges).toContain('Premium');
-    expect(seriesB.hasPremiumEpisodes).toBe(false);
-    expect(seriesB.badges).not.toContain('Premium');
+    expect(card.posterUrl).toBeNull();
   });
 
-  it('awards Hot only to series that clearly lead the catalog median', () => {
-    const cards = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
-    const hotSeriesIds = cards
-      .filter((card) => card.badges.includes('Hot'))
-      .map((card) => card.seriesId);
+  it('keeps a null category as null instead of guessing one', () => {
+    const [card] = buildDiscoverCards([buildSeries({ category: null })]);
 
-    // series-b and series-c are 2nd and 3rd by likes but only match the
-    // median, so a top-3 position alone does not earn the badge.
-    expect(hotSeriesIds).toEqual(['series-a']);
+    expect(card.category).toBeNull();
   });
 
-  it('awards Hot to no one when every series is roughly as popular', () => {
-    const cards = buildDiscoverCards(
-      ['p', 'q', 'r', 's', 't'].map((suffix) =>
-        buildVideo({
-          id: `${suffix}-ep-1`,
-          seriesId: `series-${suffix}`,
-          title: `Drama ${suffix}`,
-          likeCount: 1000,
-        })
-      ),
-      resolveBackendLikeCount
-    );
-
-    expect(cards.every((card) => card.badges.length === 0)).toBe(true);
+  it('flags Premium from the backend aggregate alone', () => {
+    expect(buildDiscoverCards([buildSeries()])[0].badges).toContain('Premium');
+    expect(
+      buildDiscoverCards([buildSeries({ hasPremiumEpisodes: false })])[0].badges
+    ).not.toContain('Premium');
   });
 
-  it('awards Hot to a clear leader on a two-series catalog', () => {
-    const cards = buildDiscoverCards(
-      [
-        buildVideo({ id: 'm-ep-1', seriesId: 'series-m', title: 'Memimpin', likeCount: 12_000 }),
-        buildVideo({ id: 'n-ep-1', seriesId: 'series-n', title: 'Tertinggal', likeCount: 500 }),
-      ],
-      resolveBackendLikeCount
-    );
+  it('awards Hot only to a series that clearly leads the catalog median', () => {
+    const cards = buildDiscoverCards([
+      buildSeries({ id: 'a', totalLikes: 50_000 }),
+      buildSeries({ id: 'b', totalLikes: 200 }),
+      buildSeries({ id: 'c', totalLikes: 200 }),
+    ]);
 
     expect(cards[0].badges).toContain('Hot');
     expect(cards[1].badges).not.toContain('Hot');
   });
 
-  it('awards Hot to no one when the catalog slopes gently', () => {
-    const cards = buildDiscoverCards(
-      [6000, 5000, 4000, 3000, 2000].map((likeCount, index) =>
-        buildVideo({
-          id: `slope-${index}-ep-1`,
-          seriesId: `series-slope-${index}`,
-          title: `Drama Slope ${index}`,
-          likeCount,
-        })
-      ),
-      resolveBackendLikeCount
-    );
+  it('awards Hot to no one on the real, flat catalog', () => {
+    // Live totals 716/714/714/714: lower median 714, threshold 1428.
+    expect(buildDiscoverCards(catalog).every((card) => !card.badges.includes('Hot'))).toBe(true);
+  });
 
-    // Nothing stands out here, so nothing claims to be hot - the top series
-    // leads the median by 1.5x, under the 2x gate.
+  it('awards Hot to no one when the catalog has barely any likes', () => {
+    const cards = buildDiscoverCards([
+      buildSeries({ id: 'a', totalLikes: 1 }),
+      buildSeries({ id: 'b', totalLikes: 0 }),
+      buildSeries({ id: 'c', totalLikes: 0 }),
+    ]);
+
     expect(cards.every((card) => !card.badges.includes('Hot'))).toBe(true);
   });
 
-  it('awards Hot to no one on a catalog with barely any likes yet', () => {
-    // Fresh backend, no likes anywhere, then the viewer likes one episode.
-    // A median of 0 must not turn that single like into a Hot badge.
+  it('awards Hot to at most three series', () => {
     const cards = buildDiscoverCards(
-      ['p', 'q', 'r', 's', 't'].map((suffix) =>
-        buildVideo({
-          id: `${suffix}-ep-1`,
-          seriesId: `series-${suffix}`,
-          title: `Drama ${suffix}`,
-          likeCount: 0,
-        })
-      ),
-      (video) => (video.id === 'p-ep-1' ? 1 : 0)
-    );
-
-    expect(cards[0].likeCount).toBe(1);
-    expect(cards.every((card) => !card.badges.includes('Hot'))).toBe(true);
-  });
-
-  it('still awards Hot to a clear leader on a mostly-unliked catalog', () => {
-    const cards = buildDiscoverCards(
-      [50_000, 0, 0, 0, 0].map((likeCount, index) =>
-        buildVideo({
-          id: `sparse-${index}-ep-1`,
-          seriesId: `series-sparse-${index}`,
-          title: `Drama Sparse ${index}`,
-          likeCount,
-        })
-      ),
-      resolveBackendLikeCount
-    );
-
-    expect(cards[0].badges).toContain('Hot');
-    expect(cards.filter((card) => card.badges.includes('Hot'))).toHaveLength(1);
-  });
-
-  it('awards Hot to at most three series even when many lead the median', () => {
-    const cards = buildDiscoverCards(
-      [9000, 8000, 7000, 6000, 100, 100, 100, 100, 100].map((likeCount, index) =>
-        buildVideo({
-          id: `h-${index}-ep-1`,
-          seriesId: `series-h-${index}`,
-          title: `Drama H${index}`,
-          likeCount,
-        })
-      ),
-      resolveBackendLikeCount
+      [9000, 8000, 7000, 6000, 100, 100, 100, 100, 100].map((totalLikes, index) =>
+        buildSeries({ id: `h-${index}`, totalLikes })
+      )
     );
 
     expect(cards.filter((card) => card.badges.includes('Hot'))).toHaveLength(3);
   });
 
-  it('never awards Hot to a series with no likes, even inside the top three', () => {
-    const cards = buildDiscoverCards(
-      [
-        buildVideo({ id: 'x-ep-1', seriesId: 'series-x', title: 'Banyak Suka', likeCount: 50_000 }),
-        buildVideo({ id: 'y-ep-1', seriesId: 'series-y', title: 'Sedikit Suka', likeCount: 100 }),
-        buildVideo({ id: 'z-ep-1', seriesId: 'series-z', title: 'Tanpa Suka', likeCount: 0 }),
-      ],
-      resolveBackendLikeCount
-    );
-
-    // All three are in the top three of a three-series catalog, so only the
-    // like threshold can keep the unliked one unbadged.
-    expect(cards[0].badges).toContain('Hot');
-    expect(cards[1].badges).not.toContain('Hot');
-    expect(cards[2].badges).not.toContain('Hot');
-  });
-
-  it('includes the locally liked video in the like total', () => {
-    const resolveWithLocalLike = (video: Video) =>
-      video.likeCount + (video.id === 'b-ep-1' ? 1 : 0);
-    const cards = buildDiscoverCards(feedVideos, resolveWithLocalLike);
-
-    expect(cards[1].likeCount).toBe(201);
-  });
-
-  it('returns an empty catalog for an empty feed', () => {
-    expect(buildDiscoverCards([], resolveBackendLikeCount)).toEqual([]);
+  it('returns an empty catalog for an empty response', () => {
+    expect(buildDiscoverCards([])).toEqual([]);
   });
 });
 
 describe('rankDiscoverCards', () => {
-  it('ranks by like count and breaks ties deterministically by title', () => {
-    const cards = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
+  it('ranks by the backend totalLikes aggregate', () => {
+    const ranked = rankDiscoverCards(buildDiscoverCards(catalog));
 
-    expect(rankDiscoverCards(cards).map((card) => card.seriesId)).toEqual([
-      'series-a',
-      'series-c',
-      'series-b',
-      'series-d',
-    ]);
+    expect(ranked[0].seriesId).toBe('series-104');
+    expect(ranked[0].likeCount).toBe(716);
   });
 
   it('does not mutate the catalog order it was given', () => {
-    const cards = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
+    const cards = buildDiscoverCards(catalog);
 
     rankDiscoverCards(cards);
 
-    expect(cards.map((card) => card.seriesId)).toEqual([
-      'series-a',
-      'series-b',
-      'series-c',
-      'series-d',
-    ]);
+    expect(cards[0].seriesId).toBe('series-104');
   });
 });
 
 describe('filterDiscoverCardsByCategory', () => {
-  it('returns every card for "All"', () => {
-    const cards = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
+  it('returns every card for "All", including one with no category', () => {
+    const cards = buildDiscoverCards([...catalog, buildSeries({ id: 'x', category: null })]);
 
-    expect(filterDiscoverCardsByCategory(cards, 'All')).toHaveLength(4);
+    expect(filterDiscoverCardsByCategory(cards, 'All')).toHaveLength(5);
   });
 
   it('narrows to one category without re-ordering', () => {
-    const cards = buildDiscoverCards(feedVideos, resolveBackendLikeCount);
+    const cards = buildDiscoverCards(catalog);
 
-    expect(filterDiscoverCardsByCategory(cards, 'Romance').map((card) => card.seriesId)).toEqual([
-      'series-b',
+    expect(filterDiscoverCardsByCategory(cards, 'Comedy').map((c) => c.seriesId)).toEqual([
+      'series-010',
     ]);
+  });
+
+  it('excludes a null-category series from a specific chip without reassigning it', () => {
+    const cards = buildDiscoverCards([buildSeries({ id: 'x', category: null })]);
+
+    expect(filterDiscoverCardsByCategory(cards, 'Romance')).toHaveLength(0);
+    expect(filterDiscoverCardsByCategory(cards, 'All')).toHaveLength(1);
   });
 });
 
-
-describe('formatCompactCount', () => {
+describe('display helpers', () => {
   it.each([
     [0, '0'],
     [999, '999'],
@@ -312,19 +193,12 @@ describe('formatCompactCount', () => {
   ])('formats %s as %s', (value, expected) => {
     expect(formatCompactCount(value)).toBe(expected);
   });
-});
 
-describe('formatLikeTotal', () => {
-  // Resolved through the real Indonesian copy rather than a stub, so this
-  // still asserts the shipped wording - the point of the case is that the
-  // metric says "total", never a bare count that could read as views.
-  const t: Translate = (key, params) =>
-    Object.entries(params ?? {}).reduce(
-      (text, [name, value]) => text.split(`{${name}}`).join(String(value)),
-      translations[DEFAULT_LANGUAGE][key]
-    );
-
-  it('always labels the metric as a total, never as a bare count', () => {
+  it('always labels the ranking metric as a total', () => {
     expect(formatLikeTotal(t, 98_560)).toBe('98.6K suka total');
+  });
+
+  it('localizes a category label without touching the filter value', () => {
+    expect(translateCategory(t, 'Romance')).toBe(translations.id['discover.categoryRomance']);
   });
 });

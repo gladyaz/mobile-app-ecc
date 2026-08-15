@@ -22,10 +22,9 @@ import {
   DiscoverSearchResultsView,
 } from '@/features/discover/discover-views';
 import { DISCOVER_SCREEN_PADDING, useDiscoverGrid } from '@/features/discover/use-discover-grid';
-import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
-import { searchVideos, type VideoCategoryFilter } from '@/services/videos/video-service';
+import { useSeriesCatalog } from '@/features/series/use-series-catalog';
+import type { VideoCategoryFilter } from '@/services/videos/video-service';
 import { useTranslation, type Translate } from '@/stores/language';
-import { useVideoInteractions } from '@/stores/video-interactions';
 import type { DiscoverSeriesCard, DiscoverTabKey } from '@/types/discover';
 
 /**
@@ -38,32 +37,24 @@ export default function DiscoverScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<DiscoverTabKey>('home');
   const [selectedCategory, setSelectedCategory] = useState<VideoCategoryFilter>('All');
-  const { videos, isLoading, error, refresh } = useVideoCatalog();
-  const { getLikeCount } = useVideoInteractions();
+  const { data: series, isLoading, error, refresh } = useSeriesCatalog();
   const grid = useDiscoverGrid();
   const { t } = useTranslation();
 
-  const cards = useMemo(() => buildDiscoverCards(videos, getLikeCount), [videos, getLikeCount]);
+  const cards = useMemo(() => buildDiscoverCards(series), [series]);
   const isSearching = searchQuery.trim().length > 0;
 
-  // Reuses the existing in-memory search unchanged - same matcher, same
-  // category argument the previous Discover screen passed - and maps the
-  // matching episodes onto their series cards, so badges and ordering stay
-  // identical to the rest of Discover.
-  //
-  // It then also matches the LOCALIZED category label. `searchVideos` compares
-  // the raw English category value, so once the chips render "Romantis" the
-  // search hint's promise to match "kategori" would otherwise be false in
-  // every language but English. The selected category is still applied on the
-  // raw value, so this can only surface cards that filter already allows.
+  // Search now runs over the authoritative Series catalog rather than the
+  // episode feed, so it matches the canonical title and the category (raw
+  // value and localized label alike). Caption and channel matching is gone
+  // with the episodes: the Series contract carries neither field, and
+  // inventing one would be worse than losing it. The selected category still
+  // narrows the query, on the raw value, exactly as before.
   const searchResults = useMemo(() => {
     if (!isSearching) {
       return [];
     }
 
-    const matchedSeriesIds = new Set(
-      searchVideos(videos, searchQuery, selectedCategory).map((video) => video.seriesId)
-    );
     const normalizedQuery = searchQuery.trim().toLowerCase();
 
     return cards.filter((card) => {
@@ -71,12 +62,15 @@ export default function DiscoverScreen() {
         return false;
       }
 
-      return (
-        matchedSeriesIds.has(card.seriesId) ||
-        translateCategory(t, card.category).toLowerCase().includes(normalizedQuery)
-      );
+      const searchable = [
+        card.title,
+        card.category ?? '',
+        card.category ? translateCategory(t, card.category) : '',
+      ];
+
+      return searchable.some((value) => value.toLowerCase().includes(normalizedQuery));
     });
-  }, [cards, isSearching, searchQuery, selectedCategory, t, videos]);
+  }, [cards, isSearching, searchQuery, selectedCategory, t]);
 
   const homeCards = useMemo(
     () => filterDiscoverCardsByCategory(cards, selectedCategory),

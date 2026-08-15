@@ -4,42 +4,34 @@ import { Dimensions, StyleSheet } from 'react-native';
 
 import DiscoverScreen from '@/app/(tabs)/discover';
 import { DISCOVER_GRID_GAP } from '@/features/discover/use-discover-grid';
-import type { Video } from '@/types/video';
+import type { CatalogSeries } from '@/types/series-catalog';
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
 }));
 
-const mockUseVideoCatalog = jest.fn();
+const mockUseSeriesCatalog = jest.fn();
 
-jest.mock('@/features/videos/video-catalog-provider', () => ({
-  useVideoCatalog: () => mockUseVideoCatalog(),
+// Discover reads the authoritative Series catalog now. It never touches the
+// video feed, so nothing here mocks VideoCatalogProvider - if Discover started
+// requiring it again, these tests would fail rather than quietly pass.
+jest.mock('@/features/series/use-series-catalog', () => ({
+  useSeriesCatalog: () => mockUseSeriesCatalog(),
 }));
 
 // `expo-video` is deliberately NOT mocked here: Discover must never pull in a
 // feed video player, so this test failing to resolve that native module would
 // be a real regression signal.
-jest.mock('@/stores/video-interactions', () => ({
-  useVideoInteractions: () => ({ getLikeCount: (video: Video) => video.likeCount }),
-}));
-
-function buildVideo(overrides: Partial<Video> & Pick<Video, 'id' | 'seriesId'>): Video {
+function buildSeries(overrides: Partial<CatalogSeries> = {}): CatalogSeries {
   return {
-    storageKey: `key-${overrides.id}`,
-    playbackUrl: `https://media.example.com/${overrides.id}.mp4`,
-    thumbnailUrl: `https://cdn.example.com/${overrides.id}.jpg`,
-    title: 'Kontrak Cinta CEO Dingin',
-    episodeNumber: 1,
-    channelName: 'Mandarin Drama ID',
+    id: 'series-ceo-dingin',
+    title: CEO_TITLE,
+    coverUrl: 'https://cdn.example.com/series-ceo.jpg',
     category: 'CEO',
-    sourceLanguage: 'Mandarin',
-    hasEmbeddedIndonesianSubtitle: true,
-    processingStatus: 'completed',
-    caption: 'Pertemuan pertama yang mengubah hidup Lin Yue.',
-    likeCount: 2000,
-    isSaved: false,
-    // Real content by default; a case that needs a fixture says so.
-    contentKind: 'drama',
+    sourceLanguage: 'zh',
+    episodeCount: 6,
+    totalLikes: 12_000,
+    hasPremiumEpisodes: true,
     ...overrides,
   };
 }
@@ -48,24 +40,20 @@ const CEO_TITLE = 'Kontrak Cinta CEO Dingin';
 const NONA_TITLE = 'Pernikahan Kilat Nona Shen';
 
 /**
- * Catalog order is deliberately the OPPOSITE of like order: the low-like Nona
- * series comes first, exactly as `/videos/feed` returned it. That way a tab
- * that renders catalog order and a tab that renders like order cannot both be
- * satisfied by the same sequence.
+ * Backend response order is deliberately the OPPOSITE of like order, so a tab
+ * rendering catalog order and a tab rendering like order cannot both be
+ * satisfied by one sequence.
  */
-const feedVideos: readonly Video[] = [
-  buildVideo({
-    id: 'nona-ep-1',
-    seriesId: 'series-nona-shen',
+const seriesCatalog: readonly CatalogSeries[] = [
+  buildSeries({
+    id: 'series-nona-shen',
     title: NONA_TITLE,
     category: 'Romance',
-    channelName: 'Drama Harian CN',
-    caption: 'Pernikahan palsu mulai terasa terlalu nyata.',
-    likeCount: 500,
+    episodeCount: 1,
+    totalLikes: 500,
+    hasPremiumEpisodes: false,
   }),
-  ...[1, 2, 3, 4, 5, 6].map((episodeNumber) =>
-    buildVideo({ id: `ceo-ep-${episodeNumber}`, seriesId: 'series-ceo-dingin', episodeNumber })
-  ),
+  buildSeries(),
 ];
 
 // Jest is configured with `clearMocks`, which wipes call records but leaves an
@@ -76,7 +64,7 @@ afterEach(() => {
 });
 
 type CatalogOverrides = {
-  readonly videos?: readonly Video[];
+  readonly data?: readonly CatalogSeries[];
   readonly isLoading?: boolean;
   readonly error?: Error | null;
 };
@@ -84,8 +72,8 @@ type CatalogOverrides = {
 function mockCatalog(overrides: CatalogOverrides = {}) {
   const refresh = jest.fn();
 
-  mockUseVideoCatalog.mockReturnValue({
-    videos: feedVideos,
+  mockUseSeriesCatalog.mockReturnValue({
+    data: seriesCatalog,
     isLoading: false,
     error: null,
     refresh,
@@ -152,13 +140,8 @@ describe('DiscoverScreen home grid', () => {
 
   it('renders a Hot badge for a series that clearly leads the catalog', async () => {
     mockCatalog({
-      videos: [50_000, 100, 100].map((likeCount, index) =>
-        buildVideo({
-          id: `hot-${index}-ep-1`,
-          seriesId: `series-hot-${index}`,
-          title: `Drama Hot ${index}`,
-          likeCount,
-        })
+      data: [50_000, 100, 100].map((totalLikes, index) =>
+        buildSeries({ id: `series-hot-${index}`, title: `Drama Hot ${index}`, totalLikes })
       ),
     });
 
@@ -225,7 +208,7 @@ describe('DiscoverScreen home grid', () => {
       'Kontrak Cinta CEO Dingin yang Menikahi Sekretaris Rahasianya di Malam Bersalju Panjang';
 
     mockCatalog({
-      videos: [buildVideo({ id: 'long-ep-1', seriesId: 'series-long', title: longTitle })],
+      data: [buildSeries({ id: 'series-long', title: longTitle })],
     });
 
     const { getByText } = await render(<DiscoverScreen />);
@@ -312,7 +295,7 @@ describe('DiscoverScreen New tab presentation', () => {
       'Kontrak Cinta CEO Dingin yang Menikahi Sekretaris Rahasianya di Malam Bersalju Panjang';
 
     mockCatalog({
-      videos: [buildVideo({ id: 'long-ep-1', seriesId: 'series-long', title: longTitle })],
+      data: [buildSeries({ id: 'series-long', title: longTitle })],
     });
 
     const { getByText } = await render(<DiscoverScreen />);
@@ -358,16 +341,15 @@ describe('DiscoverScreen rankings tab', () => {
   });
 
   it('numbers the ranked rows below Top Hits continuing from the featured cards', async () => {
-    const rankedFeed: readonly Video[] = [1, 2, 3, 4, 5].map((index) =>
-      buildVideo({
-        id: `ranked-${index}-ep-1`,
-        seriesId: `series-ranked-${index}`,
+    const rankedCatalog: readonly CatalogSeries[] = [1, 2, 3, 4, 5].map((index) =>
+      buildSeries({
+        id: `series-ranked-${index}`,
         title: `Drama Peringkat ${index}`,
-        likeCount: 6000 - index * 1000,
+        totalLikes: 6000 - index * 1000,
       })
     );
 
-    mockCatalog({ videos: rankedFeed });
+    mockCatalog({ data: rankedCatalog });
 
     const { getAllByRole, getByText } = await render(<DiscoverScreen />);
 
@@ -388,20 +370,16 @@ describe('DiscoverScreen rankings tab', () => {
 
 describe('DiscoverScreen rankings with the real four-series catalog', () => {
   /** Mirrors production today: four real series, no more. */
-  const fourSeriesFeed: readonly Video[] = ['a', 'b', 'c', 'd'].flatMap((suffix, index) =>
-    [1, 2].map((episodeNumber) =>
-      buildVideo({
-        id: `${suffix}-ep-${episodeNumber}`,
-        seriesId: `series-${suffix}`,
-        episodeNumber,
-        title: `Drama ${suffix.toUpperCase()}`,
-        likeCount: 4000 - index * 500,
-      })
-    )
+  const fourSeriesCatalog: readonly CatalogSeries[] = ['a', 'b', 'c', 'd'].map((suffix, index) =>
+    buildSeries({
+      id: `series-${suffix}`,
+      title: `Drama ${suffix.toUpperCase()}`,
+      totalLikes: 8000 - index * 1000,
+    })
   );
 
   it('fills Top Hits and still shows the remaining rank rather than looking truncated', async () => {
-    mockCatalog({ videos: fourSeriesFeed });
+    mockCatalog({ data: fourSeriesCatalog });
 
     const { getAllByRole, getByText, queryByText } = await render(<DiscoverScreen />);
 
@@ -419,7 +397,7 @@ describe('DiscoverScreen rankings with the real four-series catalog', () => {
 
 
   it('keeps the rank indicator out of the poster on ranked rows', async () => {
-    mockCatalog({ videos: fourSeriesFeed });
+    mockCatalog({ data: fourSeriesCatalog });
 
     const { getByTestId, getByText } = await render(<DiscoverScreen />);
 
@@ -485,27 +463,29 @@ describe('DiscoverScreen search', () => {
     expect(getByText('Tidak ada hasil')).toBeTruthy();
   });
 
-  it('matches on channel name the same way the previous screen did', async () => {
+
+  // Channel- and caption-matching are gone with the episode feed: the Series
+  // contract carries neither field, and inventing one would be worse than
+  // losing it. Canonical title search is what replaces them.
+  it('matches the canonical series title', async () => {
     mockCatalog();
 
-    const { getByLabelText, getByText } = await render(<DiscoverScreen />);
+    const { getByLabelText, getByText, queryByText } = await render(<DiscoverScreen />);
 
-    await fireEvent.changeText(getByLabelText('Cari drama'), 'Drama Harian');
+    await fireEvent.changeText(getByLabelText('Cari drama'), 'Nona');
 
     expect(getByText(NONA_TITLE)).toBeTruthy();
+    expect(queryByText(CEO_TITLE)).toBeNull();
   });
 
-  it('still matches on an episode caption, and says what search matches on', async () => {
+  it('matches a word from the middle of a canonical title', async () => {
     mockCatalog();
 
     const { getByLabelText, getByText } = await render(<DiscoverScreen />);
 
-    await fireEvent.changeText(getByLabelText('Cari drama'), 'Pernikahan palsu');
+    await fireEvent.changeText(getByLabelText('Cari drama'), 'Kilat');
 
     expect(getByText(NONA_TITLE)).toBeTruthy();
-    // A caption hit renders the series poster, so the screen has to explain
-    // why a card whose visible text lacks the query is a result.
-    expect(getByText(/Dicocokkan dengan judul, deskripsi episode/i)).toBeTruthy();
   });
 
   it('keeps the selected category applied to the query, as the previous screen did', async () => {
@@ -628,7 +608,7 @@ describe('DiscoverScreen touch targets', () => {
 
 describe('DiscoverScreen catalog states', () => {
   it('shows a poster skeleton while the catalog is loading', async () => {
-    mockCatalog({ videos: [], isLoading: true });
+    mockCatalog({ data: [], isLoading: true });
 
     const { getByLabelText } = await render(<DiscoverScreen />);
 
@@ -636,7 +616,7 @@ describe('DiscoverScreen catalog states', () => {
   });
 
   it('shows a retryable error state when the catalog request failed', async () => {
-    const refresh = mockCatalog({ videos: [], error: new Error('offline') });
+    const refresh = mockCatalog({ data: [], error: new Error('offline') });
 
     const { getByText } = await render(<DiscoverScreen />);
 
@@ -648,7 +628,7 @@ describe('DiscoverScreen catalog states', () => {
   });
 
   it('shows an empty-catalog state when the feed returned nothing', async () => {
-    mockCatalog({ videos: [] });
+    mockCatalog({ data: [] });
 
     const { getByText } = await render(<DiscoverScreen />);
 

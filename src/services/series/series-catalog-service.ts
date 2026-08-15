@@ -1,4 +1,6 @@
 import { ApiError, request } from '@/services/api/client';
+import { groupVideosIntoSeries } from '@/services/videos/series-service';
+import { getVideoFeed, shouldUseMockData } from '@/services/videos/video-service';
 import {
   mapBackendSeries,
   mapBackendSeriesDetail,
@@ -6,8 +8,34 @@ import {
   type BackendSeriesListDto,
 } from '@/services/series/series-mapper';
 import type { CatalogSeries, CatalogSeriesDetail } from '@/types/series-catalog';
+import type { Video } from '@/types/video';
 
 const HTTP_NOT_FOUND = 404;
+
+/**
+ * Offline/demo adapter. The bundled catalog is a `Video[]` with no series
+ * rows behind it, so mock mode keeps deriving series by grouping those
+ * fixtures - the pre-existing `groupVideosIntoSeries` path. This is the ONLY
+ * place that derivation is still used for a catalog surface; the real API
+ * mode never groups videos.
+ *
+ * The shape it produces is the same `CatalogSeries` the backend returns, so
+ * every screen above stays source-agnostic.
+ */
+function toCatalogSeriesFromVideos(videos: readonly Video[]): readonly CatalogSeries[] {
+  return groupVideosIntoSeries(videos).map((series) => ({
+    id: series.id,
+    title: series.title,
+    coverUrl: series.coverUrl.length > 0 ? series.coverUrl : null,
+    category: series.category,
+    sourceLanguage: null,
+    episodeCount: series.episodeCount,
+    totalLikes: videos
+      .filter((video) => video.seriesId === series.id)
+      .reduce((total, video) => total + video.likeCount, 0),
+    hasPremiumEpisodes: series.episodes.some((episode) => episode.accessType === 'premium'),
+  }));
+}
 
 /**
  * `GET /series` - the authoritative curated catalog.
@@ -19,6 +47,10 @@ const HTTP_NOT_FOUND = 404;
  * `{ items: [...] }` and every item is returned.
  */
 export async function getSeriesCatalog(): Promise<readonly CatalogSeries[]> {
+  if (shouldUseMockData()) {
+    return toCatalogSeriesFromVideos(await getVideoFeed());
+  }
+
   const response = await request<BackendSeriesListDto>('series');
 
   if (!response || !Array.isArray(response.items)) {
@@ -43,6 +75,20 @@ export async function getSeriesCatalog(): Promise<readonly CatalogSeries[]> {
  * state.
  */
 export async function getSeriesDetail(id: string): Promise<CatalogSeriesDetail | undefined> {
+  if (shouldUseMockData()) {
+    const videos = await getVideoFeed();
+    const series = toCatalogSeriesFromVideos(videos).find((entry) => entry.id === id);
+
+    return series
+      ? {
+          ...series,
+          episodes: videos
+            .filter((video) => video.seriesId === id)
+            .sort((left, right) => left.episodeNumber - right.episodeNumber),
+        }
+      : undefined;
+  }
+
   try {
     const dto = await request<BackendSeriesDetailDto>(`series/${encodeURIComponent(id)}`);
 

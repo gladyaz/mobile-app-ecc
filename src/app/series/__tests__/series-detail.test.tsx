@@ -11,10 +11,12 @@ jest.mock('expo-router', () => ({
   useLocalSearchParams: () => mockUseLocalSearchParams(),
 }));
 
-const mockUseVideoCatalog = jest.fn();
+const mockUseSeriesDetail = jest.fn();
 
-jest.mock('@/features/videos/video-catalog-provider', () => ({
-  useVideoCatalog: () => mockUseVideoCatalog(),
+// Detail fetches GET /series/:id by id. Nothing mocks the video catalog: the
+// screen must not depend on Discover having populated anything.
+jest.mock('@/features/series/use-series-catalog', () => ({
+  useSeriesDetail: (id: string | undefined) => mockUseSeriesDetail(id),
 }));
 
 const mockGetProgress = jest.fn();
@@ -60,12 +62,26 @@ function buildEpisode(episodeNumber: number): Video {
 
 const seriesXVideos: readonly Video[] = [1, 2, 3, 4, 5, 6].map(buildEpisode);
 
+/** Canonical series title - deliberately NOT any episode's title. */
+const CANONICAL_TITLE = 'Kontrak Cinta CEO Dingin';
+
 beforeEach(() => {
   mockUseLocalSearchParams.mockReturnValue({ id: 'series-x' });
-  mockUseVideoCatalog.mockReturnValue({
-    videos: seriesXVideos,
+  mockUseSeriesDetail.mockReturnValue({
+    data: {
+      id: 'series-x',
+      title: CANONICAL_TITLE,
+      coverUrl: 'https://cdn.example.com/series-x.jpg',
+      category: 'CEO',
+      sourceLanguage: 'zh',
+      episodeCount: seriesXVideos.length,
+      totalLikes: 600,
+      hasPremiumEpisodes: true,
+      episodes: seriesXVideos,
+    },
     isLoading: false,
     error: null,
+    isNotFound: false,
     refresh: jest.fn(),
   });
   mockGetProgress.mockReturnValue(undefined);

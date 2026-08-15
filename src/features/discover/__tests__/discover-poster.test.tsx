@@ -10,7 +10,6 @@ function buildCard(overrides: Partial<DiscoverSeriesCard> = {}): DiscoverSeriesC
     title: 'Balas Dendam Sang Pewaris',
     posterUrl: 'https://cdn.example.com/series-a.jpg',
     category: 'Revenge',
-    channelName: 'Short Drama Mandarin',
     episodeCount: 10,
     likeCount: 18_400,
     hasPremiumEpisodes: true,

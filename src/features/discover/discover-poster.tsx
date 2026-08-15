@@ -113,8 +113,9 @@ export function DiscoverPoster({ card, variant, rank, style }: DiscoverPosterPro
   const [failedPosterUrl, setFailedPosterUrl] = useState<string | null>(null);
 
   const isGrid = variant === 'grid';
-  const hasPosterUrl = card.posterUrl.trim().length > 0;
-  const hasFailedToLoad = failedPosterUrl === card.posterUrl;
+  const posterUrl = card.posterUrl ?? '';
+  const hasPosterUrl = posterUrl.trim().length > 0;
+  const hasFailedToLoad = failedPosterUrl === posterUrl;
   const showFallback = !hasPosterUrl || hasFailedToLoad;
 
   const visibleBadges = resolveVisibleBadges(card.badges, { isGrid, rank });
@@ -132,9 +133,9 @@ export function DiscoverPoster({ card, variant, rank, style }: DiscoverPosterPro
           accessible={false}
           cachePolicy="memory-disk"
           contentFit="cover"
-          onError={() => setFailedPosterUrl(card.posterUrl)}
+          onError={() => setFailedPosterUrl(posterUrl)}
           recyclingKey={card.seriesId}
-          source={{ uri: card.posterUrl }}
+          source={{ uri: posterUrl }}
           style={styles.image}
           testID={`discover-poster-image-${card.seriesId}`}
           transition={160}

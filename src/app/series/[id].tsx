@@ -1,14 +1,14 @@
 import { Image } from 'expo-image';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { SeriesEpisodeRow } from '@/components/series-episode-row';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
-import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
+import { useSeriesDetail } from '@/features/series/use-series-catalog';
 import { trackEvent } from '@/services/analytics/analytics-queue';
-import { getSeriesById } from '@/services/videos/series-service';
+import { toEpisode } from '@/services/videos/series-service';
 import { useEntitlement } from '@/stores/entitlement';
 import { useTranslation } from '@/stores/language';
 import { useSeriesProgress } from '@/stores/series-progress';
@@ -17,10 +17,12 @@ import type { Episode } from '@/types/series';
 export default function SeriesDetailScreen() {
   const { t } = useTranslation();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { videos, isLoading, error, refresh } = useVideoCatalog();
+  // Fetches by id on its own. A cold deep link into /series/<id> renders
+  // exactly like a tap from Discover - nothing here reads Discover state.
+  const { data: series, isLoading, error, isNotFound, refresh } = useSeriesDetail(id);
   const { getProgress } = useSeriesProgress();
   const { isPremium } = useEntitlement();
-  const series = getSeriesById(videos, id);
+  const episodes = useMemo(() => (series?.episodes ?? []).map(toEpisode), [series]);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
 
   const handleSelectEpisode = (episode: Episode) => {
@@ -53,7 +55,7 @@ export default function SeriesDetailScreen() {
     router.replace('/');
   };
 
-  if (isLoading && videos.length === 0) {
+  if (isLoading) {
     return (
       <View style={[styles.container, styles.centerState]}>
         <ActivityIndicator color={Palette.primary} size="large" />
@@ -75,7 +77,7 @@ export default function SeriesDetailScreen() {
     );
   }
 
-  if (!series) {
+  if (isNotFound || !series) {
     return (
       <View style={[styles.container, styles.centerState]}>
         <Text style={styles.stateTitle}>{t('series.notFound')}</Text>
@@ -89,15 +91,15 @@ export default function SeriesDetailScreen() {
     );
   }
 
-  const firstFreeEpisode = series.episodes.find(
+  const firstFreeEpisode = episodes.find(
     (episode) => episode.accessType === 'free' && episode.isAvailable
   );
-  const firstPlayableEpisode = series.episodes.find(
+  const firstPlayableEpisode = episodes.find(
     (episode) => episode.isAvailable && (episode.accessType === 'free' || isPremium)
   );
   const progress = getProgress(series.id);
   const continueEpisode = progress
-    ? series.episodes.find((episode) => episode.videoId === progress.lastWatchedVideoId)
+    ? episodes.find((episode) => episode.videoId === progress.lastWatchedVideoId)
     : undefined;
   const primaryPlaybackEpisode = continueEpisode ?? firstPlayableEpisode;
 
@@ -110,15 +112,17 @@ export default function SeriesDetailScreen() {
         <Text style={styles.backButtonText}>{t('common.back')}</Text>
       </Pressable>
 
-      <Image contentFit="cover" source={{ uri: series.coverUrl }} style={styles.cover} />
+      {series.coverUrl ? (
+        <Image contentFit="cover" source={{ uri: series.coverUrl }} style={styles.cover} />
+      ) : (
+        <View style={styles.cover} />
+      )}
 
       <View style={styles.metaRow}>
-        <Text style={styles.category}>{series.category}</Text>
-        <Text style={styles.channel}>{series.channelName}</Text>
+        <Text style={styles.category}>{series.category ?? ''}</Text>
       </View>
       <Text style={styles.title}>{series.title}</Text>
       <Text style={styles.episodeCount}>{t('series.episodeCount', { count: series.episodeCount })}</Text>
-      <Text style={styles.description}>{series.description}</Text>
 
       {primaryPlaybackEpisode ? (
         <Pressable
@@ -133,10 +137,10 @@ export default function SeriesDetailScreen() {
 
       <Text style={styles.sectionTitle}>{t('series.episodes')}</Text>
       <View style={styles.episodeList}>
-        {series.episodes.length === 0 ? (
+        {episodes.length === 0 ? (
           <Text style={styles.emptyText}>{t('series.noEpisodes')}</Text>
         ) : (
-          series.episodes.map((episode) => (
+          episodes.map((episode) => (
             <SeriesEpisodeRow
               episode={episode}
               isCurrentlyPlaying={episode.videoId === progress?.lastWatchedVideoId}

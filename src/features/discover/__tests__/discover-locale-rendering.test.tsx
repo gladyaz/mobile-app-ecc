@@ -47,7 +47,6 @@ function buildCard(overrides: Partial<DiscoverSeriesCard> = {}): DiscoverSeriesC
     title: BACKEND_TITLE,
     posterUrl: 'https://cdn.example.com/series-104.jpg',
     category: 'Romance',
-    channelName: 'Short Drama Mandarin',
     episodeCount: 10,
     likeCount: 716,
     hasPremiumEpisodes: true,

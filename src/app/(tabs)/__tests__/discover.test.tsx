@@ -77,6 +77,7 @@ function mockCatalog(overrides: CatalogOverrides = {}) {
     isLoading: false,
     error: null,
     refresh,
+    recoverCover: jest.fn(),
     ...overrides,
   });
 

@@ -1,5 +1,9 @@
 import { ApiError } from '@/services/api/client';
-import { getSeriesCatalog, getSeriesDetail } from '@/services/series/series-catalog-service';
+import {
+  getSeriesCatalog,
+  getSeriesDetail,
+  isSeriesMetadataRemote,
+} from '@/services/series/series-catalog-service';
 import {
   mapBackendSeries,
   mapBackendSeriesDetail,
@@ -290,5 +294,22 @@ describe('offline / demo mode', () => {
 
     expect(mockRequest).not.toHaveBeenCalled();
     expect(detail?.episodes).toHaveLength(1);
+  });
+});
+
+describe('isSeriesMetadataRemote', () => {
+  it('is true when the catalog comes from the backend, so a cover can be re-signed', () => {
+    mockShouldUseMockData.mockReturnValue(false);
+
+    expect(isSeriesMetadataRemote()).toBe(true);
+  });
+
+  it('is false in mock/demo mode, where covers are bundled assets with no endpoint', () => {
+    mockShouldUseMockData.mockReturnValue(true);
+
+    // This is what keeps the offline showcase backend-independent: cover
+    // recovery does not issue a request that would resolve to fixtures, it
+    // issues no request at all.
+    expect(isSeriesMetadataRemote()).toBe(false);
   });
 });

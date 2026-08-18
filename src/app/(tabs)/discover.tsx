@@ -22,6 +22,7 @@ import {
   DiscoverSearchResultsView,
 } from '@/features/discover/discover-views';
 import { DISCOVER_SCREEN_PADDING, useDiscoverGrid } from '@/features/discover/use-discover-grid';
+import { CoverRecoveryContext } from '@/features/series/cover-recovery';
 import { useSeriesCatalog } from '@/features/series/use-series-catalog';
 import type { VideoCategoryFilter } from '@/services/videos/video-service';
 import { useTranslation, type Translate } from '@/stores/language';
@@ -37,7 +38,7 @@ export default function DiscoverScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<DiscoverTabKey>('home');
   const [selectedCategory, setSelectedCategory] = useState<VideoCategoryFilter>('All');
-  const { data: series, isLoading, error, refresh } = useSeriesCatalog();
+  const { data: series, isLoading, error, refresh, recoverCover } = useSeriesCatalog();
   const grid = useDiscoverGrid();
   const { t } = useTranslation();
 
@@ -92,36 +93,45 @@ export default function DiscoverScreen() {
   }, []);
 
   return (
-    <View style={styles.container}>
-      <DiscoverHeader
-        activeTab={activeTab}
-        isSearching={isSearching}
-        onChangeSearchQuery={setSearchQuery}
-        onSelectTab={handleSelectTab}
-        searchQuery={searchQuery}
-      />
-      <View style={styles.content}>
-        {renderDiscoverContent({
-          t,
-          activeTab,
-          cards,
-          error,
-          grid,
-          homeCards,
-          isLoading,
-          isSearching,
-          onClearSearch: handleClearSearch,
-          onResetCategory: handleResetCategory,
-          onRetry: refresh,
-          onSelectCategory: setSelectedCategory,
-          onSelectSeries: handleSelectSeries,
-          rankedCards,
-          searchQuery,
-          searchResults,
-          selectedCategory,
-        })}
+    /**
+     * One recovery channel for the whole screen. Every poster in every tab
+     * reports a failed cover into this single `recoverCover`, so four cards
+     * whose signed URLs expire together cost ONE `GET /series`, not four - the
+     * budget behind it is shared, not per-card. `recoverCover` is stable, so
+     * providing it re-renders nothing.
+     */
+    <CoverRecoveryContext.Provider value={recoverCover}>
+      <View style={styles.container}>
+        <DiscoverHeader
+          activeTab={activeTab}
+          isSearching={isSearching}
+          onChangeSearchQuery={setSearchQuery}
+          onSelectTab={handleSelectTab}
+          searchQuery={searchQuery}
+        />
+        <View style={styles.content}>
+          {renderDiscoverContent({
+            t,
+            activeTab,
+            cards,
+            error,
+            grid,
+            homeCards,
+            isLoading,
+            isSearching,
+            onClearSearch: handleClearSearch,
+            onResetCategory: handleResetCategory,
+            onRetry: refresh,
+            onSelectCategory: setSelectedCategory,
+            onSelectSeries: handleSelectSeries,
+            rankedCards,
+            searchQuery,
+            searchResults,
+            selectedCategory,
+          })}
+        </View>
       </View>
-    </View>
+    </CoverRecoveryContext.Provider>
   );
 }
 

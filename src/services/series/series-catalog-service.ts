@@ -13,6 +13,26 @@ import type { Video } from '@/types/video';
 const HTTP_NOT_FOUND = 404;
 
 /**
+ * True when Series metadata is served by the backend, and can therefore be
+ * refetched to obtain a fresh presigned `coverUrl`.
+ *
+ * Mock and demo builds answer false. Their covers are bundled assets resolved
+ * out of the app binary - they carry no signature, never expire, and there is
+ * no endpoint behind them - so a bundled cover that fails to load has nothing
+ * to recover FROM. Gating on this keeps the offline showcase provably
+ * backend-independent: cover recovery does not fall back to a no-op request,
+ * it issues no request at all.
+ *
+ * This lives beside the fetchers on purpose. They are the single place that
+ * decides where Series data comes from; asking that same module whether the
+ * data can be refreshed keeps one source of truth for mock mode instead of
+ * re-deriving the condition in a hook.
+ */
+export function isSeriesMetadataRemote(): boolean {
+  return !shouldUseMockData();
+}
+
+/**
  * Offline/demo adapter. The bundled catalog is a `Video[]` with no series
  * rows behind it, so mock mode keeps deriving series by grouping those
  * fixtures - the pre-existing `groupVideosIntoSeries` path. This is the ONLY

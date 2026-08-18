@@ -93,6 +93,7 @@ beforeEach(() => {
     error: null,
     isNotFound: false,
     refresh: jest.fn(),
+    recoverCover: jest.fn(),
   });
   mockGetProgress.mockReturnValue(undefined);
   mockUseEntitlement.mockReturnValue({ isPremium: false, refresh: jest.fn() });
@@ -219,6 +220,7 @@ describe('SeriesDetailScreen - authoritative access tier (Admin override)', () =
       error: null,
       isNotFound: false,
       refresh: jest.fn(),
+      recoverCover: jest.fn(),
     });
   });
 

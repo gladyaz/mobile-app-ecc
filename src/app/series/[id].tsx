@@ -19,11 +19,19 @@ export default function SeriesDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   // Fetches by id on its own. A cold deep link into /series/<id> renders
   // exactly like a tap from Discover - nothing here reads Discover state.
-  const { data: series, isLoading, error, isNotFound, refresh } = useSeriesDetail(id);
+  const { data: series, isLoading, error, isNotFound, refresh, recoverCover } =
+    useSeriesDetail(id);
   const { getProgress } = useSeriesProgress();
   const { isPremium } = useEntitlement();
   const episodes = useMemo(() => (series?.episodes ?? []).map(toEpisode), [series]);
   const [isPremiumModalVisible, setIsPremiumModalVisible] = useState(false);
+  /**
+   * Keyed by the URL that failed, exactly like the Discover poster's latch, so
+   * a replaced or re-signed cover renders without any user action while the
+   * URL that just failed is not re-requested. Declared here, above the early
+   * returns below, because hook order must not depend on the load state.
+   */
+  const [failedCoverUrl, setFailedCoverUrl] = useState<string | null>(null);
 
   const handleSelectEpisode = (episode: Episode) => {
     if (episode.accessType === 'premium' && !isPremium) {
@@ -102,6 +110,9 @@ export default function SeriesDetailScreen() {
     ? episodes.find((episode) => episode.videoId === progress.lastWatchedVideoId)
     : undefined;
   const primaryPlaybackEpisode = continueEpisode ?? firstPlayableEpisode;
+  // Hoisted so the failure handler closes over a value TypeScript has already
+  // narrowed to a string, instead of re-reading a nullable property.
+  const { coverUrl } = series;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -112,8 +123,24 @@ export default function SeriesDetailScreen() {
         <Text style={styles.backButtonText}>{t('common.back')}</Text>
       </Pressable>
 
-      {series.coverUrl ? (
-        <Image contentFit="cover" source={{ uri: series.coverUrl }} style={styles.cover} />
+      {/*
+        A null coverUrl is authoritative "no artwork" and gets the empty
+        surface immediately - no request, nothing to recover. A cover that
+        FAILS is a presigned URL that may simply have expired, so it falls back
+        to the same surface and asks for one bounded `GET /series/:id`. Detail
+        never refetches the catalog to fix its own cover.
+      */}
+      {coverUrl !== null && failedCoverUrl !== coverUrl ? (
+        <Image
+          contentFit="cover"
+          onError={() => {
+            setFailedCoverUrl(coverUrl);
+            recoverCover(coverUrl);
+          }}
+          source={{ uri: coverUrl }}
+          style={styles.cover}
+          testID="series-detail-cover"
+        />
       ) : (
         <View style={styles.cover} />
       )}

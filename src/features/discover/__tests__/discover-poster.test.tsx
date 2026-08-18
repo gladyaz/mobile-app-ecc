@@ -2,6 +2,7 @@ import { fireEvent, render, within } from '@testing-library/react-native';
 
 import { DiscoverListRow, DiscoverPosterCard } from '@/features/discover/discover-cards';
 import { DiscoverPoster } from '@/features/discover/discover-poster';
+import { CoverRecoveryContext } from '@/features/series/cover-recovery';
 import type { DiscoverSeriesCard } from '@/types/discover';
 
 function buildCard(overrides: Partial<DiscoverSeriesCard> = {}): DiscoverSeriesCard {
@@ -226,5 +227,86 @@ describe('poster fallback', () => {
     const { getByText } = await render(<DiscoverPoster card={card} variant="grid" />);
 
     expect(getByText('•', { includeHiddenElements: true })).toBeTruthy();
+  });
+});
+
+describe('reporting a failed cover for recovery', () => {
+  const POSTER_URL = 'https://r2.example.com/admin-series/series-a/cover/x?X-Amz-Expires=3600';
+
+  function renderWithRecovery(card: DiscoverSeriesCard) {
+    const reportCoverFailure = jest.fn();
+    const view = render(
+      <CoverRecoveryContext.Provider value={reportCoverFailure}>
+        <DiscoverPoster card={card} variant="grid" />
+      </CoverRecoveryContext.Provider>
+    );
+
+    return { reportCoverFailure, view };
+  }
+
+  it('reports the exact URL that failed, so recovery is keyed by artwork', async () => {
+    const { reportCoverFailure, view } = renderWithRecovery(
+      buildCard({ posterUrl: POSTER_URL })
+    );
+    const { getByTestId } = await view;
+
+    await fireEvent(getByTestId('discover-poster-image-series-a'), 'error', {
+      nativeEvent: { error: 'unknown image failure' },
+    });
+
+    expect(reportCoverFailure).toHaveBeenCalledTimes(1);
+    expect(reportCoverFailure).toHaveBeenCalledWith(POSTER_URL);
+  });
+
+  it('reports nothing for a series with no artwork', async () => {
+    const { reportCoverFailure, view } = renderWithRecovery(buildCard({ posterUrl: null }));
+    const { queryByTestId } = await view;
+
+    // A null cover renders the branded fallback and mounts no <Image> at all,
+    // so there is no failure to report and no request to make.
+    expect(queryByTestId('discover-poster-image-series-a')).toBeNull();
+    expect(reportCoverFailure).not.toHaveBeenCalled();
+  });
+
+  it('falls back without a provider, so a poster never depends on one', async () => {
+    const { getByTestId, getByText, queryByTestId } = await render(
+      <DiscoverPoster card={buildCard({ posterUrl: POSTER_URL })} variant="grid" />
+    );
+
+    await fireEvent(getByTestId('discover-poster-image-series-a'), 'error', {
+      nativeEvent: { error: 'unknown image failure' },
+    });
+
+    // The default context value is a no-op: branded fallback, zero requests.
+    expect(queryByTestId('discover-poster-image-series-a')).toBeNull();
+    expect(getByText('B', { includeHiddenElements: true })).toBeTruthy();
+  });
+
+  it('keeps the card announcing the same thing through image, fallback and retry', async () => {
+    const card = buildCard({ posterUrl: POSTER_URL });
+    const expectedLabel = /Balas Dendam Sang Pewaris, Premium, 10 episode/;
+
+    const { getByLabelText, getByTestId, rerender } = await render(
+      <DiscoverListRow card={card} onPress={jest.fn()} />
+    );
+
+    expect(getByLabelText(expectedLabel)).toBeTruthy();
+
+    await fireEvent(getByTestId('discover-poster-image-series-a'), 'error', {
+      nativeEvent: { error: 'expired' },
+    });
+
+    // The label is built from card DATA, never from the artwork, so a silent
+    // background recovery is never announced and never changes what is read.
+    expect(getByLabelText(expectedLabel)).toBeTruthy();
+
+    await rerender(
+      <DiscoverListRow
+        card={{ ...card, posterUrl: `${POSTER_URL}&sig=fresh` }}
+        onPress={jest.fn()}
+      />
+    );
+
+    expect(getByLabelText(expectedLabel)).toBeTruthy();
   });
 });

@@ -4,6 +4,7 @@ import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-na
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { POSTER_ASPECT_RATIO } from '@/features/discover/use-discover-grid';
+import { useReportCoverFailure } from '@/features/series/cover-recovery';
 import type { TranslationKey } from '@/services/i18n/translations';
 import { useTranslation } from '@/stores/language';
 import type { DiscoverBadge, DiscoverSeriesCard } from '@/types/discover';
@@ -92,6 +93,11 @@ type DiscoverPosterProps = {
 export function DiscoverPoster({ card, variant, rank, style }: DiscoverPosterProps) {
   const { t } = useTranslation();
   /**
+   * Provided by the screen that owns the Series request. Outside such a screen
+   * it is a no-op, so this component never depends on a provider existing.
+   */
+  const reportCoverFailure = useReportCoverFailure();
+  /**
    * A load failure is remembered against the ARTWORK URL that failed, so new
    * artwork for a series retries while a URL that just failed does not.
    *
@@ -104,11 +110,13 @@ export function DiscoverPoster({ card, variant, rank, style }: DiscoverPosterPro
    * unrelated tap, against a URL that just failed, from a screen the user is
    * not looking at. A stale fallback is the cheaper failure.
    *
-   * KNOWN LIMIT: a transient failure therefore holds the fallback until that
-   * cell remounts (tab switch, or scrolling out of the render window). The
-   * failure direction stays safe - a branded tile, never a black rectangle.
-   * Clean recovery needs a catalog-generation token threaded from the screen;
-   * that is recorded as a follow-up rather than bolted on here.
+   * URL keying is also what makes recovery safe. `coverUrl` is a presigned URL
+   * that expires, so the screen that owns the catalog is told about the
+   * failure (see cover-recovery.ts) and may fetch fresh metadata ONCE. If that
+   * returns different artwork this latch does not match it and the poster
+   * renders again by itself; if it returns the same URL, or fails, the latch
+   * still matches and the branded fallback simply stays. Either way this
+   * component issues no request of its own and holds no retry state.
    */
   const [failedPosterUrl, setFailedPosterUrl] = useState<string | null>(null);
 
@@ -133,7 +141,13 @@ export function DiscoverPoster({ card, variant, rank, style }: DiscoverPosterPro
           accessible={false}
           cachePolicy="memory-disk"
           contentFit="cover"
-          onError={() => setFailedPosterUrl(posterUrl)}
+          onError={() => {
+            // Fall back FIRST, so the tile is never a broken rectangle while
+            // recovery is decided. `posterUrl` is non-empty here: a null cover
+            // renders the fallback and mounts no <Image> at all.
+            setFailedPosterUrl(posterUrl);
+            reportCoverFailure(posterUrl);
+          }}
           recyclingKey={card.seriesId}
           source={{ uri: posterUrl }}
           style={styles.image}

@@ -14,8 +14,9 @@ export type DiscoverTabKey = 'home' | 'new' | 'rankings';
  *   like count (`likeCount` on `/videos/feed`, plus the local optimistic like
  *   from `useVideoInteractions`) AND leads the catalog median by at least
  *   `HOT_BADGE_MEDIAN_MULTIPLIER`. See `buildDiscoverCards`.
- * - `Premium`: the series contains at least one premium episode, per the
- *   existing `FREE_EPISODE_LIMIT` access rule in `series-service.ts`.
+ * - `Premium`: the series contains at least one premium episode, read
+ *   verbatim from the backend's `CatalogSeries.hasPremiumEpisodes` aggregate.
+ *   The client never scans episodes or applies an access rule of its own.
  *   "Premium" - not "VIP" - is the app's own existing user-facing word for
  *   that tier (`premium-preview-modal.tsx`), so Discover reuses it rather than
  *   introducing a second name for the same thing.

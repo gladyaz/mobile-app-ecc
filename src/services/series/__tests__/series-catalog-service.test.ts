@@ -53,7 +53,10 @@ function buildSeriesDto(overrides: Partial<BackendSeriesDto> = {}): BackendSerie
   };
 }
 
-function buildEpisodeDto(episodeNumber: number): BackendVideoDto {
+function buildEpisodeDto(
+  episodeNumber: number,
+  overrides: Partial<BackendVideoDto> = {}
+): BackendVideoDto {
   return {
     id: `video-104-${String(episodeNumber).padStart(2, '0')}`,
     seriesId: 'series-104',
@@ -68,6 +71,8 @@ function buildEpisodeDto(episodeNumber: number): BackendVideoDto {
     hasEmbeddedIndonesianSubtitle: true,
     likeCount: 83,
     contentKind: 'drama',
+    accessTier: 'free',
+    ...overrides,
   };
 }
 
@@ -122,7 +127,7 @@ describe('mapBackendSeriesDetail', () => {
   it('maps episodes through the shared video mapper in backend order', () => {
     const dto: BackendSeriesDetailDto = {
       ...buildSeriesDto(),
-      episodes: [1, 2, 3].map(buildEpisodeDto),
+      episodes: [1, 2, 3].map((episodeNumber) => buildEpisodeDto(episodeNumber)),
     };
 
     const detail = mapBackendSeriesDetail(dto);
@@ -137,7 +142,7 @@ describe('mapBackendSeriesDetail', () => {
   it('does not re-sort the episodes the backend already ordered', () => {
     const dto: BackendSeriesDetailDto = {
       ...buildSeriesDto(),
-      episodes: [3, 1, 2].map(buildEpisodeDto),
+      episodes: [3, 1, 2].map((episodeNumber) => buildEpisodeDto(episodeNumber)),
     };
 
     expect(mapBackendSeriesDetail(dto).episodes.map((e) => e.episodeNumber)).toEqual([3, 1, 2]);
@@ -192,7 +197,7 @@ describe('getSeriesDetail', () => {
   it('requests GET /series/:id and maps the detail', async () => {
     mockRequest.mockResolvedValueOnce({
       ...buildSeriesDto(),
-      episodes: [1, 2].map(buildEpisodeDto),
+      episodes: [1, 2].map((episodeNumber) => buildEpisodeDto(episodeNumber)),
     });
 
     const detail = await getSeriesDetail('series-104');
@@ -245,6 +250,7 @@ describe('offline / demo mode', () => {
         likeCount: 12,
         isSaved: false,
         contentKind: 'drama',
+        accessTier: 'free',
       },
     ]);
 
@@ -276,6 +282,7 @@ describe('offline / demo mode', () => {
         likeCount: 12,
         isSaved: false,
         contentKind: 'drama',
+        accessTier: 'free',
       },
     ]);
 

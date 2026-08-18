@@ -26,6 +26,22 @@ export type VideoCategory =
  */
 export type VideoContentKind = 'drama' | 'qa_fixture';
 
+/**
+ * The EFFECTIVE access tier of a single episode, exactly as the backend
+ * resolved it (`VideoResponseDto.accessTier`, backend commit 2f285d1).
+ *
+ * `free`    - streaming requires no entitlement.
+ * `premium` - streaming requires an active entitlement.
+ *
+ * READ from the backend, never inferred. In particular it is NEVER derived
+ * from `episodeNumber`: the backend's `resolveAccessTier` lets an explicit
+ * per-episode admin override win over the episode-number default, so
+ * episode 2 can be premium and episode 8 can be free. The SAME resolver
+ * backs the `/stream` authorization gate and `Series.hasPremiumEpisodes`,
+ * so this field can never disagree with either.
+ */
+export type VideoAccessTier = 'free' | 'premium';
+
 export type Video = {
   readonly id: string;
   readonly seriesId: string;
@@ -45,4 +61,5 @@ export type Video = {
   readonly likeCount: number;
   readonly isSaved: boolean;
   readonly contentKind: VideoContentKind;
+  readonly accessTier: VideoAccessTier;
 };

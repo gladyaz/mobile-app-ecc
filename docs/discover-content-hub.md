@@ -39,15 +39,15 @@ backend to ask.
 
 **Two gaps this integration exposes and CANNOT close client-side:**
 
-1. **Per-episode premium tier is not on the wire.** The series badge uses the
-   backend's `hasPremiumEpisodes`, which honours `Video.accessTierOverride`.
-   The per-episode lock on Series Detail still uses the client rule
-   (`episodeNumber > FREE_EPISODE_LIMIT`) because `VideoResponseDto` does not
-   expose the override. They agree for every episode today - the backfill set
-   each override equal to the derived tier - but an admin using
-   `PATCH /admin/media/:id/access-tier` can make them disagree, and then a
-   locked episode would look free (stream returns 403) or a free one would sit
-   behind the premium modal. Fix: expose the resolved tier on the episode DTO.
+1. ~~**Per-episode premium tier is not on the wire.**~~ **CLOSED** (backend
+   commit 2f285d1). `VideoResponseDto` now carries the resolved
+   `accessTier: 'free' | 'premium'` on every episode, built by the same
+   `resolveAccessTier` that backs `hasPremiumEpisodes` and the `/stream`
+   guard. The client rule (`episodeNumber > FREE_EPISODE_LIMIT`) has been
+   deleted; `toEpisode` copies `video.accessTier` instead. The series badge
+   and the per-episode lock can no longer disagree, and an admin using
+   `PATCH /admin/media/:id/access-tier` to make episode 2 premium or episode 8
+   free is now reflected in both.
 2. **The two mappers disagree on an unknown category.** `mapBackendSeries`
    resolves an unrecognised category to `null` by design; `mapBackendVideoToVideo`
    throws on the same value. A series whose category is outside the mobile
@@ -119,8 +119,8 @@ Both badges are derived, not backend flags:
   nothing is Hot, because nothing stands out - that is the intended answer, not
   a missing badge. Computed once over the full catalog, never over a filtered or
   searched subset, so the badge means the same thing everywhere.
-- **Premium** - the series contains at least one premium episode under the
-  existing `FREE_EPISODE_LIMIT` rule (episode 6 onward). The reference direction
+- **Premium** - the series contains at least one premium episode, read from the
+  backend's `hasPremiumEpisodes` aggregate. The reference direction
   called this "VIP", but "premium" is this app's own existing user-facing word
   (`premium-preview-modal.tsx`: "Episode ini termasuk konten premium."), and
   shipping "VIP" would invent a second name for one tier. Changing the label back

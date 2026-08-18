@@ -34,6 +34,7 @@ function buildDto(overrides: Partial<BackendVideoDto> = {}): BackendVideoDto {
     hasEmbeddedIndonesianSubtitle: true,
     likeCount: 10,
     contentKind: 'drama',
+    accessTier: 'free',
     ...overrides,
   };
 }

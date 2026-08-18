@@ -21,6 +21,14 @@ const HTTP_NOT_FOUND = 404;
  *
  * The shape it produces is the same `CatalogSeries` the backend returns, so
  * every screen above stays source-agnostic.
+ *
+ * `hasPremiumEpisodes` below is the ONE place this client aggregates that
+ * boolean itself, and it is NOT a second access policy: offline there is no
+ * `GET /series` response to read the backend's aggregate from, and the value
+ * is an `.some()` over episode `accessType`s that were themselves copied from
+ * each fixture's explicit `accessTier` - never computed from an episode
+ * number. Real API mode never reaches this function; it reads the backend's
+ * own `hasPremiumEpisodes` through `mapBackendSeries`.
  */
 function toCatalogSeriesFromVideos(videos: readonly Video[]): readonly CatalogSeries[] {
   return groupVideosIntoSeries(videos).map((series) => ({

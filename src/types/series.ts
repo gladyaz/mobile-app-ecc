@@ -1,6 +1,13 @@
-import type { VideoCategory } from '@/types/video';
+import type { VideoAccessTier, VideoCategory } from '@/types/video';
 
-export type EpisodeAccessType = 'free' | 'premium';
+/**
+ * An episode's access state, as rendered by the episode list and enforced
+ * by the premium gate. Deliberately an ALIAS of `VideoAccessTier` rather
+ * than a second literal union: the value is copied straight from the
+ * backend's `Video.accessTier` in `toEpisode`, so declaring it twice would
+ * let the two drift the next time either side gains a tier.
+ */
+export type EpisodeAccessType = VideoAccessTier;
 
 export type Episode = {
   readonly videoId: string;

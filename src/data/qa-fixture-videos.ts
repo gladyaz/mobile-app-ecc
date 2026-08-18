@@ -53,5 +53,10 @@ export const qaFixtureVideos: readonly Video[] = [
     likeCount: 0,
     isSaved: false,
     contentKind: 'qa_fixture',
+    // Free on purpose: this fixture exists solely to exercise the fullscreen
+    // enter/exit path, and a premium gate would block the very QA run it was
+    // built for. It is a deliberate fixture decision, not a copy of any
+    // access rule - the app no longer has one.
+    accessTier: 'free',
   },
 ];

@@ -15,9 +15,15 @@ import type { Video, VideoCategory } from '@/types/video';
  *
  * Only vertically-shot source material is used here: the feed is a
  * full-bleed vertical player, and the horizontal 1280x720 series in the
- * library render with heavy letterboxing. Episodes are limited to 1-5,
- * which are the free tier - a demo viewer should never hit a paywall they
- * cannot clear.
+ * library render with heavy letterboxing.
+ *
+ * Every episode declares `accessTier: 'free'` EXPLICITLY. An offline build
+ * has no backend to resolve a tier from, and the app no longer owns a
+ * fallback rule to compute one with, so the fixture has to state it - the
+ * value reaches the rest of the app already decided, exactly as a
+ * backend-served row would. `free` is not an arbitrary pick: a demo viewer
+ * must never hit a paywall they cannot clear, which is the same reason the
+ * bundled catalog stops at episode 5.
  *
  * `require` paths are relative on purpose. Metro resolves these at bundle
  * time and the argument must be a static literal, so they cannot be built
@@ -132,6 +138,8 @@ function buildEpisodes(series: BundledSeries): readonly Video[] {
       // The bundled catalog is real drama content, mirroring the backend's
       // own classification of the same rows.
       contentKind: 'drama',
+      // Explicit, not derived - see this module's header comment.
+      accessTier: 'free',
     } satisfies Video;
   });
 }

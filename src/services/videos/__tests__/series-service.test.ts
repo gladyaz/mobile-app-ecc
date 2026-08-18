@@ -1,11 +1,9 @@
 import {
-  FREE_EPISODE_LIMIT,
-  getEpisodeAccessType,
   getNextEpisode,
   getSeriesById,
   groupVideosIntoSeries,
 } from '@/services/videos/series-service';
-import type { Video } from '@/types/video';
+import type { Video, VideoAccessTier } from '@/types/video';
 
 function buildVideo(overrides: Partial<Video> & Pick<Video, 'id' | 'seriesId' | 'episodeNumber'>): Video {
   return {
@@ -23,34 +21,39 @@ function buildVideo(overrides: Partial<Video> & Pick<Video, 'id' | 'seriesId' | 
     isSaved: false,
     // Real content by default; a case that needs a fixture says so.
     contentKind: 'drama',
+    accessTier: 'free',
     ...overrides,
   };
 }
+
+/**
+ * Deliberately INVERTED against the retired `episodeNumber <= 5` rule:
+ * episode 1 is premium and episode 7 is free. Any code that goes back to
+ * deciding access from the episode number fails these cases instead of
+ * quietly agreeing with them.
+ */
+const SERIES_A_TIERS: Readonly<Record<number, VideoAccessTier>> = {
+  1: 'premium',
+  2: 'free',
+  3: 'free',
+  4: 'free',
+  5: 'free',
+  6: 'free',
+  7: 'free',
+};
 
 const seriesAVideos: readonly Video[] = [3, 1, 7, 2, 6, 5, 4].map((episodeNumber) =>
   buildVideo({
     id: `series-a-ep-${episodeNumber}`,
     seriesId: 'series-a',
     episodeNumber,
+    accessTier: SERIES_A_TIERS[episodeNumber],
   })
 );
 
 const seriesBVideos: readonly Video[] = [
   buildVideo({ id: 'series-b-ep-1', seriesId: 'series-b', episodeNumber: 1 }),
 ];
-
-describe('getEpisodeAccessType', () => {
-  it('marks episodes 1 through 5 as free', () => {
-    for (let episodeNumber = 1; episodeNumber <= FREE_EPISODE_LIMIT; episodeNumber += 1) {
-      expect(getEpisodeAccessType(episodeNumber)).toBe('free');
-    }
-  });
-
-  it('marks episode 6 and above as premium', () => {
-    expect(getEpisodeAccessType(6)).toBe('premium');
-    expect(getEpisodeAccessType(20)).toBe('premium');
-  });
-});
 
 describe('groupVideosIntoSeries', () => {
   it('groups videos by seriesId', () => {
@@ -69,16 +72,18 @@ describe('groupVideosIntoSeries', () => {
     ]);
   });
 
-  it('marks episode 1-5 free and 6-7 premium within a grouped series', () => {
+  it("copies each episode's access state from the video's backend accessTier", () => {
     const series = groupVideosIntoSeries(seriesAVideos);
     const seriesA = series.find((s) => s.id === 'series-a');
 
-    expect(seriesA?.episodes.filter((e) => e.accessType === 'free').map((e) => e.episodeNumber)).toEqual([
-      1, 2, 3, 4, 5,
-    ]);
+    // Episode 1 is premium and episodes 6-7 are free - the exact opposite of
+    // what the retired `episodeNumber <= FREE_EPISODE_LIMIT` rule produced.
     expect(
       seriesA?.episodes.filter((e) => e.accessType === 'premium').map((e) => e.episodeNumber)
-    ).toEqual([6, 7]);
+    ).toEqual([1]);
+    expect(
+      seriesA?.episodes.filter((e) => e.accessType === 'free').map((e) => e.episodeNumber)
+    ).toEqual([2, 3, 4, 5, 6, 7]);
   });
 });
 

@@ -1,16 +1,20 @@
-import type { Episode, EpisodeAccessType, Series } from '@/types/series';
+import type { Episode, Series } from '@/types/series';
 import type { Video } from '@/types/video';
-
-/** Episodes 1-5 are free; episode 6 onward is premium. No payment/credit logic exists yet. */
-export const FREE_EPISODE_LIMIT = 5;
-
-export function getEpisodeAccessType(episodeNumber: number): EpisodeAccessType {
-  return episodeNumber <= FREE_EPISODE_LIMIT ? 'free' : 'premium';
-}
 
 /**
  * Exported so Series Detail can shape `GET /series/:id`'s episodes with the
  * SAME rule the derived/mock path uses, instead of a second copy of it.
+ *
+ * Access state is COPIED from `video.accessTier`, the tier the backend
+ * already resolved (backend commit 2f285d1). It is never computed here.
+ *
+ * This used to be `getEpisodeAccessType(video.episodeNumber)` - a local
+ * `episodeNumber <= FREE_EPISODE_LIMIT` rule. That rule is gone, and must
+ * not come back: the backend lets an admin set an explicit per-episode
+ * override that beats the episode-number default, so episode 2 can be
+ * premium and episode 8 can be free. Any client-side re-derivation would
+ * contradict the very same resolver that guards `/stream`, and the lock the
+ * user sees would stop predicting whether playback is actually allowed.
  */
 export function toEpisode(video: Video): Episode {
   return {
@@ -21,7 +25,7 @@ export function toEpisode(video: Video): Episode {
     thumbnailUrl: video.thumbnailUrl,
     playbackUrl: video.playbackUrl,
     durationSeconds: undefined,
-    accessType: getEpisodeAccessType(video.episodeNumber),
+    accessType: video.accessTier,
     isAvailable: video.processingStatus === 'completed' && video.playbackUrl.length > 0,
     hasEmbeddedIndonesianSubtitle: video.hasEmbeddedIndonesianSubtitle,
   };

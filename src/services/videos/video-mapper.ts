@@ -1,4 +1,4 @@
-import type { Video, VideoCategory, VideoContentKind } from '@/types/video';
+import type { Video, VideoAccessTier, VideoCategory, VideoContentKind } from '@/types/video';
 
 export type BackendVideoDto = {
   readonly id: string;
@@ -17,6 +17,22 @@ export type BackendVideoDto = {
   readonly hasEmbeddedIndonesianSubtitle: boolean;
   readonly likeCount: number;
   readonly contentKind: string;
+  /**
+   * The backend's RESOLVED effective access tier for this episode
+   * (`VideoResponseDto.accessTier`, backend commit 2f285d1) - required on
+   * every video the backend serves, on all three surfaces that carry one
+   * (`/videos/feed`, `/videos/:id`, `/series/:id`'s embedded episodes),
+   * because all three are built by the same `toVideoResponseDto`.
+   *
+   * Typed `string` rather than the narrowed union for the same reason
+   * `contentKind` is: this is the raw wire shape, and narrowing it here
+   * would assert a guarantee the network cannot make.
+   *
+   * The raw admin-set `Video.accessTierOverride` that may have produced this
+   * value is deliberately NOT part of the public contract and is never sent
+   * here - the client sees only the resolved answer.
+   */
+  readonly accessTier: string;
   readonly durationSeconds?: number;
 };
 
@@ -89,6 +105,51 @@ function resolveContentKind(dto: BackendVideoDto): VideoContentKind {
   return 'drama';
 }
 
+const ACCESS_TIERS: readonly VideoAccessTier[] = ['free', 'premium'];
+
+/**
+ * Reads the backend's authoritative access tier. NEVER derived from
+ * `episodeNumber`, from the series' `hasPremiumEpisodes` badge, or from any
+ * other field: the backend's `resolveAccessTier` lets an explicit
+ * per-episode admin override beat the episode-number default, so episode 2
+ * can be premium and episode 8 can be free. Re-deriving it here would
+ * reintroduce exactly the client-side policy this field exists to retire,
+ * and would let the lock icon disagree with what `/stream` actually allows.
+ *
+ * A missing or unrecognised value is a CONTRACT ERROR and throws in dev, so
+ * a backend that stops sending the field fails loudly at the boundary -
+ * matching how `contentKind` is handled one function above.
+ *
+ * In production it degrades to `premium`, which is the OPPOSITE direction
+ * from `contentKind`'s fail-open, and deliberately so. `/stream` remains the
+ * only real authority, so neither choice can grant access the backend would
+ * refuse - the question is purely which wrong guess treats the viewer better:
+ *
+ *   - Guessing `free` shows no lock, then dead-ends a non-entitled viewer in
+ *     the generic "video unavailable" state when the backend refuses the
+ *     stream. It is also a fail-OPEN access default, which is precisely the
+ *     shape of bug this field was introduced to remove.
+ *   - Guessing `premium` routes that viewer into the existing, designed
+ *     upsell instead. An entitled viewer is unaffected either way: the gate
+ *     is `accessType === 'premium' && !isPremium`, so a premium subscriber
+ *     passes straight through.
+ *
+ * The cost is that one malformed row may show a paywall on content that was
+ * actually free - visible, recoverable, and strictly better than silently
+ * under-reporting a paywall. It is never a silent default to `free`.
+ */
+function resolveAccessTier(dto: BackendVideoDto): VideoAccessTier {
+  const value = dto.accessTier;
+
+  if (typeof value === 'string' && (ACCESS_TIERS as readonly string[]).includes(value)) {
+    return value as VideoAccessTier;
+  }
+
+  assertField(!__DEV__, 'accessTier', dto);
+
+  return 'premium';
+}
+
 export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
   assertField(typeof dto.id === 'string' && dto.id.length > 0, 'id', dto);
   assertField(typeof dto.seriesId === 'string' && dto.seriesId.length > 0, 'seriesId', dto);
@@ -114,6 +175,7 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
   );
   assertField(typeof dto.likeCount === 'number', 'likeCount', dto);
   const contentKind = resolveContentKind(dto);
+  const accessTier = resolveAccessTier(dto);
 
   return {
     id: dto.id,
@@ -135,6 +197,7 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
     caption: dto.caption,
     likeCount: dto.likeCount,
     contentKind,
+    accessTier,
     // Save state is tracked locally by useVideoInteractions, not the backend.
     isSaved: false,
   };

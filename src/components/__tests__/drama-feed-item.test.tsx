@@ -272,6 +272,7 @@ function buildVideo(overrides: Partial<Video> = {}): Video {
     isSaved: false,
     // Real content by default; a case that needs a fixture says so.
     contentKind: 'drama',
+    accessTier: 'free',
     ...overrides,
   };
 }

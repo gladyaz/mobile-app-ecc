@@ -890,6 +890,17 @@ export function DramaFeedItem({
     status: player.status,
     error: undefined,
   });
+  // Reconciliation fix (Reviewer A, HIGH 1): `useEvent` state SURVIVES a
+  // player swap - it only re-subscribes to the new emitter, it never resets -
+  // so at the commit that hands back a replacement player, `status` above
+  // still holds the OUTGOING generation's last event (typically
+  // 'readyToPlay' for a clip that was playing). Anything that needs "is THIS
+  // player ready" at a generation boundary must read the live property
+  // instead. Computed during render (this file already reads
+  // `player.duration`/`player.currentTime` at render) so the reseek effect
+  // below re-evaluates on the render each real statusChange event causes,
+  // without trusting the possibly-stale event payload itself.
+  const isCurrentPlayerReady = player.status === 'readyToPlay';
 
   // 11R PLAYBACK-STABILITY REMEDIATION: the reconciler above already commits
   // to playing (issues play()) the instant `shouldPlay` turns true, but the
@@ -1113,35 +1124,69 @@ export function DramaFeedItem({
   // run first or the swap-check below would still see the PREVIOUS video's
   // now-stale `previousPlayerRef`/`lastKnownPositionRef` and misfire a seek
   // on the new video's own transient placeholder player.
+  // Reconciliation fix (Reviewer A, HIGH 1): the position a generation swap
+  // must restore, captured AT THE SWAP COMMIT and applied only once the
+  // INCOMING player itself reports readyToPlay. The old single effect gated
+  // on the `status` returned by `useEvent`, which still holds the OUTGOING
+  // generation's 'readyToPlay' at the swap commit (see `isCurrentPlayerReady`
+  // above) - so on iOS the seek was issued while the new player's source was
+  // still loading. `seekBy` there goes straight to `AVPlayer.seek`,
+  // bypassing expo-video's while-replacing deferral store, and the AVPlayer
+  // has no current item yet - the seek was silently lost, the effect
+  // advanced `previousPlayerRef` anyway, and the clip restarted at 0:00:
+  // exactly the mid-playback reset this code exists to prevent.
+  const pendingGenerationRestoreSecondsRef = useRef(0);
+
   useEffect(() => {
     previousPlayerRef.current = null;
     lastKnownPositionRef.current = 0;
+    pendingGenerationRestoreSecondsRef.current = 0;
   }, [video.id]);
 
+  // DETECT half: runs exactly once per player identity, in the SAME commit
+  // as the swap - capturing where the SAME video was a moment ago BEFORE the
+  // incoming player can emit its own near-zero timeUpdates over
+  // `lastKnownPositionRef`. Never fires for the FIRST real player a video
+  // gets (`previousPlayerRef` is still null then), and the video-id reset
+  // above (declared first, so it runs first within this commit) guarantees a
+  // genuinely NEW video can never capture the PREVIOUS video's position.
   useEffect(() => {
-    if (status !== 'readyToPlay') {
-      return;
-    }
-
     const isGenerationSwapForSameVideo =
       previousPlayerRef.current !== null && previousPlayerRef.current !== player;
 
     if (isGenerationSwapForSameVideo && lastKnownPositionRef.current > 0) {
-      reportPlaybackDecision(playerLabel, video.id, 'source-replace', 'generation-swap-reseek', {
-        isActive,
-        isScreenFocused,
-        isAppForeground,
-        isManuallyPaused,
-        sourceKind: playbackAuth?.kind ?? 'none',
-        playerStatus: status,
-      });
-      player.seekBy(lastKnownPositionRef.current - player.currentTime);
+      pendingGenerationRestoreSecondsRef.current = lastKnownPositionRef.current;
     }
 
     previousPlayerRef.current = player;
+  }, [player]);
+
+  // APPLY half: consumes the pending restore the first time the INCOMING
+  // player is genuinely ready. `isCurrentPlayerReady` is the live
+  // `player.status` sampled at render - each real statusChange event causes
+  // a render, so this re-evaluates on the incoming player's own readiness
+  // and never on the stale event snapshot. Consumed exactly once: the ref is
+  // zeroed before seeking, so later re-runs (renders, prop churn) are no-ops.
+  useEffect(() => {
+    if (pendingGenerationRestoreSecondsRef.current <= 0 || !isCurrentPlayerReady) {
+      return;
+    }
+
+    const restoreSeconds = pendingGenerationRestoreSecondsRef.current;
+
+    pendingGenerationRestoreSecondsRef.current = 0;
+    reportPlaybackDecision(playerLabel, video.id, 'source-replace', 'generation-swap-reseek', {
+      isActive,
+      isScreenFocused,
+      isAppForeground,
+      isManuallyPaused,
+      sourceKind: playbackAuth?.kind ?? 'none',
+      playerStatus: player.status,
+    });
+    player.seekBy(restoreSeconds - player.currentTime);
   }, [
     player,
-    status,
+    isCurrentPlayerReady,
     playerLabel,
     video.id,
     isActive,
@@ -1616,6 +1661,19 @@ export function DramaFeedItem({
         setIsPinchInProgress(false);
       }}
       onResponderTerminate={() => {
+        pinchStartDistanceRef.current = 0;
+        setIsPinchInProgress(false);
+      }}
+      // Reconciliation fix (Reviewer A, MEDIUM 2): the capture handlers above
+      // latch `isPinchInProgress` during responder NEGOTIATION, but the grant
+      // can be DENIED - two fingers landing while the enclosing FlatList is
+      // mid-drag is the everyday case: a ScrollView that has observed
+      // scrolling refuses the termination request, so this view never becomes
+      // responder and neither release nor terminate ever fires here. RN
+      // reports that denial as onResponderReject; without this reset the
+      // latch stayed true for the rest of the item's mounted life, silently
+      // disabling the idle auto-clear countdown for the episode.
+      onResponderReject={() => {
         pinchStartDistanceRef.current = 0;
         setIsPinchInProgress(false);
       }}>

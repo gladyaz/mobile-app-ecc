@@ -3794,10 +3794,22 @@ describe('DramaFeedItem', () => {
           });
 
           const incomingPlayer = findPlayerByUri('https://media.example.com/second-grant.mp4') as
-            | { seekBy: jest.Mock; currentTime: number }
+            | { seekBy: jest.Mock; currentTime: number; status: string }
             | undefined;
 
           expect(incomingPlayer).not.toBe(outgoingPlayer);
+
+          // Reconciliation fix (Reviewer A, HIGH 1): the restore waits for
+          // the INCOMING player itself to report readyToPlay. The mocked
+          // useEvent still (stalely) says 'readyToPlay' - that belongs to
+          // the OUTGOING generation and must not count.
+          expect(incomingPlayer?.seekBy).not.toHaveBeenCalled();
+
+          incomingPlayer!.status = 'readyToPlay';
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+
           // seekBy is relative: seeking forward by (last known position -
           // the new player's own currentTime, which starts at 0) lands the
           // new player at 123.4s instead of restarting from the beginning.
@@ -3807,6 +3819,95 @@ describe('DramaFeedItem', () => {
           // The OUTGOING player is only paused (see the existing HIGH-2
           // test) - it is never the one seeked.
           expect(outgoingPlayer?.seekBy).not.toHaveBeenCalled();
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it('never fires the restore against a source-replaced player that is still loading - a stale readyToPlay from the outgoing generation must not count', async () => {
+        // Final-reconciliation regression (Reviewer A, HIGH 1): `useEvent`
+        // keeps its last value across a player swap (it only re-subscribes;
+        // it never resets state), so at the swap commit `status` still reads
+        // the OUTGOING player's 'readyToPlay'. Seeking then targets a player
+        // whose async source load has only just started - on iOS, `seekBy`
+        // bypasses expo-video's while-replacing deferral entirely (it goes
+        // straight to AVPlayer.seek, and there is no currentItem yet), so
+        // the restore was silently lost and the clip restarted at 0:00.
+        jest.useFakeTimers();
+        try {
+          mockGetPlaybackAuthorization.mockResolvedValueOnce(
+            buildPlaybackAuthorization({
+              playbackUrl: 'https://media.example.com/first-grant.mp4',
+              expiresAt: new Date(Date.now() + 40000).toISOString(),
+            })
+          );
+          mockGetPlaybackAuthorization.mockResolvedValueOnce(
+            buildPlaybackAuthorization({ playbackUrl: 'https://media.example.com/second-grant.mp4' })
+          );
+
+          const video = buildVideo();
+          const { rerender } = await renderFeedItem(
+            <DramaFeedItem video={video} {...baseProps} isActive />
+          );
+
+          const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+          (useEvent as jest.Mock).mockImplementation(
+            (_player: unknown, eventName: string, defaultValue: unknown) => {
+              if (eventName === 'statusChange') {
+                // The stale snapshot: the OLD generation's last event.
+                return { status: 'readyToPlay', error: undefined };
+              }
+              if (eventName === 'timeUpdate') {
+                return {
+                  currentTime: 123.4,
+                  currentLiveTimestamp: null,
+                  currentOffsetFromLive: null,
+                  bufferedPosition: 0,
+                };
+              }
+              return defaultValue;
+            }
+          );
+
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+
+          await act(async () => {
+            await jest.advanceTimersByTimeAsync(10000);
+          });
+
+          const incomingPlayer = findPlayerByUri('https://media.example.com/second-grant.mp4') as
+            | { seekBy: jest.Mock; currentTime: number; status: string }
+            | undefined;
+
+          expect(incomingPlayer).toBeTruthy();
+          // The incoming mock player is still 'idle' (the load has not
+          // finished) - no seek may have been issued against it, however
+          // stale the useEvent snapshot is, and however many renders pass.
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+          expect(incomingPlayer?.seekBy).not.toHaveBeenCalled();
+
+          // The moment the INCOMING player itself reports readyToPlay, the
+          // pending restore applies - exactly once, at the captured position.
+          incomingPlayer!.status = 'readyToPlay';
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+
+          expect(incomingPlayer?.seekBy).toHaveBeenCalledTimes(1);
+          expect(incomingPlayer?.seekBy).toHaveBeenCalledWith(
+            123.4 - (incomingPlayer?.currentTime ?? 0)
+          );
+
+          // And never re-applies on later renders - the pending restore is
+          // consumed, not latched.
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+          expect(incomingPlayer?.seekBy).toHaveBeenCalledTimes(1);
         } finally {
           jest.useRealTimers();
         }
@@ -4347,6 +4448,43 @@ describe('auto clear display on idle', () => {
         container.props.onResponderRelease();
       });
 
+      await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
+
+      await advanceIdleTime(1);
+      expect(view.queryByTestId(KEBAB_TEST_ID)).toBeNull();
+    });
+
+    it('a denied two-finger responder grant can never permanently disable the idle countdown', async () => {
+      // Final-reconciliation regression (Reviewer A, MEDIUM 2): two fingers
+      // land while the enclosing FlatList is mid-drag. The capture handler
+      // runs (this view is on the touch path) and latches the pinch flag,
+      // but the ScrollView - as current responder that has observed
+      // scrolling - refuses the termination request, so the grant is
+      // DENIED: React Native delivers onResponderReject, and neither
+      // onResponderRelease nor onResponderTerminate ever fires on this
+      // view. Without a reject handler the latch stayed true for the rest
+      // of the item's mounted life, silently disabling auto clear-display.
+      const { view } = await renderPlayingItem();
+      const container = view.root!;
+      const twoTouches = [
+        { pageX: 100, pageY: 300 },
+        { pageX: 160, pageY: 360 },
+      ];
+
+      await act(async () => {
+        container.props.onStartShouldSetResponderCapture({
+          nativeEvent: { touches: twoTouches },
+        });
+      });
+
+      await act(async () => {
+        container.props.onResponderReject?.();
+      });
+
+      // The rejected negotiation over, the countdown must arm again: the
+      // chrome hides after one full idle delay, exactly as if the denied
+      // gesture had never happened.
       await advanceIdleTime(AUTO_CLEAR_DISPLAY_DELAY_MS - 1);
       expect(view.queryByTestId(KEBAB_TEST_ID)).not.toBeNull();
 

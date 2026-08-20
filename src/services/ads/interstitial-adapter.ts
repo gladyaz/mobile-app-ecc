@@ -1,12 +1,9 @@
 import { Platform } from 'react-native';
 
 import type { Presenter } from '@/services/ads/ad-presenter-registry';
+import type { InterstitialCallbacks } from '@/services/ads/interstitial-contract';
 
-export type InterstitialCallbacks = {
-  readonly onOpened: () => void;
-  readonly onClosed: () => void;
-  readonly onError: (error: Error) => void;
-};
+export type { InterstitialCallbacks };
 
 function resolveAdUnitId(testInterstitialId: string): string {
   const envUnitId =
@@ -25,13 +22,31 @@ function resolveAdUnitId(testInterstitialId: string): string {
 }
 
 /**
- * The ONLY module allowed to import `react-native-google-mobile-ads`, and it
- * does so with a lazy `require()` INSIDE this function body - never at
- * module scope - so merely importing this file (which every other ads
- * module does, transitively) never triggers the native SDK's own load-time
- * side effects. Every other ads module talks to the `Presenter` interface
- * returned here, which is why no other test in this codebase needs to mock
- * `react-native-google-mobile-ads`.
+ * The native (iOS/Android) interstitial presenter, and still the ONLY module
+ * allowed to import `react-native-google-mobile-ads`.
+ *
+ * Web never reaches this file: `interstitial-adapter.web.ts` sits next to it
+ * and Metro resolves that one for `platform: web`, so the native SDK is
+ * excluded from the web bundle at BUILD time. That platform split - not the
+ * `Platform.OS` check below - is what makes the web bundle work. The runtime
+ * guard alone could not: Metro resolves the `require()` in this function at
+ * build time whichever branch would actually run, so the package's
+ * `index.js` (-> `BannerAd` -> `codegenNativeComponent`) used to land in the
+ * web graph and Expo's web resolver rejected it outright.
+ *
+ * The lazy `require()` stays exactly where it was, INSIDE the function body
+ * rather than at module scope, because it still does a second, native-side
+ * job: merely importing this file on a device never triggers the SDK's
+ * load-time side effects. Every other ads module talks to the `Presenter`
+ * interface returned here, which is why no other test in this codebase needs
+ * to mock `react-native-google-mobile-ads`.
+ *
+ * The `Platform.OS === 'web'` early return is kept as a second net rather
+ * than the boundary itself: it is what `interstitial-adapter.test.ts`
+ * exercises, and it keeps the documented null contract true for any caller
+ * that reaches this file directly - an explicit `.ts` specifier, or a
+ * bundler configured without platform extensions - instead of through the
+ * platform-resolved specifier.
  */
 export function createInterstitialPresenter(callbacks: InterstitialCallbacks): Presenter | null {
   if (Platform.OS === 'web') {

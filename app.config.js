@@ -1,6 +1,14 @@
 const packageJson = require('./package.json');
 
 const ADMOB_MODULE = 'react-native-google-mobile-ads';
+const GOOGLE_SIGN_IN_MODULE = '@react-native-google-signin/google-signin';
+
+/**
+ * The reversed iOS OAuth client ID (`com.googleusercontent.apps.<id>`).
+ * A public client identifier, not a secret - but still project-specific, so
+ * it comes from the environment and is never committed. See .env.example.
+ */
+const GOOGLE_IOS_URL_SCHEME_ENV_KEY = 'EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME';
 
 /**
  * app.json holds the production configuration. This file only subtracts from
@@ -28,6 +36,46 @@ function isAdMobExcludedFromAutolinking() {
   return (packageJson.expo?.autolinking?.exclude ?? []).includes(ADMOB_MODULE);
 }
 
+/**
+ * Adds the Google Sign-In config plugin only when this machine/build has an
+ * iOS URL scheme to give it.
+ *
+ * The plugin THROWS without an `iosUrlScheme` (its own `validateOptions`),
+ * and with no options at all it switches to its Firebase path and expects
+ * `google-services.json` / `GoogleService-Info.plist` - neither of which
+ * this repository ships or should. Listing it unconditionally would
+ * therefore break `expo prebuild` for every checkout that has no Google
+ * project yet, which is all of them today.
+ *
+ * Skipping it is safe and bounded: on Android the native module autolinks
+ * and takes its web client ID at runtime, so Google sign-in still works
+ * there. Only iOS needs this scheme registered, so only iOS is affected,
+ * and the warning below says exactly that instead of failing silently.
+ */
+function withGoogleSignIn(config) {
+  // Static access, matching the rule `expo/no-dynamic-env-var` enforces in
+  // src/: the constant above exists for the message, not for the lookup.
+  const iosUrlScheme = process.env.EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME;
+
+  if (!iosUrlScheme) {
+    console.warn(
+      `[app.config] ${GOOGLE_IOS_URL_SCHEME_ENV_KEY} is not set, so the ` +
+        `${GOOGLE_SIGN_IN_MODULE} config plugin is not applied. Android Google ` +
+        'sign-in still works (the native module autolinks and reads ' +
+        'EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID at runtime); iOS will not, until this ' +
+        'is set to the reversed iOS client ID and the app is prebuilt again. ' +
+        'See .env.example.'
+    );
+
+    return config;
+  }
+
+  return {
+    ...config,
+    plugins: [...(config.plugins ?? []), [GOOGLE_SIGN_IN_MODULE, { iosUrlScheme }]],
+  };
+}
+
 module.exports = ({ config }) => {
   if (!isDemoBuild()) {
     if (isAdMobExcludedFromAutolinking()) {
@@ -40,17 +88,17 @@ module.exports = ({ config }) => {
       );
     }
 
-    return config;
+    return withGoogleSignIn(config);
   }
 
   // Demo builds switch ads off and never mount the ads bridge, so the plugin's
   // manifest entries would point at a module that is not in the binary.
-  return {
+  return withGoogleSignIn({
     ...config,
     plugins: (config.plugins ?? []).filter((plugin) => {
       const name = Array.isArray(plugin) ? plugin[0] : plugin;
 
       return name !== ADMOB_MODULE;
     }),
-  };
+  });
 };

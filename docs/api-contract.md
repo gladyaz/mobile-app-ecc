@@ -1,6 +1,6 @@
 # Mobile API Contract
 
-This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. As of Phase 9, like/save (`/videos/:id/like`, `/videos/:id/save`, `GET /users/me/interactions`) and watch progress (`PUT /series/:id/progress`, `GET /users/me/progress`) are also wired up for real, through an explicit sync-queue architecture described below the relevant endpoints. As of Phase 12 (work unit 12B-M1), the Account Security screen (`src/app/account-security.tsx`) wires up `/auth/change-password`, `/auth/logout-all`, `GET /auth/sessions`, and `DELETE /auth/sessions/:id` for real, via `src/services/auth/account-security-service.ts`; the unauthenticated password-reset endpoints (`/auth/password-reset/request`/`confirm`) remain deliberately NOT connected on mobile — see those endpoints' own notes below for why. As of Phase 15 (slice 15A-S1), `GET /config/ads` is also wired up for real, via `src/services/ads/ads-config-service.ts`, backing the counter-based interstitial ad gate. Every other endpoint documented below is still not connected — view tracking, search, category browsing, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
+This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. As of Phase 9, like/save (`/videos/:id/like`, `/videos/:id/save`, `GET /users/me/interactions`) and watch progress (`PUT /series/:id/progress`, `GET /users/me/progress`) are also wired up for real, through an explicit sync-queue architecture described below the relevant endpoints. As of Phase 12 (work unit 12B-M1), the Account Security screen (`src/app/account-security.tsx`) wires up `/auth/change-password`, `/auth/logout-all`, `GET /auth/sessions`, and `DELETE /auth/sessions/:id` for real, via `src/services/auth/account-security-service.ts`; the unauthenticated password-reset endpoints (`/auth/password-reset/request`/`confirm`) remain deliberately NOT connected on mobile — see those endpoints' own notes below for why. As of Phase 15 (slice 15A-S1), `GET /config/ads` is also wired up for real, via `src/services/ads/ads-config-service.ts`, backing the counter-based interstitial ad gate. As of Phase 10B (mobile production auth UX), `src/stores/auth.tsx`'s `login()` NO LONGER falls back to `POST /auth/register` on `INVALID_CREDENTIALS` — login only logs in, and account creation moved to a dedicated register screen (see `/auth/register` and `/auth/login` below) — and a provisional, NOT-yet-connected provider-auth surface (`POST /auth/providers/google`, `POST /auth/providers/whatsapp/start`, `POST /auth/providers/whatsapp/verify`, `GET /auth/methods`, `DELETE /auth/methods/:provider`) is implemented client-side behind a single module, `src/services/auth/provider-auth-service.ts`; see its own section below for the reconciliation checklist. Every other endpoint documented below is still not connected — view tracking, search, category browsing, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
 
 **Sync-queue architecture (like/save/progress, Phase 9):** `src/stores/video-interactions.tsx` and `src/stores/series-progress.tsx` both follow the same pattern. `toggleLike`/`toggleSave`/`recordProgress` update local state immediately (optimistic UI) and enqueue an explicit, `AsyncStorage`-persisted sync command, ordered per-entity (per `videoId` for interactions, per `seriesId` for progress) so an older command can never race ahead of a newer one for the same entity. A background drain loop (module-level, not a hook, so a scheduled retry survives across renders) pushes queued commands to the backend once the user is authenticated and the auth store has hydrated; a failed push retries with exponential backoff (capped) and sets a recoverable `hasSyncFailures` flag that callers can surface in the UI rather than losing the local change. First-login merge (reconciling whatever was recorded locally before the user authenticated against what the backend already has for that user) is a separate, one-time bootstrap step that calls the backend directly to converge state — it does not go through the sync queue and is never observed by the queue-drain logic.
 
@@ -165,10 +165,10 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 
 `user.displayName` is optional; the mobile app falls back to the email's local-part for its own `name`/`username` display fields when absent (`deriveAuthUser()` in `src/stores/auth.tsx`).
 
-- Mobile screen: Login (fallback path only — see the `/auth/login` Connected note below; there is no dedicated registration screen)
+- Mobile screen: Register (`src/app/register.tsx`) — a dedicated registration screen as of Phase 10B
 - MVP priority: P0
 - Backend notes: Throws `ApiError` with code `EMAIL_ALREADY_REGISTERED` (status 409) if the email is already taken.
-- Connected: Yes. `register()` in `src/services/auth/auth-service.ts` calls `request('auth/register', ...)`. It is invoked from `src/stores/auth.tsx`'s `login()` only as a fallback (see the login-or-register behavior documented under `/auth/login` below) — there is no standalone "create account" screen or button.
+- Connected: Yes. `register()` in `src/services/auth/auth-service.ts` calls `request('auth/register', ...)`. **Changed in Phase 10B:** it is now invoked ONLY from `src/stores/auth.tsx`'s `registerWithEmail()`, which is reached only from the dedicated register screen (`src/app/register.tsx`, entered from the login screen's "Daftar dengan email" link). It is no longer called as a fallback from `login()` — see the `/auth/login` Connected note below for what was removed and why. The screen enforces the same 8–128 character password policy client-side before calling, and surfaces `EMAIL_ALREADY_REGISTERED` as a "this email is already registered, please sign in" message rather than a generic failure.
 
 ### POST /auth/login
 
@@ -201,7 +201,7 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: Login, Profile
 - MVP priority: P0
 - Backend notes: Use password hashing, rate limiting, and generic invalid-credential messages. `login()` throws `ApiError` with code `INVALID_CREDENTIALS` (status 401) for either a wrong password or a nonexistent email — the backend intentionally does not distinguish the two.
-- Connected: Yes. `src/app/login.tsx` calls `useAuth().login(email, password)`, which is implemented in `src/stores/auth.tsx`. **Login-or-register fallback behavior:** `login()` first calls `loginRequest()` (`POST /auth/login`); if that throws an `ApiError` with code `INVALID_CREDENTIALS`, it calls `registerRequest()` (`POST /auth/register`) instead, so a not-yet-registered email transparently creates an account rather than failing. Any other error (network failure, a different error code, etc.) propagates without attempting registration. On success from either path, the store derives its own `AuthUser` shape (`{ id, name, username, email }`) from the backend's `{ id, email, displayName? }` via `deriveAuthUser()`, stores the returned tokens in `token-store.ts`, and persists both to `AsyncStorage`.
+- Connected: Yes. `src/app/login.tsx` calls `useAuth().login(email, password)`, which is implemented in `src/stores/auth.tsx`. **Login-or-register fallback behavior REMOVED in Phase 10B (behavior change).** `login()` previously called `registerRequest()` (`POST /auth/register`) whenever `POST /auth/login` threw `INVALID_CREDENTIALS`, so a not-yet-registered email — and, indistinguishably, a mistyped password on a real account — silently created an account. `login()` now calls `POST /auth/login` and nothing else: any error propagates to the screen, which reports a failed sign-in and points at the register screen as a possibility without claiming whether the email exists (the backend does not distinguish the two cases, so neither may the copy). Account creation happens only through `registerWithEmail()` — see `/auth/register` above. Pinned by `src/stores/__tests__/auth.test.tsx` ("does NOT create an account when login fails with INVALID_CREDENTIALS") and `src/app/__tests__/login.test.tsx` ("never registers an account as a side effect of a failed login"). On success, the store derives its own `AuthUser` shape (`{ id, name, username, email }`) from the backend's `{ id, email, displayName? }` via `deriveAuthUser()`, stores the returned tokens in `token-store.ts`, and persists both to `AsyncStorage` — unchanged.
 
 ### POST /auth/refresh
 
@@ -367,6 +367,66 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - Mobile screen: None.
 - MVP priority: P2 (deferred)
 - Connected: **No, deliberately, as of Phase 12 work unit 12B-M1.** This flow is for a user who is logged out and cannot authenticate at all — it doesn't fit the authenticated Account Security screen this work unit built, and the runbook's hard requirement ("no dev-token control compiled into or reachable from a production build") is safer satisfied by not building a partial version of this surface than by half-building it. Nothing in the mobile app calls either route, reads `devToken`, or references it anywhere — there is no dev-only control to gate because there is no reset-password UI at all yet. A future work unit that adds this screen must keep `devToken` behind `__DEV__` and never render/log/persist it in a production build.
+
+### Provider auth (Phase 10B) — POST /auth/providers/google, POST /auth/providers/whatsapp/start, POST /auth/providers/whatsapp/verify, GET /auth/methods, DELETE /auth/methods/:provider
+
+> **STATUS: PROVISIONAL — NOT CONNECTED TO A DEPLOYED BACKEND.** The mobile
+> side of these five endpoints is implemented and tested; the backend side is
+> being built in a separate worktree and its contract is not landed. Every
+> path, request body, and error code below is the MOBILE PROPOSAL, mirrored
+> from the shapes the already-landed `/auth/*` endpoints use. Treat this
+> section as the reconciliation checklist, not as a description of something
+> that works end to end today.
+>
+> All five live in exactly one client module — `src/services/auth/provider-auth-service.ts`
+> — so reconciling them against the real backend contract is a bounded edit to
+> that file (plus this section), not a hunt through screens. No screen calls
+> `fetch` or `request` for these flows.
+
+**POST /auth/providers/google**
+
+- Purpose: Exchange a Google ID token for a normal Short Drama session.
+- Auth required: No (this IS the login).
+- Request body: `{ "idToken": string }` — the ID token from the native Google sheet, obtained by `src/services/auth/google-sign-in.ts`.
+- Expected response: `AuthResponse` (`src/types/auth.ts`) — the same `{ accessToken, refreshToken, user }` shape `/auth/login` returns.
+- Expected error codes: `INVALID_PROVIDER_TOKEN` (401) for a token the backend cannot verify against Google; `PROVIDER_ACCOUNT_CONFLICT` (409) when the Google account's email already belongs to an account it may not auto-link to.
+- Mobile screen: Login (`src/app/login.tsx`, "Lanjutkan dengan Google").
+- Client invariant the backend can rely on: **the Google ID token is one-shot.** It is sent here once and never persisted; only the `AuthResponse` pair returned by this endpoint becomes the session (`src/stores/auth.tsx`'s `adoptSession`). There is no second token store, and no Google token is ever written to `AsyncStorage` — pinned by `src/stores/__tests__/auth.test.tsx` ("never persists the Google ID token as the session").
+
+**POST /auth/providers/whatsapp/start**
+
+- Purpose: Send a one-time code over WhatsApp.
+- Auth required: No.
+- Request body: `{ "phoneNumber": string }` — always E.164 (`+62...`), normalized client-side by `src/services/auth/phone-number.ts` so `0812…`, `812…`, `62812…` and `+62 812-…` cannot become four different accounts for one person.
+- Expected response: `OtpChallenge` (`src/types/auth.ts`) — `{ challengeId, expiresInSeconds, resendAvailableInSeconds }`.
+- Expected error codes: `INVALID_PHONE_NUMBER` (400); status 429 when the send rate limit is hit (checked via `error.status`, since the throttler emits no endpoint-specific code — same convention as `/users/me/deletion`).
+- **ANTI-ENUMERATION REQUIREMENT (must hold on the backend too):** the response must be identical for a registered and an unregistered number. The response type carries no account-existence field, and the mobile UI advances to the code step for every number, so nothing client-side can leak it — but that only holds if the backend does not vary status code, timing-visible behavior, or error code by whether the number has an account. Pinned client-side by `src/app/__tests__/login-whatsapp.test.tsx` ("advances to the code step for any number, revealing nothing about accounts") and `src/services/auth/__tests__/provider-auth-service.test.ts` ("returns nothing that reveals whether the number has an account").
+
+**POST /auth/providers/whatsapp/verify**
+
+- Purpose: Verify the code and issue a session.
+- Auth required: No.
+- Request body: `{ "challengeId": string, "code": string }` — the code is exactly 6 digits (`OTP_CODE_LENGTH` in `src/features/auth/whatsapp-otp-step.tsx`); the field will not accept more.
+- Expected response: `AuthResponse`.
+- Expected error codes: `OTP_INVALID` (401), `OTP_EXPIRED` (410), `OTP_TOO_MANY_ATTEMPTS` (429). The mobile screen maps each to distinct copy, so collapsing them into one generic code would visibly degrade the flow.
+- Mobile screen: WhatsApp login (`src/app/login-whatsapp.tsx`, code step).
+- No OTP is hardcoded anywhere in the app, in any build: the only way past this step is a code the backend actually sent.
+
+**GET /auth/methods**
+
+- Purpose: List the login methods attached to the signed-in account.
+- Auth required: Yes (`{ requiresAuth: true }`).
+- Expected response: `readonly LinkedAuthMethod[]` (`src/types/auth.ts`) — `[{ provider: "email" | "google" | "whatsapp", label: string | null, linkedAt: string | null }]`. `label` must be safe to display (a masked email or phone) and must never be a token or another account's identifier.
+- Mobile screen: Account Security → "Metode Login" card (`src/features/auth/linked-methods-card.tsx`).
+- A provider value this client does not know is dropped rather than rendered, and is excluded from the unlink-guard count (`src/features/auth/linked-methods.ts`).
+
+**DELETE /auth/methods/:provider**
+
+- Purpose: Detach one login method from the signed-in account.
+- Auth required: Yes.
+- Expected response: `204 No Content` (the client's `request()` already special-cases 204).
+- Expected error codes: `LAST_AUTH_METHOD` (409) if asked to remove the account's final usable method.
+- **The client refuses to call this for the last remaining method** (`canUnlinkAuthMethod`), so a viewer cannot lock themselves out through the UI. That is a usability guard, NOT the security boundary — the backend must enforce the same invariant independently, since the client-side rule is only as good as the list the client was handed.
 
 ### POST /users/me/deletion
 

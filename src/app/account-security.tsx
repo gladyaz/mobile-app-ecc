@@ -13,6 +13,7 @@ import {
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { LinkedMethodsCard } from '@/features/auth/linked-methods-card';
 import { ApiError } from '@/services/api/client';
 import {
   changePassword as changePasswordRequest,
@@ -279,6 +280,12 @@ export default function AccountSecurityScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
+        {/* Linked login methods (Phase 10B). Placed above the password form
+            because it answers the question the whole screen is about -
+            "how can I get into this account?" - before offering to change
+            one of the answers. */}
+        <LinkedMethodsCard />
+
         {/* Change password */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Ganti Password</Text>

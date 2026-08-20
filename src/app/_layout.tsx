@@ -72,6 +72,8 @@ function AppContent() {
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />
+        <Stack.Screen name="register" options={{ headerShown: false }} />
+        <Stack.Screen name="login-whatsapp" options={{ headerShown: false }} />
         <Stack.Screen name="processing" options={{ headerShown: false }} />
         <Stack.Screen name="account-security" options={{ headerShown: false }} />
         <Stack.Screen name="account-data" options={{ headerShown: false }} />

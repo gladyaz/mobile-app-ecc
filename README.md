@@ -15,7 +15,7 @@ Mobile app for Mandarin/Chinese short drama videos with Indonesian subtitles. Th
 ## Current Features
 
 - Expo Router navigation with Home, Discover, Saved, and Profile tabs.
-- Login screen with dummy local auth state.
+- Production-shaped auth surface: email + password, Google, and WhatsApp OTP, all on one login screen, plus a dedicated email registration screen (see "Authentication" below).
 - Profile guest/login/logout flow.
 - Vertical short-drama feed on Home.
 - Real video playback with `expo-video`.
@@ -78,6 +78,23 @@ EXPO_PUBLIC_USE_MOCK_DATA=false
 - `EXPO_PUBLIC_API_BASE_URL` - base URL of the NestJS backend.
 - `EXPO_PUBLIC_USE_MOCK_DATA` - set to `true` to force the app to use the bundled mock data instead of the backend, even if the backend URL is set. Useful for UI-only work without the backend running.
 - `EXPO_PUBLIC_HLS_PLAYBACK_ENABLED` - Slice 11R (mobile AUTO adaptive HLS playback) HLS playback enable/disable flag (a kill switch, **not** a prefer-MP4 fallback - an HLS-ready video has no client-side MP4 to fall back to). Defaults to HLS enabled when unset; set to `false` to DISABLE HLS playback - an HLS-shaped authorization then resolves to the existing "Video unavailable" state instead of playing, while every legacy/MP4 video is unaffected. See `src/services/videos/hls-playback-flag.ts`.
+- `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` / `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` / `EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME` - Google Sign-In configuration. These are OAuth **client IDs**, which are public identifiers that ship in every app binary by design, not secrets - but they are project-specific, so they come from the environment and none is committed. With them unset the Google button reports a clear "not configured" message instead of failing mysteriously. See "Authentication" below and `.env.example`.
+
+### Authentication
+
+Three login methods, all landing in the same session store (`src/stores/auth.tsx`), with the app's own access/refresh pair as the only session authority:
+
+1. **Email + password** - `POST /auth/login`. It only logs in. It does **not** create an account: the earlier "login silently registers you if the credentials don't match" fallback was removed in Phase 10B, because a mistyped password created a second, empty account.
+2. **Google** - the native sheet (`@react-native-google-signin/google-signin`) returns a one-shot Google ID token, which is exchanged for a Short Drama session at `POST /auth/providers/google`. The Google token is never persisted and is never the session.
+3. **WhatsApp OTP** - phone number (normalized to E.164, Indonesia-first) → `POST /auth/providers/whatsapp/start` → 6-digit code → `POST /auth/providers/whatsapp/verify` → ordinary session.
+
+Creating an account is explicit, on its own screen (`src/app/register.tsx`), reached from the login screen's "Daftar dengan email" link.
+
+**Google setup.** The library cannot run in Expo Go - it needs a development build (`npx expo run:android` / `npx expo run:ios`, or an EAS dev build). Set `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` (the ID token is issued against the *web* client on both platforms) and, for iOS, `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` plus `EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME` (the reversed iOS client ID). The URL scheme is read at **build** time by `app.config.js`: with it unset, the Google config plugin is skipped entirely and the build prints why - Android still works, iOS does not, until it is set and the app is prebuilt again.
+
+**Web.** The Google native module is excluded from the Expo Web bundle at build time by the `google-sign-in.web.ts` platform split (the same pattern the AdMob adapter uses), and the login screen hides the Google button where it cannot be presented. `src/services/auth/__tests__/google-web-import-boundary.test.ts` fails if that boundary is ever broken.
+
+**Backend status.** The three provider endpoints above, plus `GET /auth/methods` / `DELETE /auth/methods/:provider` behind the Account Security screen's "Metode Login" card, are **provisional**: implemented and tested on the mobile side, not yet landed on the backend. They live in exactly one client module (`src/services/auth/provider-auth-service.ts`) so reconciling them is a bounded edit. See [docs/api-contract.md](docs/api-contract.md) for the checklist.
 
 ### Running Backend and Mobile Together
 
@@ -223,7 +240,7 @@ On Android, the JS runtime pauses while `VideoView` is in fullscreen (documented
 
 ## Current Limitations
 
-- Auth is dummy/local; it's now persisted on-device (see "Local Persistence" above) but is still not real, secure production authentication.
+- Google and WhatsApp sign-in are implemented on the mobile side but not yet usable end to end: Google needs real client IDs and a development build, and the WhatsApp/provider backend endpoints are not landed (see "Authentication" above). Email + password login, registration, refresh, and logout work against the real backend today.
 - Like/save state is local only, persisted on-device, but not synced to the backend.
 - Processing History still reads local mock data (not backend-connected in this phase).
 - Video playback in development requires the backend's `playbackUrl` to resolve to a reachable server — see "Local Company Video Playback" below if you're serving raw files locally rather than through the backend.
@@ -241,7 +258,7 @@ Real company videos should live in backend/internal storage, not inside this mob
 
 ## Next Planned Tasks
 
-- Real auth/JWT support.
+- Land the provider-auth backend endpoints and reconcile `src/services/auth/provider-auth-service.ts` against the real contract.
 - Connect likes/saves to the backend.
 - Connect Processing History to the backend.
 - Uploaded videos list.

@@ -65,4 +65,80 @@ describe('ProfileScreen', () => {
 
     expect(queryByText('Data & Privasi')).toBeNull();
   });
+  describe('an account with no email address', () => {
+    /**
+     * A WhatsApp-only account always has `email: null`, and so does a Google
+     * account whose token did not assert `email_verified`. The canonical
+     * contract makes that a first-class state, so the profile has to render
+     * it truthfully rather than blank or invented.
+     */
+    const phoneOnlyUser = { id: 'clx0000000000user003', name: null, username: null, email: null };
+
+    it('never renders an empty email line', async () => {
+      mockUseAuth.mockReturnValue({
+        isAuthenticated: true,
+        logout: jest.fn(),
+        user: phoneOnlyUser,
+      });
+
+      const { getByTestId } = await render(<ProfileScreen />);
+
+      expect(getByTestId('profile-email')).toHaveTextContent(
+        'Akun ini masuk tanpa email.'
+      );
+    });
+
+    it('never fabricates an email address', async () => {
+      mockUseAuth.mockReturnValue({
+        isAuthenticated: true,
+        logout: jest.fn(),
+        user: phoneOnlyUser,
+      });
+
+      const { queryByText } = await render(<ProfileScreen />);
+
+      expect(queryByText(/@/)).toBeNull();
+    });
+
+    it('never shows the raw user id as a display name', async () => {
+      // A cuid is a database key. Rendering one where a name goes looks
+      // like a name the account actually has.
+      mockUseAuth.mockReturnValue({
+        isAuthenticated: true,
+        logout: jest.fn(),
+        user: phoneOnlyUser,
+      });
+
+      const { getByTestId, queryByText } = await render(<ProfileScreen />);
+
+      expect(queryByText('clx0000000000user003')).toBeNull();
+      expect(getByTestId('profile-name')).toHaveTextContent('Akun kamu');
+    });
+
+    it('omits the @handle rather than rendering a bare @', async () => {
+      mockUseAuth.mockReturnValue({
+        isAuthenticated: true,
+        logout: jest.fn(),
+        user: phoneOnlyUser,
+      });
+
+      const { queryByTestId } = await render(<ProfileScreen />);
+
+      expect(queryByTestId('profile-username')).toBeNull();
+    });
+
+    it('still renders an email account normally', async () => {
+      mockUseAuth.mockReturnValue({
+        isAuthenticated: true,
+        logout: jest.fn(),
+        user: { id: 'user_1', name: 'Jane', username: 'jane', email: 'jane@example.com' },
+      });
+
+      const { getByTestId } = await render(<ProfileScreen />);
+
+      expect(getByTestId('profile-email')).toHaveTextContent('jane@example.com');
+      expect(getByTestId('profile-name')).toHaveTextContent('Jane');
+      expect(getByTestId('profile-username')).toHaveTextContent('@jane');
+    });
+  });
 });

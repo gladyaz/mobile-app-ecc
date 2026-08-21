@@ -41,7 +41,10 @@ const mockedVerifyWhatsAppOtp = verifyWhatsAppOtp as jest.MockedFunction<typeof 
 
 // Matches the version this store currently persists at - kept in sync via
 // the same constant contract as stores/auth.tsx's own AUTH_STORAGE_VERSION.
-const AUTH_STORAGE_VERSION = 2;
+// Bumped to 3 when `email`/`name`/`username` became nullable, so a v2
+// payload (which coerced a missing email to '' and a missing name to the
+// user id) is discarded rather than restored.
+const AUTH_STORAGE_VERSION = 3;
 
 function buildAuthResponse(overrides?: Partial<AuthResponse>): AuthResponse {
   return {
@@ -82,6 +85,8 @@ function AuthProbe() {
       <Text testID="authenticated">{String(isAuthenticated)}</Text>
       <Text testID="username">{user?.username ?? ''}</Text>
       <Text testID="name">{user?.name ?? ''}</Text>
+      <Text testID="email">{user?.email ?? ''}</Text>
+      <Text testID="email-is-null">{String(user ? user.email === null : false)}</Text>
       <Text testID="google-outcome">{googleOutcome}</Text>
       <Text
         testID="login"
@@ -112,7 +117,7 @@ function AuthProbe() {
       <Text
         testID="whatsapp-login"
         onPress={() => {
-          doWhatsAppLogin('challenge_1', '123456').catch(swallow);
+          doWhatsAppLogin('+6281234567890', '123456').catch(swallow);
         }}
       >
         whatsapp
@@ -148,6 +153,28 @@ describe('AuthProvider', () => {
     expect(getByTestId('authenticated').props.children).toBe('true');
     expect(getByTestId('username').props.children).toBe('gladyaz');
     expect(getTokens()).toEqual(persisted.tokens);
+  });
+
+  it('discards a version-2 payload instead of restoring its coerced fields', async () => {
+    // Version 2 persisted `email: ''` and `name: <user id>` for an account
+    // with no address. Restoring one would reintroduce exactly the two
+    // states the current version exists to remove, so the version bump
+    // drops it and the next authenticated response re-derives the user.
+    await setItem(STORAGE_KEYS.auth, 2, {
+      user: { id: 'user_003', name: 'user_003', username: '', email: '' },
+      tokens: { accessToken: 'stale-access', refreshToken: 'stale-refresh' },
+    });
+
+    const { getByTestId } = await render(
+      <AuthProvider>
+        <AuthProbe />
+      </AuthProvider>
+    );
+
+    await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+
+    expect(getByTestId('authenticated').props.children).toBe('false');
+    expect(getTokens()).toBeNull();
   });
 
   it('starts as a guest when nothing is persisted', async () => {
@@ -329,7 +356,7 @@ describe('AuthProvider', () => {
       user: { id: 'user_001', name: 'Gladyaz', username: 'gladyaz', email: 'gladyaz@example.com' },
       tokens: { accessToken: 'access-1', refreshToken: 'refresh-1' },
     };
-    await setItem(STORAGE_KEYS.auth, 2, persisted);
+    await setItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION, persisted);
 
     const { getByTestId } = await render(
       <AuthProvider>
@@ -495,7 +522,8 @@ describe('AuthProvider', () => {
       await fireEvent.press(getByTestId('whatsapp-login'));
       await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('true'));
 
-      expect(mockedVerifyWhatsAppOtp).toHaveBeenCalledWith('challenge_1', '123456');
+      // The PHONE NUMBER is the challenge handle - there is no challenge id.
+      expect(mockedVerifyWhatsAppOtp).toHaveBeenCalledWith('+6281234567890', '123456');
       expect(getByTestId('username').props.children).toBe('wa-user');
       expect(getTokens()).toEqual({
         accessToken: 'access-token-1',
@@ -504,7 +532,7 @@ describe('AuthProvider', () => {
     });
 
     it('leaves the viewer signed out when OTP verification fails', async () => {
-      mockedVerifyWhatsAppOtp.mockRejectedValueOnce(new ApiError(401, 'OTP_INVALID', 'Nope.'));
+      mockedVerifyWhatsAppOtp.mockRejectedValueOnce(new ApiError(401, 'INVALID_OTP', 'Nope.'));
 
       const { getByTestId } = await render(
         <AuthProvider>
@@ -709,16 +737,13 @@ describe('AuthProvider', () => {
       expect(getByTestId('username').props.children).toBe('gladyaz');
     });
 
-    it('does not throw for a phone-only account with no email', async () => {
-      // WhatsApp OTP makes a phone-only account a plausible backend
-      // outcome. This used to call `.split()` on a missing email and throw
-      // inside adoptSession - AFTER the backend had issued a session - so
-      // the viewer was told their correct code failed and the session was
-      // orphaned server-side.
+    it('carries a phone-only account null email through, never an empty string', async () => {
+      // The canonical contract makes `user.email` `string | null` with the
+      // key ALWAYS present, and a WhatsApp-only account always has null.
+      // Coercing that to '' is what rendered a blank email line on the
+      // profile screen - a state indistinguishable from "still loading".
       mockedVerifyWhatsAppOtp.mockResolvedValueOnce(
-        buildAuthResponse({
-          user: { id: 'user_003' } as AuthResponse['user'],
-        })
+        buildAuthResponse({ user: { id: 'user_003', email: null } })
       );
 
       const { getByTestId } = await render(
@@ -731,8 +756,55 @@ describe('AuthProvider', () => {
       await fireEvent.press(getByTestId('whatsapp-login'));
       await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('true'));
 
-      // Degrades to the user id rather than crashing or rendering "undefined".
-      expect(getByTestId('name').props.children).toBe('user_003');
+      expect(getByTestId('email-is-null').props.children).toBe('true');
+    });
+
+    it('never uses the raw user id as a display name for a phone-only account', async () => {
+      // A cuid is a database key. Rendering one where a name goes looks
+      // like a name the account actually has; the honest fallback is the
+      // screen's own neutral label (profile.tsx), not the id.
+      mockedVerifyWhatsAppOtp.mockResolvedValueOnce(
+        buildAuthResponse({ user: { id: 'user_003', email: null } })
+      );
+
+      const { getByTestId } = await render(
+        <AuthProvider>
+          <AuthProbe />
+        </AuthProvider>
+      );
+
+      await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+      await fireEvent.press(getByTestId('whatsapp-login'));
+      await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('true'));
+
+      expect(getByTestId('name').props.children).not.toBe('user_003');
+      expect(getByTestId('name').props.children).toBe('');
+      expect(getByTestId('username').props.children).toBe('');
+    });
+
+    it('still derives a name for a Google account whose email was not verified', async () => {
+      // `email: null` with a displayName present: the display name is used,
+      // and the account still has no address to show anywhere.
+      mockedLoginWithGoogleIdToken.mockResolvedValueOnce(
+        buildAuthResponse({ user: { id: 'user_004', email: null, displayName: 'Jane' } })
+      );
+      mockedSignInWithGoogle.mockResolvedValueOnce({
+        status: 'success',
+        idToken: 'google-id-token',
+      });
+
+      const { getByTestId } = await render(
+        <AuthProvider>
+          <AuthProbe />
+        </AuthProvider>
+      );
+
+      await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+      await fireEvent.press(getByTestId('google-login'));
+      await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('true'));
+
+      expect(getByTestId('name').props.children).toBe('Jane');
+      expect(getByTestId('email-is-null').props.children).toBe('true');
       expect(getByTestId('username').props.children).toBe('');
     });
 

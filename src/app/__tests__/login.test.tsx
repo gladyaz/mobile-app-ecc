@@ -245,10 +245,60 @@ describe('Google sign-in', () => {
     );
   });
 
-  it('reports a thrown backend exchange failure as an error too', async () => {
+  it('reports a rejected Google token distinctly', async () => {
     mockLoginWithGoogle.mockRejectedValueOnce(
-      new ApiError(401, 'INVALID_PROVIDER_TOKEN', 'Bad token.')
+      new ApiError(401, 'INVALID_GOOGLE_TOKEN', 'Bad token.')
     );
+
+    const { getByTestId } = await render(<LoginScreen />);
+
+    await fireEvent.press(getByTestId('login-google'));
+
+    await waitFor(() =>
+      expect(getByTestId('login-error')).toHaveTextContent(/tidak bisa memverifikasi/)
+    );
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('points an account collision at the Account Security link control', async () => {
+    // THE recovery path. The backend refuses to merge accounts on matching
+    // email addresses and tells the person to sign in with their existing
+    // method and link Google from account settings - so this message must
+    // say that, and the control it names must exist (it does:
+    // `auth-method-link-google` on the Account Security card). Reporting it
+    // as a generic "Login Google gagal" is how a correct security boundary
+    // gets reported as a bug and then weakened.
+    mockLoginWithGoogle.mockRejectedValueOnce(
+      new ApiError(409, 'AUTH_ACCOUNT_LINK_REQUIRED', 'Collides.')
+    );
+
+    const { getByTestId } = await render(<LoginScreen />);
+
+    await fireEvent.press(getByTestId('login-google'));
+
+    await waitFor(() =>
+      expect(getByTestId('login-error')).toHaveTextContent(/Keamanan Akun/)
+    );
+    expect(getByTestId('login-error')).not.toHaveTextContent(/^Login Google gagal/);
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('reports a server with Google switched off as exactly that', async () => {
+    mockLoginWithGoogle.mockRejectedValueOnce(
+      new ApiError(503, 'GOOGLE_AUTH_DISABLED', 'Off.')
+    );
+
+    const { getByTestId } = await render(<LoginScreen />);
+
+    await fireEvent.press(getByTestId('login-google'));
+
+    await waitFor(() =>
+      expect(getByTestId('login-error')).toHaveTextContent(/belum aktif di server/)
+    );
+  });
+
+  it('still reports an unexpected exchange failure generically', async () => {
+    mockLoginWithGoogle.mockRejectedValueOnce(new ApiError(0, 'NETWORK_ERROR', 'Offline.'));
 
     const { getByTestId } = await render(<LoginScreen />);
 
@@ -257,7 +307,6 @@ describe('Google sign-in', () => {
     await waitFor(() =>
       expect(getByTestId('login-error')).toHaveTextContent(/Login Google gagal/)
     );
-    expect(router.replace).not.toHaveBeenCalled();
   });
 
   it('hides the Google button entirely on a platform that cannot present it', async () => {

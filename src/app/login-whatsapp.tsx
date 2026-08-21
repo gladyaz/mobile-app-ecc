@@ -4,6 +4,10 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { Palette } from '@/constants/theme';
 import { AuthScreenHeader } from '@/features/auth/auth-primitives';
+import {
+  describeOtpRequestError,
+  describeOtpVerifyError,
+} from '@/features/auth/provider-error-messages';
 import { useOtpResendCountdown } from '@/features/auth/use-otp-resend-countdown';
 import { WhatsAppOtpStep, OTP_CODE_LENGTH } from '@/features/auth/whatsapp-otp-step';
 import { WhatsAppPhoneStep } from '@/features/auth/whatsapp-phone-step';
@@ -27,10 +31,10 @@ type SendCodeResult =
   | { readonly isSent: false; readonly isRateLimited: boolean };
 
 /**
- * WhatsApp OTP login, as two steps of one route rather than two routes:
- * the challenge handle and the number live in this component's state, so
- * going back to fix a typo cannot strand a half-finished challenge on
- * another screen's stack entry.
+ * WhatsApp OTP login, as two steps of one route rather than two routes: the
+ * normalized number - which IS the challenge handle - and the challenge's
+ * timings live in this component's state, so going back to fix a typo
+ * cannot strand a half-finished challenge on another screen's stack entry.
  *
  * ANTI-ENUMERATION (deliberate, do not "improve"): a successful send moves
  * to the code step for EVERY number, registered or not. This screen never
@@ -75,43 +79,26 @@ export default function WhatsAppLoginScreen() {
     : null;
 
   const describeSendError = useCallback(
-    (error: unknown): string => {
-      if (error instanceof ApiError) {
-        if (error.status === HTTP_TOO_MANY_REQUESTS) {
-          return t('whatsapp.tooManyRequests');
-        }
-
-        if (error.code === 'INVALID_PHONE_NUMBER') {
-          return t('whatsapp.phoneInvalid');
-        }
-      }
-
-      return t('whatsapp.sendFailed');
-    },
+    (error: unknown): string => t(describeOtpRequestError(error)),
     [t]
   );
 
+  /**
+   * The canonical backend answers ONE code for a rejected OTP -
+   * `INVALID_OTP` - covering wrong, expired, attempts-exhausted,
+   * already-used and no-such-challenge alike. The three distinct messages
+   * this screen used to show are gone because the distinction they rendered
+   * is one the server must not reveal: telling "expired" from "too many
+   * attempts" reports whether an attacker's guessing is making progress,
+   * and telling "wrong code" from "no challenge for this number" turns
+   * verification into a phone-number enumeration oracle.
+   *
+   * The 429 branch survives inside `describeOtpVerifyError` and is not the
+   * resend cooldown: this callback only ever sees errors from the VERIFY
+   * call, so a 429 here is the per-IP verify throttle.
+   */
   const describeVerifyError = useCallback(
-    (error: unknown): string => {
-      if (error instanceof ApiError) {
-        switch (error.code) {
-          case 'OTP_INVALID':
-            return t('whatsapp.otpInvalid');
-          case 'OTP_EXPIRED':
-            return t('whatsapp.otpExpired');
-          case 'OTP_TOO_MANY_ATTEMPTS':
-            return t('whatsapp.otpTooManyAttempts');
-          default:
-            break;
-        }
-
-        if (error.status === HTTP_TOO_MANY_REQUESTS) {
-          return t('whatsapp.otpTooManyAttempts');
-        }
-      }
-
-      return t('whatsapp.verifyFailed');
-    },
+    (error: unknown): string => t(describeOtpVerifyError(error)),
     [t]
   );
 
@@ -206,14 +193,17 @@ export default function WhatsAppLoginScreen() {
     setIsCodeSubmitted(true);
     setFormError(null);
 
-    if (!challenge || code.length !== OTP_CODE_LENGTH) {
+    if (!challenge || !phoneE164 || code.length !== OTP_CODE_LENGTH) {
       return;
     }
 
     setIsVerifying(true);
 
     try {
-      await loginWithWhatsApp(challenge.challengeId, code);
+      // The NUMBER is the challenge handle - there is no challenge id, and
+      // `phoneE164` is the same normalized value the challenge was started
+      // with, including after a resend.
+      await loginWithWhatsApp(phoneE164, code);
       router.replace('/profile');
       showToast(t('login.welcome'));
     } catch (error) {
@@ -221,7 +211,7 @@ export default function WhatsAppLoginScreen() {
     } finally {
       setIsVerifying(false);
     }
-  }, [challenge, code, describeVerifyError, loginWithWhatsApp, showToast, t]);
+  }, [challenge, code, describeVerifyError, loginWithWhatsApp, phoneE164, showToast, t]);
 
   const handleChangeNumber = useCallback(() => {
     setChallenge(null);

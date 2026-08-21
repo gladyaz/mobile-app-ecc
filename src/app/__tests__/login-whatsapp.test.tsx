@@ -34,8 +34,9 @@ jest.mock('@/services/auth/provider-auth-service');
 const mockedStartWhatsAppOtp = startWhatsAppOtp as jest.MockedFunction<typeof startWhatsAppOtp>;
 
 function buildChallenge(overrides?: Partial<OtpChallenge>): OtpChallenge {
+  // No challenge id: the canonical contract makes the PHONE NUMBER the
+  // handle, because at most one challenge is live per number.
   return {
-    challengeId: 'challenge_1',
     expiresInSeconds: 300,
     resendAvailableInSeconds: 30,
     ...overrides,
@@ -111,6 +112,40 @@ describe('WhatsApp phone step', () => {
     );
   });
 
+  it('treats the per-number resend cooldown as a rate limit too', async () => {
+    // Two different limiters can answer 429 on the START route: the per-IP
+    // route throttle (generic `HTTP_ERROR`) and the per-number cooldown
+    // (`OTP_RESEND_COOLDOWN`). Status is checked before code so both land
+    // on the same honest advice.
+    mockedStartWhatsAppOtp.mockRejectedValueOnce(
+      new ApiError(429, 'OTP_RESEND_COOLDOWN', 'Cooling down.')
+    );
+
+    const { getByTestId } = await render(<WhatsAppLoginScreen />);
+
+    await fireEvent.changeText(getByTestId('whatsapp-phone-input'), '81234567890');
+    await fireEvent.press(getByTestId('whatsapp-send-code'));
+
+    await waitFor(() =>
+      expect(getByTestId('whatsapp-error')).toHaveTextContent(/Terlalu banyak permintaan/)
+    );
+  });
+
+  it('reports a server with WhatsApp switched off when starting a challenge', async () => {
+    mockedStartWhatsAppOtp.mockRejectedValueOnce(
+      new ApiError(503, 'WHATSAPP_AUTH_DISABLED', 'Off.')
+    );
+
+    const { getByTestId } = await render(<WhatsAppLoginScreen />);
+
+    await fireEvent.changeText(getByTestId('whatsapp-phone-input'), '81234567890');
+    await fireEvent.press(getByTestId('whatsapp-send-code'));
+
+    await waitFor(() =>
+      expect(getByTestId('whatsapp-error')).toHaveTextContent(/belum aktif di server/)
+    );
+  });
+
   it('stays on the phone step when the code could not be sent', async () => {
     mockedStartWhatsAppOtp.mockRejectedValueOnce(new ApiError(0, 'NETWORK_ERROR', 'Offline.'));
 
@@ -151,14 +186,16 @@ describe('WhatsApp OTP step', () => {
     expect(queryByText(/\+6281234567890/)).toBeNull();
   });
 
-  it('verifies the code against the challenge and enters the session', async () => {
+  it('verifies the code against the PHONE NUMBER and enters the session', async () => {
     const { getByTestId } = await reachOtpStep();
 
     await fireEvent.changeText(getByTestId('whatsapp-otp-input'), '123456');
     await fireEvent.press(getByTestId('whatsapp-verify'));
 
+    // The normalized E.164 number is the challenge handle - the same value
+    // the challenge was started with.
     await waitFor(() =>
-      expect(mockLoginWithWhatsApp).toHaveBeenCalledWith('challenge_1', '123456')
+      expect(mockLoginWithWhatsApp).toHaveBeenCalledWith('+6281234567890', '123456')
     );
     expect(router.replace).toHaveBeenCalledWith('/profile');
     expect(mockShowToast).toHaveBeenCalledWith('Selamat datang!');
@@ -176,35 +213,49 @@ describe('WhatsApp OTP step', () => {
     expect(mockLoginWithWhatsApp).not.toHaveBeenCalled();
   });
 
-  it('reports a wrong code distinctly from an expired one', async () => {
-    mockLoginWithWhatsApp.mockRejectedValueOnce(new ApiError(401, 'OTP_INVALID', 'Nope.'));
+  it('reports one generic message for a rejected code, whatever the cause', async () => {
+    // The backend answers a SINGLE `INVALID_OTP` for wrong / expired /
+    // attempts-exhausted / already-used / no-such-challenge. The message
+    // must cover all of them without implying which - splitting it would
+    // report an attacker's guessing progress and would turn verification
+    // into a phone-number enumeration oracle.
+    mockLoginWithWhatsApp.mockRejectedValueOnce(new ApiError(401, 'INVALID_OTP', 'Nope.'));
 
     const { getByTestId } = await reachOtpStep();
 
     await fireEvent.changeText(getByTestId('whatsapp-otp-input'), '000000');
     await fireEvent.press(getByTestId('whatsapp-verify'));
 
-    await waitFor(() => expect(getByTestId('whatsapp-error')).toHaveTextContent(/Kode salah/));
+    await waitFor(() =>
+      expect(getByTestId('whatsapp-error')).toHaveTextContent(
+        'Kode salah atau sudah kedaluwarsa. Minta kode baru.'
+      )
+    );
     expect(router.replace).not.toHaveBeenCalled();
   });
 
-  it('tells the viewer to request a new code when this one expired', async () => {
-    mockLoginWithWhatsApp.mockRejectedValueOnce(new ApiError(410, 'OTP_EXPIRED', 'Gone.'));
+  it('leaks no challenge or account state in the rejected-code message', async () => {
+    mockLoginWithWhatsApp.mockRejectedValueOnce(new ApiError(401, 'INVALID_OTP', 'Nope.'));
 
-    const { getByTestId } = await reachOtpStep();
+    const { getByTestId, queryByText } = await reachOtpStep();
 
-    await fireEvent.changeText(getByTestId('whatsapp-otp-input'), '123456');
+    await fireEvent.changeText(getByTestId('whatsapp-otp-input'), '000000');
     await fireEvent.press(getByTestId('whatsapp-verify'));
 
-    await waitFor(() =>
-      expect(getByTestId('whatsapp-error')).toHaveTextContent(/kedaluwarsa/)
-    );
+    await waitFor(() => expect(getByTestId('whatsapp-error')).toBeTruthy());
+    // Nothing that would distinguish "expired" from "too many attempts"
+    // from "no challenge exists for this number".
+    expect(
+      queryByText(/percobaan|belum terdaftar|tidak ditemukan|not registered|attempts/i)
+    ).toBeNull();
   });
 
-  it('reports the per-challenge attempt cap', async () => {
-    mockLoginWithWhatsApp.mockRejectedValueOnce(
-      new ApiError(429, 'OTP_TOO_MANY_ATTEMPTS', 'Too many.')
-    );
+  it('keeps a distinct message for the per-IP verify throttle', async () => {
+    // NOT the same condition as a rejected code, and NOT the resend
+    // cooldown (that one is a 429 on the START route). The framework
+    // throttler emits the generic `HTTP_ERROR` code, so status is the only
+    // reliable signal here.
+    mockLoginWithWhatsApp.mockRejectedValueOnce(new ApiError(429, 'HTTP_ERROR', 'Slow down.'));
 
     const { getByTestId } = await reachOtpStep();
 
@@ -213,6 +264,21 @@ describe('WhatsApp OTP step', () => {
 
     await waitFor(() =>
       expect(getByTestId('whatsapp-error')).toHaveTextContent(/Terlalu banyak percobaan/)
+    );
+  });
+
+  it('reports a server with WhatsApp switched off as exactly that', async () => {
+    mockLoginWithWhatsApp.mockRejectedValueOnce(
+      new ApiError(503, 'WHATSAPP_AUTH_DISABLED', 'Off.')
+    );
+
+    const { getByTestId } = await reachOtpStep();
+
+    await fireEvent.changeText(getByTestId('whatsapp-otp-input'), '123456');
+    await fireEvent.press(getByTestId('whatsapp-verify'));
+
+    await waitFor(() =>
+      expect(getByTestId('whatsapp-error')).toHaveTextContent(/belum aktif di server/)
     );
   });
 
@@ -265,7 +331,7 @@ describe('resend countdown', () => {
     try {
       const { getByTestId } = await reachOtpStep();
       mockedStartWhatsAppOtp.mockResolvedValueOnce(
-        buildChallenge({ challengeId: 'challenge_2', resendAvailableInSeconds: 45 })
+        buildChallenge({ resendAvailableInSeconds: 45 })
       );
 
       await act(async () => {
@@ -282,12 +348,15 @@ describe('resend countdown', () => {
     }
   });
 
-  it('verifies against the NEW challenge after a resend', async () => {
+  it('still verifies against the same number after a resend', async () => {
+    // A resend retires the old code and issues a new one for the SAME
+    // number, so the handle never changes - which is exactly why a
+    // challenge id would have been a second key for one row.
     jest.useFakeTimers();
 
     try {
       const { getByTestId } = await reachOtpStep();
-      mockedStartWhatsAppOtp.mockResolvedValueOnce(buildChallenge({ challengeId: 'challenge_2' }));
+      mockedStartWhatsAppOtp.mockResolvedValueOnce(buildChallenge());
 
       await act(async () => {
         jest.advanceTimersByTime(30_000);
@@ -299,7 +368,7 @@ describe('resend countdown', () => {
       await fireEvent.press(getByTestId('whatsapp-verify'));
 
       await waitFor(() =>
-        expect(mockLoginWithWhatsApp).toHaveBeenCalledWith('challenge_2', '654321')
+        expect(mockLoginWithWhatsApp).toHaveBeenCalledWith('+6281234567890', '654321')
       );
     } finally {
       jest.useRealTimers();

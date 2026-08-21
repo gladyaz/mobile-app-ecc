@@ -80,6 +80,12 @@ export default function ProfileScreen() {
   const { showToast } = useToast();
 
   if (isAuthenticated && user) {
+    // Never `user.id`: a cuid is a database key, and rendering one where a
+    // name goes looks like a name the account actually has. A neutral
+    // label is the honest fallback when there is no displayName and no
+    // email local part to derive one from.
+    const displayName = user.name ?? t('profile.accountFallbackName');
+
     return (
       <View style={styles.container}>
         <Text style={styles.title}>{t('profile.title')}</Text>
@@ -90,12 +96,29 @@ export default function ProfileScreen() {
             end={{ x: 1, y: 1 }}
             start={{ x: 0, y: 0 }}
             style={styles.avatar}>
-            <Text style={styles.avatarText}>{user.name.charAt(0)}</Text>
+            <Text style={styles.avatarText}>{displayName.charAt(0)}</Text>
           </LinearGradient>
           <View style={styles.identityText}>
-            <Text style={styles.name}>{user.name}</Text>
-            <Text style={styles.username}>@{user.username}</Text>
-            <Text style={styles.email}>{user.email}</Text>
+            <Text style={styles.name} testID="profile-name">
+              {displayName}
+            </Text>
+            {user.username ? (
+              <Text style={styles.username} testID="profile-username">
+                @{user.username}
+              </Text>
+            ) : null}
+            {/* An account can genuinely have no email address - a
+                WhatsApp-only one always does, and so does a Google account
+                whose token did not assert `email_verified`. The row is
+                OMITTED rather than filled in: an empty line reads as a
+                loading bug, and inventing an address (a synthetic
+                `…@whatsapp.local`, or the user id) would be claiming an
+                identity the account does not have. What it says instead is
+                the truth, and Account Security shows the masked identifier
+                the backend does consider safe to display. */}
+            <Text style={styles.email} testID="profile-email">
+              {user.email ?? t('profile.noEmail')}
+            </Text>
           </View>
         </View>
 

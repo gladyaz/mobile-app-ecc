@@ -26,16 +26,24 @@ import { getItem, removeItem, setItem, STORAGE_KEYS } from '@/services/storage/l
 import type { AuthResponse, AuthTokens, AuthUser as BackendAuthUser } from '@/types/auth';
 
 /**
- * Public store-facing user shape, kept close to the previous dummy-auth
- * shape so existing consumers (e.g. profile.tsx) don't need to change.
- * `name`/`username` are derived client-side from the real backend
- * `AuthUser` (`{ id, email, displayName? }`) - see deriveAuthUser below.
+ * Public store-facing user shape. `name`/`username` are derived client-side
+ * from the real backend `AuthUser` (`{ id, email, displayName? }`) - see
+ * deriveAuthUser below.
+ *
+ * ALL THREE DISPLAY FIELDS ARE NULLABLE, and that is the contract, not a
+ * defensive widening. The canonical backend contract makes `user.email`
+ * `string | null` (a WhatsApp-only account has no address, and neither does
+ * a Google account whose token did not assert `email_verified`), and there
+ * is nothing truthful to derive a name or handle from when it is null. A
+ * consumer must therefore render its own fallback - see profile.tsx - which
+ * is the only way the UI can stay honest about an account that genuinely
+ * has no email address.
  */
 type AuthUser = {
   readonly id: string;
-  readonly name: string;
-  readonly username: string;
-  readonly email: string;
+  readonly name: string | null;
+  readonly username: string | null;
+  readonly email: string | null;
 };
 
 type PersistedAuth = {
@@ -43,7 +51,12 @@ type PersistedAuth = {
   readonly tokens: AuthTokens | null;
 };
 
-const AUTH_STORAGE_VERSION = 2;
+// Bumped to 3 in Phase 10D: version 2 persisted `email: ''` and
+// `name: <user id>` for an account with no email address, so a stored v2
+// payload would reintroduce exactly the two states this version exists to
+// remove. A version bump discards it and re-derives from the next
+// authenticated response instead of migrating a shape that was wrong.
+const AUTH_STORAGE_VERSION = 3;
 
 /**
  * What a Google button press produced, from the app's point of view.
@@ -83,37 +96,54 @@ type AuthContextValue = {
   /** Runs the native Google sheet, then exchanges the resulting ID token
    * for a Short Drama session. See `GoogleLoginOutcome`. */
   readonly loginWithGoogle: () => Promise<GoogleLoginOutcome>;
-  /** Final step of the WhatsApp OTP flow: verifies the code against a
-   * challenge started by `provider-auth-service.startWhatsAppOtp`. */
-  readonly loginWithWhatsApp: (challengeId: string, code: string) => Promise<void>;
+  /**
+   * Final step of the WhatsApp OTP flow: verifies the code against the
+   * challenge started by `provider-auth-service.startWhatsAppOtp`. The
+   * normalized E.164 number IS the challenge handle - there is no challenge
+   * id, because at most one challenge is live per number.
+   *
+   * SIGN-IN, NOT LINKING: this replaces the current session with the
+   * phone's own account. Attaching a number to an account that is already
+   * signed in goes through `provider-auth-service.linkWhatsAppIdentity`.
+   */
+  readonly loginWithWhatsApp: (phoneE164: string, code: string) => Promise<void>;
   readonly logout: () => Promise<void>;
 };
 
 /**
  * Derives the store's public AuthUser from the backend's real AuthUser.
- * `name` falls back to the email's local-part when there is no
- * (non-empty) `displayName`. `username` is always the email's local-part,
- * lowercased.
+ *
+ * `email` is `string | null` under the canonical contract and is carried
+ * through UNCHANGED. It is deliberately NOT coerced to `''`: an empty
+ * string is a value the UI cannot tell apart from "we have not loaded it
+ * yet", and it is what previously rendered a blank email line on a
+ * phone-only account's profile.
+ *
+ * `name` prefers a non-blank `displayName`, then the email's local part,
+ * and is otherwise `null`. It never falls back to `backendUser.id`: a cuid
+ * is a database key, and showing one as a person's name is worse than
+ * showing nothing, because it looks like a name the account actually has.
+ * The human-readable label for an account with no address is the MASKED
+ * `identifier` on `GET /auth/identities`; profile.tsx renders a neutral
+ * fallback rather than inventing one here.
+ *
+ * `username` is the email's local part, lowercased, or `null` when there is
+ * no address to take one from - never `''`, for the same reason as above.
  */
 function deriveAuthUser(backendUser: BackendAuthUser): AuthUser {
-  // `email` is REQUIRED by the backend's `AuthUser` contract, and for every
-  // email/Google account it is always present. WhatsApp OTP, added in Phase
-  // 10B, introduces a login path where a phone-only account is a plausible
-  // backend outcome - and this ran `backendUser.email.split(...)` directly,
-  // so a missing email threw a TypeError inside `adoptSession` AFTER the
-  // backend had already issued a session: the viewer was told their correct
-  // code failed, and the server-side session was orphaned. It now degrades
-  // instead of throwing. A missing email remains a contract violation worth
-  // reconciling - it is just no longer a dead end for the person holding
-  // the phone.
-  const email = typeof backendUser.email === 'string' ? backendUser.email : '';
-  const localPart = email.split('@')[0] ?? '';
+  // Still guarded rather than trusted: this value crosses the network, and
+  // a non-string here used to reach `.split()` and throw inside
+  // `adoptSession` AFTER the backend had already issued a session - the
+  // viewer was told their correct code failed while the server-side session
+  // was orphaned.
+  const email = typeof backendUser.email === 'string' && backendUser.email ? backendUser.email : null;
+  const localPart = email ? (email.split('@')[0] ?? null) : null;
   const trimmedDisplayName = backendUser.displayName?.trim();
 
   return {
     id: backendUser.id,
-    name: trimmedDisplayName || localPart || backendUser.id,
-    username: localPart.toLowerCase(),
+    name: trimmedDisplayName || localPart || null,
+    username: localPart ? localPart.toLowerCase() : null,
     email,
   };
 }
@@ -312,14 +342,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
   /**
    * Final step of the WhatsApp OTP flow. The challenge is started by
    * `provider-auth-service.startWhatsAppOtp` from the phone step; this
-   * verifies the code and adopts whatever session the backend returns.
-   * Throws on a wrong/expired code so the OTP step can show its own error.
+   * verifies the code against the same NUMBER and adopts whatever session
+   * the backend returns. Throws on a rejected code (`INVALID_OTP`, one
+   * deliberately generic code) so the OTP step can show its own error.
    */
   const loginWithWhatsApp = useCallback(
-    async (challengeId: string, code: string) => {
+    async (phoneE164: string, code: string) => {
       assertBackendAuthAvailable('loginWithWhatsApp');
 
-      await adoptSession(await verifyWhatsAppOtp(challengeId, code));
+      await adoptSession(await verifyWhatsAppOtp(phoneE164, code));
     },
     [adoptSession]
   );

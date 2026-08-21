@@ -1,6 +1,6 @@
 # Mobile API Contract
 
-This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. As of Phase 9, like/save (`/videos/:id/like`, `/videos/:id/save`, `GET /users/me/interactions`) and watch progress (`PUT /series/:id/progress`, `GET /users/me/progress`) are also wired up for real, through an explicit sync-queue architecture described below the relevant endpoints. As of Phase 12 (work unit 12B-M1), the Account Security screen (`src/app/account-security.tsx`) wires up `/auth/change-password`, `/auth/logout-all`, `GET /auth/sessions`, and `DELETE /auth/sessions/:id` for real, via `src/services/auth/account-security-service.ts`; the unauthenticated password-reset endpoints (`/auth/password-reset/request`/`confirm`) remain deliberately NOT connected on mobile — see those endpoints' own notes below for why. As of Phase 15 (slice 15A-S1), `GET /config/ads` is also wired up for real, via `src/services/ads/ads-config-service.ts`, backing the counter-based interstitial ad gate. As of Phase 10B (mobile production auth UX), `src/stores/auth.tsx`'s `login()` NO LONGER falls back to `POST /auth/register` on `INVALID_CREDENTIALS` — login only logs in, and account creation moved to a dedicated register screen (see `/auth/register` and `/auth/login` below) — and a provisional, NOT-yet-connected provider-auth surface (`POST /auth/providers/google`, `POST /auth/providers/whatsapp/start`, `POST /auth/providers/whatsapp/verify`, `GET /auth/methods`, `DELETE /auth/methods/:provider`) is implemented client-side behind a single module, `src/services/auth/provider-auth-service.ts`; see its own section below for the reconciliation checklist. Every other endpoint documented below is still not connected — view tracking, search, category browsing, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
+This contract describes the backend API for the AI Short Drama Mobile App. `GET /videos/feed` and `GET /videos/:id` are wired up today (`src/services/videos/video-service.ts` calls the typed client in `src/services/api/client.ts`), gated by `EXPO_PUBLIC_USE_MOCK_DATA`: when that flag is `true` the app resolves the bundled mock data from `src/data/mock-drama-videos.ts` instead of calling the backend. As of Phase 8, `/auth/register`, `/auth/login`, `/auth/refresh`, and `/auth/logout` are also wired up for real: `src/services/auth/auth-service.ts` calls the backend through the same typed client, `src/stores/auth.tsx` drives login/logout with real tokens (persisted via `src/services/storage/local-storage.ts`), and `src/services/api/client.ts` has a refresh-on-401 interceptor. As of Phase 9, like/save (`/videos/:id/like`, `/videos/:id/save`, `GET /users/me/interactions`) and watch progress (`PUT /series/:id/progress`, `GET /users/me/progress`) are also wired up for real, through an explicit sync-queue architecture described below the relevant endpoints. As of Phase 12 (work unit 12B-M1), the Account Security screen (`src/app/account-security.tsx`) wires up `/auth/change-password`, `/auth/logout-all`, `GET /auth/sessions`, and `DELETE /auth/sessions/:id` for real, via `src/services/auth/account-security-service.ts`; the unauthenticated password-reset endpoints (`/auth/password-reset/request`/`confirm`) remain deliberately NOT connected on mobile — see those endpoints' own notes below for why. As of Phase 15 (slice 15A-S1), `GET /config/ads` is also wired up for real, via `src/services/ads/ads-config-service.ts`, backing the counter-based interstitial ad gate. As of Phase 10B (mobile production auth UX), `src/stores/auth.tsx`'s `login()` NO LONGER falls back to `POST /auth/register` on `INVALID_CREDENTIALS` — login only logs in, and account creation moved to a dedicated register screen (see `/auth/register` and `/auth/login` below). As of Phase 10D, the provider-auth and identity surface is reconciled against the authoritative backend contract at `a695a9c` and is CANONICAL, not provisional: `POST /auth/google`, `POST /auth/whatsapp/otp/request`, `POST /auth/whatsapp/otp/verify`, `GET /auth/identities`, `POST /auth/identities/:provider/link` and `DELETE /auth/identities/:provider`, all built inside a single module, `src/services/auth/provider-auth-service.ts`; `user.email` is nullable throughout; see that section below for the full contract, the dropped provisional routes and the provider activation status. Every other endpoint documented below is still not connected — view tracking, search, category browsing, the user profile, and analytics remain client-side only (local React Context stores backed by AsyncStorage, plus in-memory filtering of the already-fetched feed), with no HTTP call to the backend. See the per-endpoint "Connected" notes below for specifics.
 
 **Sync-queue architecture (like/save/progress, Phase 9):** `src/stores/video-interactions.tsx` and `src/stores/series-progress.tsx` both follow the same pattern. `toggleLike`/`toggleSave`/`recordProgress` update local state immediately (optimistic UI) and enqueue an explicit, `AsyncStorage`-persisted sync command, ordered per-entity (per `videoId` for interactions, per `seriesId` for progress) so an older command can never race ahead of a newer one for the same entity. A background drain loop (module-level, not a hook, so a scheduled retry survives across renders) pushes queued commands to the backend once the user is authenticated and the auth store has hydrated; a failed push retries with exponential backoff (capped) and sets a recoverable `hasSyncFailures` flag that callers can surface in the UI rather than losing the local change. First-login merge (reconciling whatever was recorded locally before the user authenticated against what the backend already has for that user) is a separate, one-time bootstrap step that calls the backend directly to converge state — it does not go through the sync queue and is never observed by the queue-drain logic.
 
@@ -368,65 +368,188 @@ None of these exist yet and Phase 6A does not require them: `seriesId` already r
 - MVP priority: P2 (deferred)
 - Connected: **No, deliberately, as of Phase 12 work unit 12B-M1.** This flow is for a user who is logged out and cannot authenticate at all — it doesn't fit the authenticated Account Security screen this work unit built, and the runbook's hard requirement ("no dev-token control compiled into or reachable from a production build") is safer satisfied by not building a partial version of this surface than by half-building it. Nothing in the mobile app calls either route, reads `devToken`, or references it anywhere — there is no dev-only control to gate because there is no reset-password UI at all yet. A future work unit that adds this screen must keep `devToken` behind `__DEV__` and never render/log/persist it in a production build.
 
-### Provider auth (Phase 10B) — POST /auth/providers/google, POST /auth/providers/whatsapp/start, POST /auth/providers/whatsapp/verify, GET /auth/methods, DELETE /auth/methods/:provider
+### Provider auth & identities (Phase 10D) — POST /auth/google, POST /auth/whatsapp/otp/request, POST /auth/whatsapp/otp/verify, GET /auth/identities, POST /auth/identities/:provider/link, DELETE /auth/identities/:provider
 
-> **STATUS: PROVISIONAL — NOT CONNECTED TO A DEPLOYED BACKEND.** The mobile
-> side of these five endpoints is implemented and tested; the backend side is
-> being built in a separate worktree and its contract is not landed. Every
-> path, request body, and error code below is the MOBILE PROPOSAL, mirrored
-> from the shapes the already-landed `/auth/*` endpoints use. Treat this
-> section as the reconciliation checklist, not as a description of something
-> that works end to end today.
+> **STATUS: CANONICAL, reconciled against the backend contract at `a695a9c`**
+> (`short-drama-backend-auth/docs/auth-identity-api-contract.md`), which is
+> the single source of truth for both sides. This section describes the
+> routes the backend actually implements and tests.
 >
-> All five live in exactly one client module — `src/services/auth/provider-auth-service.ts`
-> — so reconciling them against the real backend contract is a bounded edit to
-> that file (plus this section), not a hunt through screens. No screen calls
-> `fetch` or `request` for these flows.
+> **The provisional mobile routes are GONE, with no aliases:**
+> `POST /auth/providers/google`, `POST /auth/providers/whatsapp/start`,
+> `POST /auth/providers/whatsapp/verify`, `GET /auth/methods` and
+> `DELETE /auth/methods/:provider` were never served by any deployed
+> backend, so nothing depended on them and no migration window was owed.
+> The error codes `INVALID_PROVIDER_TOKEN`, `PROVIDER_ACCOUNT_CONFLICT`,
+> `LAST_AUTH_METHOD`, `OTP_INVALID`, `OTP_EXPIRED` and
+> `OTP_TOO_MANY_ATTEMPTS` are likewise gone — see the vocabulary table below.
+>
+> All of it lives in exactly one client module —
+> `src/services/auth/provider-auth-service.ts` — so no screen constructs a
+> path itself.
 
-**POST /auth/providers/google**
+**All three login methods resolve to the SAME internal user and the SAME
+session.** Email, Google and WhatsApp each return the ordinary
+`AuthResponse` (`{ user, accessToken, refreshToken }`), adopted by the one
+`adoptSession` in `src/stores/auth.tsx`. There is no "social session", no
+second token store, and no provider credential (Google ID token, OTP) is
+ever persisted — pinned by `src/stores/__tests__/auth.test.tsx`.
 
-- Purpose: Exchange a Google ID token for a normal Short Drama session.
+#### `user.email` is `string | null`, and the key is ALWAYS present
+
+The one shape decision a client must not get wrong.
+
+| Account created by | `user.email` |
+|---|---|
+| `POST /auth/register` | the registered address |
+| `POST /auth/google`, token with `email_verified: true` | the verified Google address |
+| `POST /auth/google`, token WITHOUT `email_verified` | `null` |
+| `POST /auth/whatsapp/otp/verify` | `null` |
+
+**No synthetic address is ever invented for a phone-only account** — not by
+the backend, and not by this client. A fake address would be
+indistinguishable from a real one to password reset and to the collision
+check in `POST /auth/google`. The human-readable label for such an account
+is the masked `identifier` on `GET /auth/identities`.
+
+Mobile consequences, all pinned by tests: `src/types/auth.ts` types it
+`string | null`; `stores/auth.tsx` carries `null` through instead of
+coercing to `''` and never falls back to the user id for a display name;
+`src/app/(tabs)/profile.tsx` omits the `@handle` row and shows a neutral
+label rather than a blank line or a fabricated address.
+
+**POST /auth/google**
+
+- Purpose: exchange a Google ID token for a normal Short Drama session. Signs in OR signs up.
 - Auth required: No (this IS the login).
-- Request body: `{ "idToken": string }` — the ID token from the native Google sheet, obtained by `src/services/auth/google-sign-in.ts`.
-- Expected response: `AuthResponse` (`src/types/auth.ts`) — the same `{ accessToken, refreshToken, user }` shape `/auth/login` returns.
-- Expected error codes: `INVALID_PROVIDER_TOKEN` (401) for a token the backend cannot verify against Google; `PROVIDER_ACCOUNT_CONFLICT` (409) when the Google account's email already belongs to an account it may not auto-link to.
+- Request body: `{ "idToken": string }` — **that one field and nothing else.** The backend's whitelisting `ValidationPipe` rejects any additional field with `400`, so a client can never hint at an email or a subject.
+- Response: `200` + `AuthResponse`. The status deliberately does not vary by sign-in vs sign-up — a varying status would be an account-existence oracle.
+- Error codes: `INVALID_GOOGLE_TOKEN` (401) for **any** verification failure — bad signature, wrong audience, expired, bad issuer, missing subject — deliberately not split, because splitting tells an attacker which check to defeat next; `AUTH_ACCOUNT_LINK_REQUIRED` (409), see below; `GOOGLE_AUTH_DISABLED` (503).
 - Mobile screen: Login (`src/app/login.tsx`, "Lanjutkan dengan Google").
-- Client invariant the backend can rely on: **the Google ID token is one-shot.** It is sent here once and never persisted; only the `AuthResponse` pair returned by this endpoint becomes the session (`src/stores/auth.tsx`'s `adoptSession`). There is no second token store, and no Google token is ever written to `AsyncStorage` — pinned by `src/stores/__tests__/auth.test.tsx` ("never persists the Google ID token as the session").
+- Rate limit: 10/min per IP.
+- Client invariant the backend can rely on: **the Google ID token is one-shot.** It is sent here once and never persisted; only the returned pair becomes the session.
 
-**POST /auth/providers/whatsapp/start**
+**AUTH_ACCOUNT_LINK_REQUIRED — the collision boundary, and its recovery path**
 
-- Purpose: Send a one-time code over WhatsApp.
+String equality is not proof of ownership. If a Google token carries a
+verified email that already belongs to an account, the backend creates
+nothing, links nothing and issues no session. The only supported path
+proves BOTH sides:
+
+```
+POST /auth/login                    (proves control of the Short Drama account)
+POST /auth/identities/google/link   (proves control of the Google account)
+```
+
+**Mobile must ship the link control with the error message.** The login
+screen maps this code to copy naming Account Security (`login.googleLinkRequired`),
+and the control it names exists — `auth-method-link-google` on
+`LinkedMethodsCard`. Reporting this as a generic "Login Google gagal" is
+how a correct security boundary gets reported as a bug and then weakened.
+
+**POST /auth/whatsapp/otp/request**
+
+- Purpose: send a one-time code over WhatsApp.
 - Auth required: No.
-- Request body: `{ "phoneNumber": string }` — always E.164 (`+62...`), normalized client-side by `src/services/auth/phone-number.ts` so `0812…`, `812…`, `62812…` and `+62 812-…` cannot become four different accounts for one person.
-- Expected response: `OtpChallenge` (`src/types/auth.ts`) — `{ challengeId, expiresInSeconds, resendAvailableInSeconds }`.
-- Expected error codes: `INVALID_PHONE_NUMBER` (400); status 429 when the send rate limit is hit (checked via `error.status`, since the throttler emits no endpoint-specific code — same convention as `/users/me/deletion`).
-- **ANTI-ENUMERATION REQUIREMENT (must hold on the backend too):** the response must be identical for a registered and an unregistered number. The response type carries no account-existence field, and the mobile UI advances to the code step for every number, so nothing client-side can leak it — but that only holds if the backend does not vary status code, timing-visible behavior, or error code by whether the number has an account. Pinned client-side by `src/app/__tests__/login-whatsapp.test.tsx` ("advances to the code step for any number, revealing nothing about accounts") and `src/services/auth/__tests__/provider-auth-service.test.ts` ("returns nothing that reveals whether the number has an account").
+- Request body: `{ "phone": string }` — **`phone`, not `phoneNumber`.** Always E.164 (`+62…`), normalized client-side by `src/services/auth/phone-number.ts` so `0812…`, `812…`, `62812…` and `+62 812-…` cannot become four identities for one person.
+- Response: `202` + `{ "success": true, "expiresInSeconds": 300, "resendAvailableInSeconds": 60 }`.
+- **There is no `challengeId`, and there will not be one.** A challenge is keyed by the phone number and at most one is live per number, enforced by a database `UNIQUE` index. The number the screen already holds IS the handle; a second lookup key for one row would make it possible to address a challenge that is no longer the live one.
+- Both timing fields are **fixed public constants**, identical for every caller and every number, so they leak nothing. `resendAvailableInSeconds` exists so the client renders its countdown from the server's rule instead of a constant of its own (a missing field previously produced `NaN`, a countdown that never finished, and a permanently disabled resend button).
+- **`resendAvailableInSeconds` IS A MINIMUM WAIT, NOT PERMISSION TO SEND.** It reports the per-number cooldown only. A per-IP route throttle (3 per 10 min — the one an ordinary user actually reaches, since one send plus two resends exhausts it) and a rolling per-number budget (5 per hour) can both make the real wait longer. **The client must keep handling 429 on resend and must not treat a finished countdown as a guarantee.** `login-whatsapp.tsx` re-locks the countdown on a 429 rather than leaving the button pressable.
+- Error codes: `INVALID_PHONE_NUMBER` (400, shape only, no DB access); `OTP_RESEND_COOLDOWN` (429); a generic 429 carrying `HTTP_ERROR` from the per-IP throttle — **so the client branches on `error.status` before `error.code`**; `WHATSAPP_AUTH_DISABLED` (503).
+- **ANTI-ENUMERATION REQUIREMENT (holds on both sides):** the response is identical for a registered and an unregistered number, asserted deep-equal in the backend's e2e suite. The mobile UI advances to the code step for every number. Pinned client-side by `src/app/__tests__/login-whatsapp.test.tsx` and `src/services/auth/__tests__/provider-auth-service.test.ts`.
 
-**POST /auth/providers/whatsapp/verify**
+**POST /auth/whatsapp/otp/verify**
 
-- Purpose: Verify the code and issue a session.
+- Purpose: verify the code and issue a session. **Sign-in, not linking.**
 - Auth required: No.
-- Request body: `{ "challengeId": string, "code": string }` — the code is exactly 6 digits (`OTP_CODE_LENGTH` in `src/features/auth/whatsapp-otp-step.tsx`); the field will not accept more.
-- Expected response: `AuthResponse`.
-- Expected error codes: `OTP_INVALID` (401), `OTP_EXPIRED` (410), `OTP_TOO_MANY_ATTEMPTS` (429). The mobile screen maps each to distinct copy, so collapsing them into one generic code would visibly degrade the flow.
-- Mobile screen: WhatsApp login (`src/app/login-whatsapp.tsx`, code step).
-- No OTP is hardcoded anywhere in the app, in any build: the only way past this step is a code the backend actually sent.
+- Request body: `{ "phone": string, "code": string }` — the code is exactly 6 digits (`OTP_CODE_LENGTH`); the field will not accept more.
+- Response: `200` + `AuthResponse` (with `user.email: null` for a phone-only account).
+- Error codes: **`INVALID_OTP` (401) — a single code** covering wrong, expired, attempts-exhausted, already-used and no-such-challenge alike. This is deliberate and must not be worked around client-side: distinguishing "expired" from "attempts exhausted" tells an attacker whether their guessing is making progress, and distinguishing "wrong code" from "no challenge for this number" turns this endpoint into a **phone-number enumeration oracle**. The specific cause is recorded server-side in `AuthAuditEvent`. Also `INVALID_PHONE_NUMBER` (400), a generic 429 (`HTTP_ERROR`) from the per-IP verify throttle (5/min), and `WHATSAPP_AUTH_DISABLED` (503).
+- Mobile UX: one truthful message for `INVALID_OTP` ("Kode salah atau sudah kedaluwarsa. Minta kode baru."). **The 429 branch is kept and is not dead** — a 429 here is the verify throttle, a genuinely different condition; the resend cooldown is a separate 429 on the START route.
+- No OTP is hardcoded anywhere in the app, in any build.
+- Guessing is bounded by the database, not the throttle: 5 attempts per challenge × 5 requests per hour per number = ≤25 guesses/hour against a 10⁶ keyspace.
 
-**GET /auth/methods**
+**GET /auth/identities**
 
-- Purpose: List the login methods attached to the signed-in account.
+- Purpose: list the identities attached to the signed-in account.
 - Auth required: Yes (`{ requiresAuth: true }`).
-- Expected response: `readonly LinkedAuthMethod[]` (`src/types/auth.ts`) — `[{ provider: "email" | "google" | "whatsapp", label: string | null, linkedAt: string | null }]`. `label` must be safe to display (a masked email or phone) and must never be a token or another account's identifier.
+- Response: `200` + `AuthIdentitySummary[]` (`src/types/auth.ts`):
+
+```json
+[
+  { "provider": "email", "identifier": "person@example.com",
+    "usable": true, "canBeUnlinked": false,
+    "createdAt": "...", "verifiedAt": null },
+  { "provider": "whatsapp", "identifier": "+*********7890",
+    "usable": true, "canBeUnlinked": true,
+    "createdAt": "...", "verifiedAt": "..." }
+]
+```
+
+- `identifier` is `string | null` — the caller's OWN email, a phone masked to its last four digits, or `null` when the provider asserted nothing safely displayable (a Google account whose email was not verified). **The raw `providerSubject` is never returned** for `google` or `whatsapp`. The card renders a neutral label for `null`; it never invents one.
+- **`canBeUnlinked` is AUTHORITATIVE.** It is computed server-side by the exact rule `DELETE` enforces, so a client rendering its button off this flag and the server can never disagree. `src/features/auth/linked-methods.ts` keeps `canUnlinkAuthMethod` as a local fail-closed fallback that can only ever narrow further — it must never turn a server refusal back into an offer.
+- `usable` reports whether the identity can currently be signed in with. No current backend path produces an unusable one; render it defensively, not as a state users are expected to meet.
+- A provider value this client does not know is dropped rather than rendered, and is excluded from the unlink-guard count. The boundary parser deliberately accepts it rather than rejecting the whole payload, which would take out the identities the client CAN render.
 - Mobile screen: Account Security → "Metode Login" card (`src/features/auth/linked-methods-card.tsx`).
-- A provider value this client does not know is dropped rather than rendered, and is excluded from the unlink-guard count (`src/features/auth/linked-methods.ts`).
 
-**DELETE /auth/methods/:provider**
+**POST /auth/identities/google/link** and **POST /auth/identities/whatsapp/link**
 
-- Purpose: Detach one login method from the signed-in account.
+- Purpose: attach a provider identity to the **already-authenticated** account.
 - Auth required: Yes.
-- Expected response: `204 No Content` (the client's `request()` already special-cases 204).
-- Expected error codes: `LAST_AUTH_METHOD` (409) if asked to remove the account's final usable method.
-- **The client refuses to call this for the last remaining method** (`canUnlinkAuthMethod`), so a viewer cannot lock themselves out through the UI. That is a usability guard, NOT the security boundary — the backend must enforce the same invariant independently, since the client-side rule is only as good as the list the client was handed.
+- Request bodies: `{ "idToken": string }` and `{ "phone": string, "code": string }`.
+- Response: `200` + the account's **full, updated identity list**. Adopt it; do not re-fetch.
+- Error codes: `AUTH_IDENTITY_ALREADY_LINKED` (409) — that Google account / phone number already belongs to a **different** Short Drama account. Identities are never transferred, and this is the security-relevant refusal a person can act on, so it must say so. `AUTH_PROVIDER_ALREADY_LINKED` (409) — **this** account already has a different identity for that provider. Plus `INVALID_GOOGLE_TOKEN` / `INVALID_OTP` / `INVALID_PHONE_NUMBER` and the relevant `*_AUTH_DISABLED`. Re-linking the identity you already own is an **idempotent success**, not a 409.
+- Linking never writes `User.email` — that would create a password-reset surface as a side effect of a link.
+- **ONE CHALLENGE, TWO CONSUMERS — DO NOT CROSS THEM.** `POST /auth/whatsapp/otp/verify` and `POST /auth/identities/whatsapp/link` consume the SAME challenge for a number, and nothing binds a challenge to an intent. Calling verify during a link flow does not extend the current account — it **replaces** the session with the phone's own account. The two call sites are kept deliberately separate (`verifyWhatsAppOtp` vs `linkWhatsAppIdentity`, and `LinkWhatsAppForm` vs the login screen), and a test asserts the link form never calls verify.
+
+**DELETE /auth/identities/:provider**
+
+- Purpose: detach one identity from the signed-in account.
+- Auth required: Yes.
+- `:provider` accepts only `google` or `whatsapp`. **`email` is rejected `400`** — an email identity is inseparable from `User.email`/`User.passwordHash`, whose lifecycle belongs to register / change-password / password-reset / account-deletion. The client narrows the parameter type accordingly and offers no unlink control for email.
+- Response: **`200` + the caller's full, updated identity list — NOT `204`.** After removing a sign-in method the very next thing the UI must know is what remains and what is still removable; a `204` would force a second request and leave a window in which every `canBeUnlinked` flag on screen is stale. The client replaces its list with the response body rather than mutating its own copy.
+- Error codes: `AUTH_LAST_IDENTITY` (409) if asked to remove the final usable identity; `AUTH_IDENTITY_NOT_FOUND` (404).
+- **The client hides the control when the server says `canBeUnlinked: false`, but that is a usability guard, NOT the security boundary.** A client's list can be one action out of date, so `AUTH_LAST_IDENTITY` remains reachable and is reported truthfully — never in a way that implies a retry would work.
+- Unlinking never revokes sessions; `POST /auth/logout-all` is the tool for that.
+
+#### Error vocabulary — what changed from the provisional mobile proposal
+
+| Provisional (mobile) | **CANONICAL** | Why |
+|---|---|---|
+| `INVALID_PROVIDER_TOKEN` | `INVALID_GOOGLE_TOKEN` | The backend name is the one in the enum, the audit trail and the tests. |
+| `PROVIDER_ACCOUNT_CONFLICT` | `AUTH_ACCOUNT_LINK_REQUIRED` | States the RESOLUTION, and there is a specific supported flow to point at. |
+| `LAST_AUTH_METHOD` | `AUTH_LAST_IDENTITY` | Matches the `AUTH_*` family every other code here uses. |
+| `OTP_INVALID` / `OTP_EXPIRED` / `OTP_TOO_MANY_ATTEMPTS` | **`INVALID_OTP` — one code** | The three-way split is refused: it would leak guessing progress and enable phone-number enumeration. |
+| *(none)* | `AUTH_IDENTITY_ALREADY_LINKED`, `AUTH_PROVIDER_ALREADY_LINKED`, `AUTH_IDENTITY_NOT_FOUND`, `OTP_RESEND_COOLDOWN`, `GOOGLE_AUTH_DISABLED`, `WHATSAPP_AUTH_DISABLED` | Codes the link/unlink and flag-gated surfaces answer, which mobile never had to handle before. |
+
+Each of these gets its own message. Collapsing them into a generic "gagal"
+turns a precise, correct refusal into an unexplained dead end — mapped once
+in `src/features/auth/provider-error-messages.ts` so the login screen, the
+WhatsApp screen and the Account Security card cannot drift apart.
+
+#### Provider activation status (READ THIS BEFORE QA)
+
+| Provider | Backend status | What that means for mobile |
+|---|---|---|
+| Email + password | **Live.** Unchanged, always available. | Nothing gated. |
+| Google | **Implemented and tested, flag-gated, OFF by default.** `GOOGLE_AUTH_ENABLED` must be exactly `"true"` plus a `GOOGLE_OAUTH_CLIENT_IDS` allowlist. **No live Google credential has ever been exercised** — verification is proven against generated RSA keys and fixtures. | The UI is complete. A server without it answers `503 GOOGLE_AUTH_DISABLED`, which the client reports as exactly that. |
+| WhatsApp | **Implemented and tested, but CANNOT be enabled in production.** Only a `fake` driver exists and the process refuses to boot with WhatsApp enabled outside `development`/`test`. **No real WhatsApp message has ever been sent by this code.** | The UI is complete and ships behind the same server-driven gate: `503 WHATSAPP_AUTH_DISABLED` is handled gracefully. **No OTP is hardcoded in any build**, and no local fake-provider capability is exposed in production UI. |
+
+Google client IDs come from `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`,
+`EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` and `EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME`
+(the last is a URL scheme, not a client id — it is read by `app.config.js`
+at build time and has no meaning to the backend). All are **public
+identifiers, not secrets**, and none is committed. **The WEB client id is
+the load-bearing one on every platform**: `webClientId` is what makes Google
+mint an ID token for the backend, so a backend allowlist containing only the
+Android/iOS ids rejects every real token with `401 INVALID_GOOGLE_TOKEN`
+while both sides look correctly configured.
+
+#### Not available, and must not be built as if it were
+
+- **A "set first password" flow** for a Google-only or WhatsApp-only account. Password reset deliberately refuses passwordless accounts rather than silently minting a first credential. Mobile must not present password reset as a route into one.
+- **Self-delete for a passwordless account.** `POST /users/me/deletion` requires the current password and fails closed with `INVALID_CREDENTIALS` for an account that has none. The Data & Privacy screen should not offer deletion as if it will work for such an account; the honest fix needs a verified-provider reauthentication flow, which does not exist.
 
 ### POST /users/me/deletion
 

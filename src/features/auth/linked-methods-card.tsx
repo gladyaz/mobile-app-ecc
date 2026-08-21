@@ -2,14 +2,21 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { LinkWhatsAppForm } from '@/features/auth/link-whatsapp-form';
 import { buildAuthMethodRows, type AuthMethodRow } from '@/features/auth/linked-methods';
 import {
-  listLinkedAuthMethods,
-  unlinkAuthMethod,
+  describeIdentityLinkError,
+  describeUnlinkError,
+} from '@/features/auth/provider-error-messages';
+import { signInWithGoogle } from '@/services/auth/google-sign-in';
+import {
+  linkGoogleIdentity,
+  listAuthIdentities,
+  unlinkAuthIdentity,
 } from '@/services/auth/provider-auth-service';
 import { useTranslation } from '@/stores/language';
 import { useToast } from '@/stores/toast';
-import type { AuthProviderId, LinkedAuthMethod } from '@/types/auth';
+import type { AuthIdentitySummary, AuthProviderId, LinkableAuthProviderId } from '@/types/auth';
 import type { TranslationKey } from '@/services/i18n/translations';
 
 const PROVIDER_LABEL_KEYS: Record<AuthProviderId, TranslationKey> = {
@@ -20,19 +27,34 @@ const PROVIDER_LABEL_KEYS: Record<AuthProviderId, TranslationKey> = {
 
 /**
  * The account-linking surface: which of the three login methods are
- * attached to this account, and (where it is safe) a way to detach one.
+ * attached to this account, a way to add the ones that are not, and (where
+ * the SERVER says it is safe) a way to detach one.
  *
- * FOUNDATION, HONESTLY SCOPED. The backend contract behind
- * `GET /auth/methods` / `DELETE /auth/methods/:provider` is being built in
- * a separate worktree and is not landed yet. This card therefore renders
- * real states only: it makes the real call, shows a real loading state, and
- * shows a real error when the call fails. It never fabricates a linked
- * method, and it never reports a successful unlink that did not happen.
+ * Reads `GET /auth/identities` and writes through
+ * `POST /auth/identities/:provider/link` and
+ * `DELETE /auth/identities/:provider`. Every one of those answers with the
+ * account's full, updated identity list, and this card ADOPTS that list
+ * rather than re-fetching or mutating its own copy - removing or adding a
+ * method can change what else may be removed, and a re-fetch would leave a
+ * window in which every `canBeUnlinked` flag on screen is stale.
  *
- * The one rule it enforces client-side is the lockout guard: the last
- * remaining method has no unlink control at all (see
- * `linked-methods.ts`'s `canUnlinkAuthMethod`). That is a usability guard,
- * not a security boundary - the backend is expected to enforce it too.
+ * It renders real states only: a real call, a real loading state, a real
+ * error when the call fails. It never fabricates a linked method, and it
+ * never reports a successful link/unlink that did not happen.
+ *
+ * WHY THE LINK CONTROLS ARE NOT OPTIONAL. When Google sign-in collides with
+ * an existing account the backend answers `AUTH_ACCOUNT_LINK_REQUIRED` and
+ * tells the person to sign in with their existing method and link the
+ * provider from account settings. Without the control below, the app would
+ * be instructing people to do something it does not let them do - and an
+ * unreachable escape hatch is exactly how a correct security boundary gets
+ * relitigated as "Google login is broken".
+ *
+ * The last-method rule is the server's: `canBeUnlinked` is computed by the
+ * same rule `DELETE` enforces, so this card hides the control when it is
+ * false and `linked-methods.ts` only ever narrows further. A stale list can
+ * still submit an unlink the server refuses with `AUTH_LAST_IDENTITY`; that
+ * is reported truthfully rather than retried.
  */
 export function LinkedMethodsCard() {
   const { t } = useTranslation();
@@ -41,55 +63,134 @@ export function LinkedMethodsCard() {
   const [rows, setRows] = useState<readonly AuthMethodRow[] | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [unlinkingProvider, setUnlinkingProvider] = useState<AuthProviderId | null>(null);
-  const [unlinkError, setUnlinkError] = useState<string | null>(null);
+  const [busyProvider, setBusyProvider] = useState<LinkableAuthProviderId | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isLinkingWhatsApp, setIsLinkingWhatsApp] = useState(false);
+
+  /**
+   * The single place a server-authoritative identity list becomes rendered
+   * rows. Every mutation funnels its RESPONSE through here instead of
+   * re-reading, so the flags on screen are always the ones the server
+   * computed for the state it just committed.
+   */
+  const adoptIdentities = useCallback((identities: readonly AuthIdentitySummary[]) => {
+    setRows(buildAuthMethodRows(identities));
+    setLoadError(null);
+    setIsLoading(false);
+  }, []);
 
   // Only settles state inside the then/catch continuations (never
   // synchronously), matching the precedent `account-security.tsx`'s
   // `loadSessions` sets - so calling it straight from the mount effect
   // below is safe.
-  const loadMethods = useCallback(() => {
-    return listLinkedAuthMethods()
-      .then((methods: readonly LinkedAuthMethod[]) => {
-        setRows(buildAuthMethodRows(methods));
-        setLoadError(null);
-        setIsLoading(false);
-      })
+  const loadIdentities = useCallback(() => {
+    return listAuthIdentities()
+      .then(adoptIdentities)
       .catch(() => {
         setLoadError(t('authMethods.loadFailed'));
         setIsLoading(false);
       });
-  }, [t]);
+  }, [adoptIdentities, t]);
 
   useEffect(() => {
-    void loadMethods();
-  }, [loadMethods]);
+    void loadIdentities();
+  }, [loadIdentities]);
 
   const handleRetry = useCallback(() => {
     setIsLoading(true);
     setLoadError(null);
-    void loadMethods();
-  }, [loadMethods]);
+    void loadIdentities();
+  }, [loadIdentities]);
 
   const handleUnlink = useCallback(
-    async (provider: AuthProviderId) => {
-      setUnlinkingProvider(provider);
-      setUnlinkError(null);
+    async (provider: LinkableAuthProviderId) => {
+      setBusyProvider(provider);
+      setActionError(null);
 
       try {
-        await unlinkAuthMethod(provider);
-        // Re-reads the authoritative list instead of mutating the local
-        // one: the removal may change what else can now be unlinked, and
-        // the server is the only place that knows.
-        await loadMethods();
+        // Adopts the returned list. `DELETE` answers 200 with the caller's
+        // full updated identities precisely so this does not need a second
+        // round trip to learn what is still removable.
+        adoptIdentities(await unlinkAuthIdentity(provider));
         showToast(t('authMethods.unlinked'));
-      } catch {
-        setUnlinkError(t('authMethods.unlinkFailed'));
+      } catch (error) {
+        setActionError(t(describeUnlinkError(error)));
       } finally {
-        setUnlinkingProvider(null);
+        setBusyProvider(null);
       }
     },
-    [loadMethods, showToast, t]
+    [adoptIdentities, showToast, t]
+  );
+
+  /**
+   * Google linking: the SAME native sheet the login screen uses, producing
+   * the same one-shot ID token - but exchanged at the LINK route, which
+   * attaches the Google identity to the session already in hand instead of
+   * issuing a new one. The token is never persisted here either.
+   */
+  const handleLinkGoogle = useCallback(async () => {
+    setBusyProvider('google');
+    setActionError(null);
+
+    try {
+      const result = await signInWithGoogle();
+
+      if (result.status === 'cancelled') {
+        return;
+      }
+
+      if (result.status !== 'success') {
+        setActionError(t('login.googleUnavailable'));
+
+        return;
+      }
+
+      adoptIdentities(await linkGoogleIdentity(result.idToken));
+      showToast(t('authMethods.linkSuccess'));
+    } catch (error) {
+      setActionError(t(describeIdentityLinkError(error, 'google')));
+    } finally {
+      setBusyProvider(null);
+    }
+  }, [adoptIdentities, showToast, t]);
+
+  const handleWhatsAppLinked = useCallback(
+    (identities: readonly AuthIdentitySummary[]) => {
+      adoptIdentities(identities);
+      setIsLinkingWhatsApp(false);
+      showToast(t('authMethods.linkSuccess'));
+    },
+    [adoptIdentities, showToast, t]
+  );
+
+  const handleLinkPress = useCallback(
+    (provider: LinkableAuthProviderId) => {
+      setActionError(null);
+
+      if (provider === 'google') {
+        void handleLinkGoogle();
+
+        return;
+      }
+
+      setIsLinkingWhatsApp(true);
+    },
+    [handleLinkGoogle]
+  );
+
+  const describeStatus = useCallback(
+    (row: AuthMethodRow): string => {
+      if (!row.isLinked) {
+        return t('authMethods.notLinked');
+      }
+
+      // A masked identifier when the backend had one to give, and the
+      // neutral "linked" label when it did not - never a fabricated
+      // address, and never the raw provider subject (which the backend
+      // does not return at all).
+      return row.identifier ?? t('authMethods.identifierHidden');
+    },
+    [t]
   );
 
   return (
@@ -120,11 +221,12 @@ export function LinkedMethodsCard() {
               <View style={styles.rowText}>
                 <Text style={styles.rowTitle}>{t(PROVIDER_LABEL_KEYS[row.provider])}</Text>
                 <Text style={[styles.rowStatus, row.isLinked && styles.rowStatusLinked]}>
-                  {row.isLinked
-                    ? (row.label ?? t('authMethods.linked'))
-                    : t('authMethods.notLinked')}
+                  {describeStatus(row)}
                 </Text>
-                {row.isLinked && !row.canUnlink ? (
+                {row.isLinked && !row.usable ? (
+                  <Text style={styles.rowNote}>{t('authMethods.unusable')}</Text>
+                ) : null}
+                {row.isOnlyMethod && row.usable ? (
                   <Text style={styles.rowNote}>{t('authMethods.lastMethod')}</Text>
                 ) : null}
               </View>
@@ -133,28 +235,56 @@ export function LinkedMethodsCard() {
                 <Pressable
                   accessibilityLabel={`${t('authMethods.unlink')} ${t(PROVIDER_LABEL_KEYS[row.provider])}`}
                   accessibilityRole="button"
-                  accessibilityState={{ disabled: unlinkingProvider !== null }}
-                  disabled={unlinkingProvider !== null}
+                  accessibilityState={{ disabled: busyProvider !== null }}
+                  disabled={busyProvider !== null}
                   onPress={() => {
-                    void handleUnlink(row.provider);
+                    // Safe narrowing: `canUnlink` is false for every
+                    // non-linkable provider (see linked-methods.ts).
+                    void handleUnlink(row.provider as LinkableAuthProviderId);
                   }}
                   style={({ pressed }) => [styles.unlinkButton, pressed && styles.pressed]}
                   testID={`auth-method-unlink-${row.provider}`}>
-                  {unlinkingProvider === row.provider ? (
+                  {busyProvider === row.provider ? (
                     <ActivityIndicator color={Palette.error} size="small" />
                   ) : (
                     <Text style={styles.unlinkButtonText}>{t('authMethods.unlink')}</Text>
                   )}
                 </Pressable>
+              ) : row.canLink ? (
+                <Pressable
+                  accessibilityLabel={`${t('authMethods.link')} ${t(PROVIDER_LABEL_KEYS[row.provider])}`}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: busyProvider !== null }}
+                  disabled={busyProvider !== null}
+                  onPress={() => {
+                    handleLinkPress(row.provider as LinkableAuthProviderId);
+                  }}
+                  style={({ pressed }) => [styles.linkButton, pressed && styles.pressed]}
+                  testID={`auth-method-link-${row.provider}`}>
+                  {busyProvider === row.provider ? (
+                    <ActivityIndicator color={Palette.primary} size="small" />
+                  ) : (
+                    <Text style={styles.linkButtonText}>{t('authMethods.link')}</Text>
+                  )}
+                </Pressable>
               ) : null}
             </View>
           ))}
+
+          {isLinkingWhatsApp ? (
+            <LinkWhatsAppForm
+              onCancel={() => {
+                setIsLinkingWhatsApp(false);
+              }}
+              onLinked={handleWhatsAppLinked}
+            />
+          ) : null}
         </View>
       )}
 
-      {unlinkError ? (
+      {actionError ? (
         <View style={styles.errorBanner} testID="auth-methods-unlink-error">
-          <Text style={styles.errorBannerText}>{unlinkError}</Text>
+          <Text style={styles.errorBannerText}>{actionError}</Text>
         </View>
       ) : null}
     </View>
@@ -233,6 +363,18 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     fontFamily: FontFamily.bold,
     color: Palette.error,
+  },
+  linkButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Palette.primary,
+  },
+  linkButtonText: {
+    fontSize: 12.5,
+    fontFamily: FontFamily.bold,
+    color: Palette.primary,
   },
   errorBanner: {
     gap: 10,

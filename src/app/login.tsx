@@ -13,6 +13,7 @@ import {
   AuthTextField,
   PROVIDER_BADGES,
 } from '@/features/auth/auth-primitives';
+import { describeGoogleLoginError } from '@/features/auth/provider-error-messages';
 import { ApiError } from '@/services/api/client';
 import { isGoogleSignInConfigured, isGoogleSignInSupported } from '@/services/auth/google-sign-in';
 import { isDemoMode } from '@/services/demo/demo-mode';
@@ -157,10 +158,18 @@ export default function LoginScreen() {
         default:
           setFormError(t('login.googleFailed'));
       }
-    } catch {
-      // A real failure: the backend rejected the ID token, or the network
-      // is down. Distinct from every branch above, which are outcomes.
-      setFormError(t('login.googleFailed'));
+    } catch (error) {
+      // A real failure from the backend exchange, distinct from every
+      // branch above (which are outcomes of the native sheet).
+      //
+      // These are NOT all one failure, and must not be reported as one.
+      // `AUTH_ACCOUNT_LINK_REQUIRED` in particular means an account already
+      // exists for this Google address and the ONLY way forward is to sign
+      // in with the existing method and link Google from Account Security -
+      // matching email addresses never merge accounts. Reporting that as
+      // "Login Google gagal" leaves a correct security boundary looking
+      // like a bug, which is how it ends up getting weakened.
+      setFormError(t(describeGoogleLoginError(error)));
     } finally {
       setIsGoogleSubmitting(false);
     }

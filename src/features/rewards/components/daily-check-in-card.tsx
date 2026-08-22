@@ -84,9 +84,15 @@ function DayChip({ day }: DayChipProps) {
 type DailyCheckInCardProps = {
   readonly checkIn: DailyCheckIn;
   readonly onPressCta: () => void;
+  /** The check-in request is in flight. Blocks a second press. */
+  readonly isPending?: boolean;
 };
 
-export function DailyCheckInCard({ checkIn, onPressCta }: DailyCheckInCardProps) {
+export function DailyCheckInCard({
+  checkIn,
+  onPressCta,
+  isPending = false,
+}: DailyCheckInCardProps) {
   const { t } = useTranslation();
 
   return (
@@ -110,11 +116,17 @@ export function DailyCheckInCard({ checkIn, onPressCta }: DailyCheckInCardProps)
         <PointsPill points={checkIn.todayRewardPoints} testID="check-in-today-reward" />
       </View>
 
+      {/* Two SERVER facts, and only server facts, decide whether this button
+          is live: whether the backend supports claiming at all, and whether
+          it has already paid today. Neither is inferred from the device
+          clock - the reward day is defined by the service timezone, so a
+          phone whose clock is moved forward gets the same answer. */}
       <RewardCta
-        isSupported={checkIn.isClaimSupported}
+        isPending={isPending}
+        isSupported={checkIn.isClaimSupported && !checkIn.isTodayClaimed}
         label={checkIn.ctaLabel}
         onPress={onPressCta}
-        testID="check-in-cta"
+        testID="rewards-check-in"
       />
     </RewardsCard>
   );

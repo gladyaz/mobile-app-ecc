@@ -175,19 +175,80 @@ For local QA the backend exposes `POST /dev/entitlements/grant` and
 
 ---
 
-## 8. Rewards is a preview, and says so
+## 8. Rewards is real now — and the backend owns every number
 
-There is **no rewards engine** — not in this app, not in the backend, not in
-any sibling worktree. No ledger table exists, no rewards route is served, and
-`src/types/rewards.ts` has no transaction/history type at all. The Rewards tab
-renders a fixture snapshot (`src/features/rewards/rewards-fixtures.ts`) with
-every `isClaimSupported` / `isRedeemSupported` flag and
-`wallet.isServerAuthoritative` hardcoded `false`, so the screen labels itself
-"PRATINJAU / preview", marks the balance as a preview value, and every CTA
-answers "belum tersedia". Tapping one issues no points and makes no network
-call.
+**This section replaces the previous "Rewards is a preview" note.** There is
+now a rewards engine: an append-only `RewardLedgerEntry` table, a
+`/rewards/*` route surface, and a wallet balance that is a *projection of that
+ledger* rather than a stored counter anyone can overwrite. The mobile app
+consumes it directly — see
+`short-drama-backend/docs/rewards-api-contract.md` for the canonical contract.
 
-Treat the Rewards tab as a design preview during the demo, not as a feature.
+**What the phone does and does not decide.** The client sends *intent* and
+renders *answers*. It never computes, increments or predicts a balance:
+
+| Action | What the app sends | What decides the outcome |
+|---|---|---|
+| Open Rewards | `GET /rewards/snapshot` | Server: balance, streak, task and offer availability |
+| Daily Check-in | `POST /rewards/check-in` — **no body at all** | Server: the date, the amount, and the idempotency key |
+| History | `GET /rewards/ledger` (opaque cursor) | Server: every row, and each row's `balanceAfter` |
+| Redeem | `POST /rewards/redemptions` — offer id + idempotency key only | Server: the cost, the debit, and the premium grant, in one transaction |
+
+Consequences worth stating during a demo:
+
+- **A repeated check-in pays once.** The idempotency key is derived
+  server-side from the reward date, so a double-tap answers `200` with
+  `awardedPoints: 0` and `alreadyCheckedIn: true`. The balance does not move,
+  and the app shows "sudah check-in hari ini" rather than an error.
+- **The reward day is `Asia/Jakarta`, not the phone's clock.** Moving the
+  device clock forward earns nothing.
+- **Redeeming grants premium through the existing entitlement system.** There
+  is no second "am I premium?" answer: the same `Entitlement` row the payment
+  flow writes, differing only in `source: "reward-redemption"`. The app
+  re-reads `GET /users/me/entitlement` afterwards, so Series Detail, the feed
+  and the ad gate all see it without a relaunch.
+- **Three earn tiles are visible but unclaimable, on purpose.** Social follow,
+  rewarded ad and campaign arrive with `isClaimSupported: false` because the
+  backend has no verifiable completion signal for any of them, and it will not
+  pay a reward it cannot verify. The app renders them as "Belum Tersedia" and
+  makes no network call when tapped. **Watch-time is empty for the same
+  reason** — the only watch data the backend holds is a resume position that
+  *decreases* on a rewatch, so summing it would produce a number that merely
+  looks like watch time.
+- **If `REWARDS_ENABLED=false`,** every route answers `503 REWARDS_DISABLED`
+  and the tab shows a bounded "Rewards belum dibuka" state. It never falls
+  back to invented numbers — the fixture module was deleted outright.
+- **A signed-out viewer sees a sign-in prompt,** not a zeroed wallet: rewards
+  are account state, and there is no anonymous rewards surface.
+
+### Preparing a demo balance
+
+A redemption costs 1000 points and a check-in pays 10–100, so a fresh QA
+account cannot demonstrate redeeming without help. The shortcut is
+`POST /dev/rewards/grant`, behind `DEV_TOOLS_ENABLED` plus the same `NODE_ENV`
+allowlist as the entitlement dev routes; with dev tools off it answers
+`404 DEV_TOOLS_DISABLED`.
+
+**It is deliberately not reachable from the app.** No build of this client
+contains a point-granting affordance — not even behind `__DEV__` — because
+that code would ship inside the release APK handed to reviewers. Use the
+checked-in operator script instead, from the repo root:
+
+```bash
+./scripts/dev-grant-reward-points.sh <email> <password> 1500 http://<mac-lan-ip>:3000
+```
+
+It logs in, grants through the same idempotent ledger path as every real
+movement, and prints `GET /dev/rewards/reconcile` so you can see the ledger
+sum and the wallet projection agree.
+
+### Backend prerequisites for the Rewards demo
+
+```
+REWARDS_ENABLED=true
+DEV_TOOLS_ENABLED=true     # only if you want the point-grant shortcut
+REWARDS_TIMEZONE=Asia/Jakarta
+```
 
 ---
 
@@ -258,7 +319,8 @@ null email, which is the intended shape.
 **Works:** email register/login (login never auto-registers), WhatsApp OTP
 sign-in via the local/test provider, member vs non-member Premium behaviour
 enforced by the backend, Home / Discover / Series Detail / Saved / Profile on
-real backend content, playback, and test-mode ads.
+real backend content, playback, test-mode ads, and the **Rewards** loop
+(check-in → ledger → VIP redemption → Premium unlocked).
 
 **Limitations, state them plainly:**
 
@@ -268,5 +330,11 @@ real backend content, playback, and test-mode ads.
 - The backend is **local/development**, on the demo laptop's Wi-Fi. If the
   laptop or the network goes away, the app has no backend.
 - Google sign-in is **not configured** and reports so.
-- Rewards is a **preview**; no points are earned, tracked or redeemed.
+- Rewards is **live against the local backend**: check-in, the points ledger
+  and VIP redemption all work, and redeeming really does turn on Premium. The
+  point *values* (10/15/20/25/30/40/100 per check-in day; VIP at
+  1000/2500/5000) are **not product-approved** — they are the backend's
+  current constants, tunable in one file without a mobile release. Social
+  follow, rewarded ads and watch-time earning are **not implemented** and the
+  app says so, because the backend has no way to verify them.
 - This is **not** a production or store release.

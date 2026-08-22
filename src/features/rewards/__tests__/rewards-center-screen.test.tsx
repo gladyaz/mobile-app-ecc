@@ -4,9 +4,8 @@ import { AccessibilityInfo, Platform, StyleSheet } from 'react-native';
 
 import { UNAVAILABLE_CTA_HINT_KEY } from '@/features/rewards/components/rewards-primitives';
 import { RewardsCenterScreen } from '@/features/rewards/rewards-center-screen';
-import { buildFixtureRewardsSnapshot } from '@/features/rewards/rewards-fixtures';
 import { DEFAULT_LANGUAGE, LANGUAGES, translations } from '@/services/i18n/translations';
-import type { RewardsSnapshot } from '@/types/rewards';
+import type { RewardsLedgerState, RewardsSnapshot } from '@/types/rewards';
 
 // Rewards is localized. These cases assert the Indonesian copy the screen
 // renders by default, because `useTranslation()` falls back to
@@ -16,23 +15,23 @@ import type { RewardsSnapshot } from '@/types/rewards';
 // is reworded, the test follows it instead of pinning a stale string.
 const idCopy = translations[DEFAULT_LANGUAGE];
 const UNAVAILABLE_CTA_HINT = idCopy[UNAVAILABLE_CTA_HINT_KEY];
-const FIXTURE_REWARDS_SNAPSHOT = buildFixtureRewardsSnapshot((key, params) =>
-  Object.entries(params ?? {}).reduce(
-    (text, [name, value]) => text.split(`{${name}}`).join(String(value)),
-    idCopy[key]
-  )
-);
 
 /**
- * The Rewards Center must never issue a reward. These tests pin that down
- * behaviourally: every CTA is pressed, and after each press the rendered
- * balance, progress and streak must be identical to what they were before.
+ * THE SCREEN ITSELF NEVER MOVES A BALANCE.
  *
- * The UX pass changed the layout, not the guarantees - so every no-mutation
- * case below survives from the previous suite unchanged in intent, and the
- * new cases cover the refined presentation: one preview message instead of
- * six, five labelled sections instead of two tabs, and no engineering
- * vocabulary in front of the user.
+ * Rewards is live now - a check-in really does credit points - but the
+ * crediting happens on the SERVER, is reported back through `state`, and is
+ * threaded in by the route. This screen is the presentational half, so the
+ * property these tests pin down is unchanged and, if anything, more
+ * important than it was in the preview slice: press every CTA with no
+ * handlers attached, and the rendered balance, progress and streak must be
+ * byte-identical afterwards. A screen that could move a number on its own
+ * would be able to disagree with the ledger.
+ *
+ * The end-to-end behaviour - that check-in calls the backend, that the
+ * balance follows the response and only the response, that redemption
+ * refreshes the entitlement - is asserted against the wired route in
+ * `src/app/(tabs)/__tests__/rewards.test.tsx`.
  *
  * The entitlement store is mocked purely as a tripwire. The screen does not
  * import it; if someone later wires "redeem" straight into the client-side
@@ -46,9 +45,9 @@ jest.mock('@/stores/entitlement', () => ({
 }));
 
 /**
- * Values here are intentionally unlike anything in `rewards-fixtures.ts`,
- * so a component that quietly hardcoded a fixture number would fail rather
- * than coincidentally agree with the model.
+ * Values here are deliberately odd, so a component that quietly hardcoded
+ * an economic value would fail rather than coincidentally agree with the
+ * model it was handed.
  */
 function buildSnapshot(overrides?: Partial<RewardsSnapshot>): RewardsSnapshot {
   return {
@@ -122,10 +121,29 @@ function buildSnapshot(overrides?: Partial<RewardsSnapshot>): RewardsSnapshot {
   };
 }
 
-function renderReady(overrides?: Partial<RewardsSnapshot>, onPrototypeAction?: jest.Mock) {
+/**
+ * An empty, settled ledger. These cases are about the reward surfaces, not
+ * the history, and an empty page is the honest neutral: it asserts nothing
+ * about transactions that did not happen. The history's own states are
+ * covered in `transaction-history-panel.test.tsx`.
+ */
+const EMPTY_LEDGER: RewardsLedgerState = {
+  status: 'ready',
+  entries: [],
+  hasMore: false,
+  isLoadingMore: false,
+  loadMoreError: null,
+};
+
+function renderReady(
+  overrides?: Partial<RewardsSnapshot>,
+  onUnavailableAction?: jest.Mock,
+  ledger: RewardsLedgerState = EMPTY_LEDGER
+) {
   return render(
     <RewardsCenterScreen
-      onPrototypeAction={onPrototypeAction}
+      ledger={ledger}
+      onUnavailableAction={onUnavailableAction}
       state={{ status: 'ready', snapshot: buildSnapshot(overrides) }}
     />
   );
@@ -152,7 +170,7 @@ describe('RewardsCenterScreen - information architecture', () => {
   it('renders all five blocks on one scroll, with no tabs to hide any of them', async () => {
     const { getByTestId, queryByTestId } = await renderReady();
 
-    expect(getByTestId('rewards-balance-card')).toBeTruthy();
+    expect(getByTestId('rewards-balance')).toBeTruthy();
     expect(getByTestId('rewards-section-daily')).toBeTruthy();
     expect(getByTestId('rewards-section-earn')).toBeTruthy();
     expect(getByTestId('rewards-section-watch')).toBeTruthy();
@@ -169,8 +187,8 @@ describe('RewardsCenterScreen - information architecture', () => {
     const positionOf = (testID: string) => tree.indexOf(`"${testID}"`);
 
     expect(positionOf('rewards-preview-banner')).toBeGreaterThan(-1);
-    expect(positionOf('rewards-balance-card')).toBeGreaterThan(positionOf('rewards-preview-banner'));
-    expect(positionOf('rewards-section-daily')).toBeGreaterThan(positionOf('rewards-balance-card'));
+    expect(positionOf('rewards-balance')).toBeGreaterThan(positionOf('rewards-preview-banner'));
+    expect(positionOf('rewards-section-daily')).toBeGreaterThan(positionOf('rewards-balance'));
     expect(positionOf('rewards-section-earn')).toBeGreaterThan(positionOf('rewards-section-daily'));
     expect(positionOf('rewards-section-watch')).toBeGreaterThan(positionOf('rewards-section-earn'));
     expect(positionOf('rewards-section-redeem')).toBeGreaterThan(
@@ -261,7 +279,7 @@ describe('RewardsCenterScreen - daily reward', () => {
     expect(getByTestId('check-in-day-2')).toBeTruthy();
     expect(getByTestId('check-in-day-3')).toBeTruthy();
     expect(getByTestId('check-in-today-reward')).toBeTruthy();
-    expect(getByTestId('check-in-cta')).toBeTruthy();
+    expect(getByTestId('rewards-check-in')).toBeTruthy();
   });
 
   it('renders a day strip of whatever length the model supplies', async () => {
@@ -540,13 +558,14 @@ describe('RewardsCenterScreen - preview safety is stated once, not everywhere', 
     }
   });
 
-  it('still announces the unavailable state on every preview-only CTA', async () => {
-    // Removing the visual paragraphs must not remove the screen-reader
-    // signal, which costs no visual density at all.
+  it('still announces the unavailable state on every server-unsupported CTA', async () => {
+    // The SERVER marks these unsupported; the screen only renders that
+    // fact. Removing the visual paragraphs must not remove the
+    // screen-reader signal, which costs no visual density at all.
     const { getByTestId } = await renderReady();
 
     for (const testID of [
-      'check-in-cta',
+      'rewards-check-in',
       'reward-task-cta-uji_fb',
       'reward-task-cta-uji_ad',
       'watch-time-cta',
@@ -568,8 +587,8 @@ describe('RewardsCenterScreen - preview safety is stated once, not everywhere', 
 
 describe('RewardsCenterScreen - no CTA issues a reward', () => {
   it('does not grant points when a social task CTA is pressed', async () => {
-    const onPrototypeAction = jest.fn();
-    const { getByTestId, getByText, queryByText } = await renderReady(undefined, onPrototypeAction);
+    const onUnavailableAction = jest.fn();
+    const { getByTestId, getByText, queryByText } = await renderReady(undefined, onUnavailableAction);
 
     const balanceBefore = getByTestId('rewards-balance-value').props.children;
 
@@ -578,7 +597,7 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
     expect(getByTestId('rewards-balance-value').props.children).toBe(balanceBefore);
     expect(getByText('4.242')).toBeTruthy();
     expect(queryByText('4.308')).toBeNull(); // 4242 + 66, if it had paid out
-    expect(onPrototypeAction).toHaveBeenCalledWith({
+    expect(onUnavailableAction).toHaveBeenCalledWith({
       kind: 'TASK',
       id: 'uji_fb',
       label: 'Facebook Uji',
@@ -586,8 +605,8 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
   });
 
   it('does not issue points or advance progress when the rewarded-ad CTA is pressed', async () => {
-    const onPrototypeAction = jest.fn();
-    const { getByTestId, getByText, queryByText } = await renderReady(undefined, onPrototypeAction);
+    const onUnavailableAction = jest.fn();
+    const { getByTestId, getByText, queryByText } = await renderReady(undefined, onUnavailableAction);
 
     const progressBefore = getByTestId('reward-task-progress-uji_ad').props.children;
 
@@ -596,7 +615,7 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
     expect(getByText('4.242')).toBeTruthy();
     expect(getByTestId('reward-task-progress-uji_ad').props.children).toEqual(progressBefore);
     expect(queryByText('4.330')).toBeNull(); // 4242 + 88
-    expect(onPrototypeAction).toHaveBeenCalledWith({
+    expect(onUnavailableAction).toHaveBeenCalledWith({
       kind: 'TASK',
       id: 'uji_ad',
       label: 'Iklan Uji',
@@ -607,7 +626,7 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
     const { getByTestId, getByText, queryByText } = await renderReady();
     const streakBefore = getByTestId('rewards-streak-chip').props.accessibilityLabel;
 
-    await fireEvent.press(getByTestId('check-in-cta'));
+    await fireEvent.press(getByTestId('rewards-check-in'));
 
     expect(getByText('4.242')).toBeTruthy();
     expect(queryByText('4.319')).toBeNull(); // 4242 + 77
@@ -643,14 +662,14 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
   });
 
   it('does not debit points or activate an entitlement when the redeem CTA is pressed', async () => {
-    const onPrototypeAction = jest.fn();
-    const { getByTestId, getByText } = await renderReady(undefined, onPrototypeAction);
+    const onUnavailableAction = jest.fn();
+    const { getByTestId, getByText } = await renderReady(undefined, onUnavailableAction);
 
     await fireEvent.press(getByTestId('redeem-cta-uji_vip'));
 
     expect(getByText('4.242')).toBeTruthy();
     expect(mockUseEntitlement).not.toHaveBeenCalled();
-    expect(onPrototypeAction).toHaveBeenCalledWith({
+    expect(onUnavailableAction).toHaveBeenCalledWith({
       kind: 'REDEMPTION',
       id: 'uji_vip',
       label: 'VIP Uji',
@@ -705,7 +724,7 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
     (AsyncStorage.setItem as jest.Mock).mockClear();
 
     for (const testID of [
-      'check-in-cta',
+      'rewards-check-in',
       'reward-task-cta-uji_fb',
       'reward-task-cta-uji_ad',
       'watch-time-cta',
@@ -722,7 +741,7 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
     const { getByTestId, getByText } = await renderReady();
 
     for (const testID of [
-      'check-in-cta',
+      'rewards-check-in',
       'reward-task-cta-uji_fb',
       'reward-task-cta-uji_ad',
       'watch-time-cta',
@@ -744,12 +763,47 @@ describe('RewardsCenterScreen - values come from the model, not the components',
     expect(queryByText('8.400')).toBeNull();
   });
 
-  it('falls back to the clearly-labelled fixture snapshot when no state is supplied', async () => {
-    const { getByText, getByTestId } = await render(<RewardsCenterScreen />);
+  it('renders no balance at all in a non-ready state, rather than a stand-in', async () => {
+    // The preview slice defaulted to a fixture snapshot when no state was
+    // supplied. That default is gone: `state` is required, and every
+    // non-ready status renders its own affordance with NO number on screen.
+    // A plausible stand-in balance is exactly what "the client never
+    // fabricates a balance" forbids.
+    const { queryByTestId } = await render(
+      <RewardsCenterScreen ledger={EMPTY_LEDGER} state={{ status: 'loading' }} />
+    );
 
-    expect(getByText('1.250')).toBeTruthy();
-    expect(getByTestId('rewards-balance-preview-tag')).toBeTruthy();
-    expect(FIXTURE_REWARDS_SNAPSHOT.wallet.balancePoints).toBe(1250);
+    expect(queryByTestId('rewards-balance')).toBeNull();
+    expect(queryByTestId('rewards-balance-value')).toBeNull();
+  });
+
+  it('shows the sign-in affordance to a guest instead of a zeroed wallet', async () => {
+    // Rewards is account state: a wallet with no owner does not exist. A
+    // "0 points" hero for a signed-out viewer would be a number the server
+    // never sent.
+    const { getByTestId, queryByTestId, getByText } = await render(
+      <RewardsCenterScreen ledger={EMPTY_LEDGER} state={{ status: 'signInRequired' }} />
+    );
+
+    expect(getByTestId('rewards-sign-in-required')).toBeTruthy();
+    expect(getByText(idCopy['rewards.signInTitle'])).toBeTruthy();
+    expect(queryByTestId('rewards-balance-value')).toBeNull();
+  });
+
+  it('renders a bounded unavailable state when rewards is switched off upstream', async () => {
+    // `REWARDS_ENABLED=false`. No retry (retrying cannot flip a server
+    // flag), no balance, and above all no fallback to preview numbers.
+    const { getByTestId, queryByTestId, getByText } = await render(
+      <RewardsCenterScreen
+        ledger={EMPTY_LEDGER}
+        state={{ status: 'unavailable', message: 'Fitur ini belum aktif.' }}
+      />
+    );
+
+    expect(getByTestId('rewards-unavailable')).toBeTruthy();
+    expect(getByText(idCopy['rewards.unavailableTitle'])).toBeTruthy();
+    expect(queryByTestId('rewards-balance-value')).toBeNull();
+    expect(queryByTestId('rewards-retry-button')).toBeNull();
   });
 });
 
@@ -758,7 +812,7 @@ describe('RewardsCenterScreen - accessibility', () => {
     const { getByTestId } = await renderReady();
 
     for (const testID of [
-      'check-in-cta',
+      'rewards-check-in',
       'reward-task-cta-uji_fb',
       'reward-task-cta-uji_ad',
       'watch-time-cta',
@@ -773,7 +827,7 @@ describe('RewardsCenterScreen - accessibility', () => {
   it('gives the dismiss control a 44pt touch target too', async () => {
     const { getByTestId } = await renderReady();
 
-    await fireEvent.press(getByTestId('check-in-cta'));
+    await fireEvent.press(getByTestId('rewards-check-in'));
     const style = StyleSheet.flatten(getByTestId('rewards-action-banner-dismiss').props.style);
 
     expect(style?.minHeight).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
@@ -883,23 +937,23 @@ describe('RewardsCenterScreen - accessibility', () => {
 describe('RewardsCenterScreen - loading / error / empty states', () => {
   it('renders the loading state without any reward content', async () => {
     const { getByTestId, queryByTestId } = await render(
-      <RewardsCenterScreen state={{ status: 'loading' }} />
+      <RewardsCenterScreen ledger={EMPTY_LEDGER} state={{ status: 'loading' }} />
     );
 
     expect(getByTestId('rewards-loading')).toBeTruthy();
-    expect(queryByTestId('rewards-balance-card')).toBeNull();
+    expect(queryByTestId('rewards-balance')).toBeNull();
     expect(queryByTestId('rewards-section-earn')).toBeNull();
   });
 
   it('renders the error state and retries on demand', async () => {
     const onRetry = jest.fn();
     const { getByTestId, getByText, queryByTestId } = await render(
-      <RewardsCenterScreen onRetry={onRetry} state={{ status: 'error', message: 'Gagal memuat.' }} />
+      <RewardsCenterScreen ledger={EMPTY_LEDGER} onRetry={onRetry} state={{ status: 'error', message: 'Gagal memuat.' }} />
     );
 
     expect(getByTestId('rewards-error')).toBeTruthy();
     expect(getByText('Gagal memuat.')).toBeTruthy();
-    expect(queryByTestId('rewards-balance-card')).toBeNull();
+    expect(queryByTestId('rewards-balance')).toBeNull();
 
     await fireEvent.press(getByTestId('rewards-retry-button'));
 
@@ -946,6 +1000,7 @@ describe('RewardsCenterScreen - navigation seam', () => {
     const onClose = jest.fn();
     const { getByTestId } = await render(
       <RewardsCenterScreen
+        ledger={EMPTY_LEDGER}
         onClose={onClose}
         state={{ status: 'ready', snapshot: buildSnapshot() }}
       />

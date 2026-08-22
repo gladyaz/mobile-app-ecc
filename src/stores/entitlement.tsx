@@ -32,6 +32,36 @@ type FetchedStatus = {
 };
 
 /**
+ * What to store when a status fetch FAILS.
+ *
+ * The distinction this draws is the whole point: "we have never had an
+ * answer for this user" and "we have one and this particular refresh
+ * failed" are different states, and collapsing them into `false` turns a
+ * transient network blip into a false negative that does not heal.
+ *
+ * WHY THAT MATTERS CONCRETELY. `refresh()` is called right after a reward
+ * redemption, which has ALREADY debited the user's points and granted
+ * premium in one server-side transaction. If that follow-up read failed and
+ * overwrote a known `true` with `false`, the user would be charged, told the
+ * purchase succeeded, and then be locked out of the premium episode they
+ * just bought and shown ads again — with no other refresh trigger in the app
+ * to correct it before the next sign-in.
+ *
+ * KEEPING A KNOWN VALUE IS NOT AN OPEN GATE. It preserves whatever the
+ * server last actually said, `false` included, and only for the SAME user id
+ * — a different or unknown account still falls back to `false`. The premium
+ * gate remains fail-closed for anyone we have never had an answer about, and
+ * playback authorisation is enforced server-side regardless of what this
+ * client believes.
+ */
+function keepKnownOrFailSafe(
+  targetUserId: string
+): (current: FetchedStatus | null) => FetchedStatus {
+  return (current) =>
+    current?.userId === targetUserId ? current : { userId: targetUserId, isPremium: false };
+}
+
+/**
  * Phase 10, work unit 10-M1/10-M2: fetches the authenticated user's premium
  * entitlement status from the backend (`GET /users/me/entitlement`) and
  * refetches whenever the authenticated identity changes.
@@ -73,8 +103,11 @@ export function EntitlementProvider({ children }: PropsWithChildren) {
         setLastFetchedStatus({ userId: targetUserId, isPremium: status.isPremium });
       } catch {
         // Fail safe to "not premium" on any error (network, 401, etc.) —
-        // never treat a failed fetch as evidence of entitlement.
-        setLastFetchedStatus({ userId: targetUserId, isPremium: false });
+        // never treat a failed fetch as evidence of entitlement. See
+        // `keepKnownOrFailSafe` for why this is a fall-back rather than an
+        // overwrite: there is a difference between "we have never had an
+        // answer for this user" and "we have one and this refresh failed".
+        setLastFetchedStatus(keepKnownOrFailSafe(targetUserId));
       }
     })();
     // Re-run whenever the authenticated identity changes (login, logout,
@@ -92,7 +125,7 @@ export function EntitlementProvider({ children }: PropsWithChildren) {
       const status = await getMyEntitlement();
       setLastFetchedStatus({ userId: targetUserId, isPremium: status.isPremium });
     } catch {
-      setLastFetchedStatus({ userId: targetUserId, isPremium: false });
+      setLastFetchedStatus(keepKnownOrFailSafe(targetUserId));
     }
   }, [isAuthenticated, user]);
 

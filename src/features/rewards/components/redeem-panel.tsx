@@ -3,38 +3,45 @@ import { StyleSheet, View } from 'react-native';
 import { RedeemCard } from '@/features/rewards/components/redeem-card';
 import { RewardEmptyState } from '@/features/rewards/components/rewards-primitives';
 import { useTranslation } from '@/stores/language';
-import type { RewardRedemption, RewardsPrototypeAction } from '@/types/rewards';
+import type { RewardRedemption } from '@/types/rewards';
 
 /**
  * The Redeem list.
  *
- * Previously the far side of a tab, which hid the answer to "what can I
- * eventually get for these points?" behind an extra tap. It is now a plain
- * section on the same scroll, so the reward loop reads top to bottom:
- * balance -> daily -> earn -> watch -> redeem.
- *
- * Like every other surface here, pressing a CTA only reports the press. No
- * points are debited and no entitlement is granted - that pair is a single
- * server-side transaction, described in `docs/rewards-domain-contract.md`.
+ * Pressing an offer calls back up to the screen, which calls back up to the
+ * container, which asks the BACKEND. Nothing in this file debits a balance
+ * or grants an entitlement: the backend does both in one transaction, or
+ * neither happens, and this app re-reads the result. A client that flipped a
+ * premium flag locally would be both wrong and trivially abusable, so the
+ * wiring does not exist here even as a placeholder - and
+ * `__tests__/rewards-economics-boundary.test.ts` fails if it appears.
  */
 
 type RedeemPanelProps = {
   readonly redemptions: readonly RewardRedemption[];
-  readonly onAction: (action: RewardsPrototypeAction) => void;
+  readonly onRedeem: (redemption: RewardRedemption) => void;
+  /**
+   * The offer whose request is in flight, or `null`. Compared by id so only
+   * the pressed row shows a spinner - not the whole list.
+   */
+  readonly pendingRedemptionId?: string | null;
 };
 
-export function RedeemPanel({ redemptions, onAction }: RedeemPanelProps) {
+export function RedeemPanel({
+  redemptions,
+  onRedeem,
+  pendingRedemptionId = null,
+}: RedeemPanelProps) {
   const { t } = useTranslation();
 
   return (
-    <View style={styles.list} testID="rewards-redeem-panel">
+    <View style={styles.list} testID="rewards-redeem">
       {redemptions.length > 0 ? (
         redemptions.map((redemption) => (
           <RedeemCard
+            isPending={pendingRedemptionId === redemption.id}
             key={redemption.id}
-            onPressCta={(pressed) =>
-              onAction({ kind: 'REDEMPTION', id: pressed.id, label: pressed.title })
-            }
+            onPressCta={onRedeem}
             redemption={redemption}
           />
         ))

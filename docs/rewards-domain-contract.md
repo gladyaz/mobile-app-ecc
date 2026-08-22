@@ -1,16 +1,25 @@
-# Rewards Domain Contract (proposal)
+# Rewards Domain Contract (proposal — now largely IMPLEMENTED)
 
-**Status: PROPOSAL. Nothing described here is implemented.**
+**Status: SUPERSEDED IN PART. This was written as a proposal; the model it
+describes has since been built.** The authoritative description of what
+actually exists is the backend's
+`short-drama-backend/docs/rewards-api-contract.md`. Read that first; this
+document is kept because it records *why* the model is shaped the way it is,
+and because the backend contract answers it section by section.
 
-This document records the production model the Rewards Center should be built
-on, written while the UI foundation was built so the UI could be shaped
-around the right contract instead of being retrofitted later.
+What has changed since this was written:
 
-What exists today (branch `feat/rewards-foundation`) is UI plus a view-model
-contract: `src/types/rewards.ts`, the components under
-`src/features/rewards/`, and one placeholder economics module,
-`src/features/rewards/rewards-fixtures.ts`. There is no backend schema, no
-migration, no service call, and no reward issuance anywhere in the app.
+| This document said | What is true now |
+| --- | --- |
+| "Nothing described here is implemented" | `RewardLedgerEntry`, `RewardWallet`, `RewardRedemption` and the `/rewards/*` routes exist and are live |
+| One placeholder economics module, `rewards-fixtures.ts` | **Deleted.** Every number now arrives from the server; there is no fixture fallback left in the app |
+| "no service call, and no reward issuance anywhere in the app" | `src/services/rewards/` calls the four canonical routes; issuance is entirely server-side |
+| `RewardsPrototypeAction` (CTAs only report a tap) | Replaced by real check-in and redemption calls. The type survives, renamed `RewardsUnavailableAction`, for the CTAs the SERVER still marks unsupported |
+| §5 social-follow / rewarded-ad / watch-time earning | Deliberately still NOT implemented — the backend has no verifiable signal and refuses to pay them. See the API contract §6 |
+| §8 open product decisions | **Still open.** The values moved server-side and are now enforced, but they remain product-unapproved |
+
+The one thing this document got exactly right, and which the implementation
+kept, is §1.
 
 ---
 
@@ -267,11 +276,22 @@ The intended replacement path is a `src/services/rewards/` module returning a
 `RewardsSnapshot` of the existing shape. Because no component holds an
 economic value, that swap should need no component changes.
 
+**That is what was built, and the prediction held.** `src/services/rewards/`
+fetches the DTOs and `src/features/rewards/rewards-mapper.ts` turns them into
+the same `RewardsSnapshot` the components already took. The presentational
+components changed only to render two things they never had before — a busy
+state on a CTA that now performs a real request, and the transaction history
+the ledger made possible — not to accommodate a different data shape.
+
 ---
 
 ## 8. Open decisions (founder / product)
 
-None of the numbers in `rewards-fixtures.ts` are approved. Still required:
+The numbers now live in the backend's `rewards.constants.ts` rather than in a
+mobile fixture, and they are ENFORCED there — but they are still not product-
+approved. Changing any of them is an edit to one server file with no mobile
+release, and past ledger entries snapshot their values, so retuning never
+rewrites history. Still required:
 
 1. Daily check-in reward curve, cycle length, and whether a streak bonus exists.
 2. Rewarded-ad reward value and daily cap.

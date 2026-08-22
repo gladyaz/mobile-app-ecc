@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -21,56 +21,70 @@ import {
   RewardEmptyState,
   RewardsSection,
 } from '@/features/rewards/components/rewards-primitives';
+import { TransactionHistoryPanel } from '@/features/rewards/components/transaction-history-panel';
 import { WatchTimeCard } from '@/features/rewards/components/watch-time-card';
-import { buildFixtureRewardsSnapshot } from '@/features/rewards/rewards-fixtures';
 import { scaledLineHeight } from '@/features/rewards/rewards-theme';
 import { useTranslation, type Translate } from '@/stores/language';
-import type { RewardsPrototypeAction, RewardsViewState } from '@/types/rewards';
+import type {
+  DailyCheckIn,
+  RewardRedemption,
+  RewardsLedgerState,
+  RewardsNotice,
+  RewardsUnavailableAction,
+  RewardsViewState,
+} from '@/types/rewards';
 
 /**
  * Rewards Center.
  *
- * INFORMATION ARCHITECTURE - one scroll, five blocks, in the order a
+ * INFORMATION ARCHITECTURE - one scroll, six blocks, in the order a
  * first-time user asks the questions:
  *   1. balance hero      -> "how many points do I have?"
  *   2. Daily Reward      -> "what can I do today?"
  *   3. Earn Points       -> "how do I get more?"
  *   4. Watch Rewards     -> "...and by watching?"
- *   5. Redeem            -> "what is this worth eventually?"
+ *   5. Redeem            -> "what is this worth?"
+ *   6. Point History     -> "where did my points go?"
  *
- * The previous layout split these across an Earn/Redeem tab pair, which
- * meant the answer to question 5 was one tap out of sight and questions 2-4
- * shared a single heading. Tabs are gone; each block now has its own
- * heading, and the whole reward loop reads top to bottom.
+ * THIS SCREEN IS PRESENTATIONAL. It fetches nothing, decides no
+ * availability, and computes no balance. Every number and every
+ * enabled/disabled flag arrives on `state`, which the route builds from
+ * `useRewardsCenter()`. There is deliberately no default `state` and no
+ * fixture import: a caller that forgets to thread real state gets a type
+ * error, not a plausible-looking balance.
  *
- * WHAT THIS SCREEN DOES NOT DO - and must not start doing without the
- * backend contract in `docs/rewards-domain-contract.md` being implemented
- * first:
- *   - it never mutates a points balance, locally or remotely
- *   - it never claims a task or marks a check-in
+ * WHAT IT MAY AND MAY NOT DO:
+ *   - it never mutates a balance; a CTA calls back to the container, and
+ *     the container renders whatever the SERVER then says
  *   - it never touches the entitlement system
- *   - it never starts an ad, opens a social link, or runs a watch timer
+ *   - it never composes a history row from an action that just happened -
+ *     `ledger` is the server's ledger, re-read
+ *   - it never re-enables a control the server marked unsupported
  *
- * The only state it owns is `pendingAction`: which CTA the user last
- * tapped, so a press is acknowledged rather than silently ignored.
+ * THE PREVIEW CHROME IS CONDITIONAL, NOT DELETED. `PreviewBadge`,
+ * `PreviewBanner` and the balance's preview tag render only while
+ * `wallet.isServerAuthoritative` is false - which, against the real backend,
+ * is never, because it always sends `true`. Removing them outright would
+ * leave a non-authoritative balance (should one ever reach this screen)
+ * rendered as though it were real, which is the exact failure the flag
+ * exists to prevent.
  */
 
-function describePendingAction(t: Translate, action: RewardsPrototypeAction): string {
+function describeUnavailableAction(t: Translate, action: RewardsUnavailableAction): string {
   return t('rewards.actionUnavailable', { label: action.label });
 }
 
-type ActionBannerProps = {
-  readonly action: RewardsPrototypeAction;
+type NoticeBannerProps = {
+  readonly notice: RewardsNotice;
   readonly onDismiss: () => void;
 };
 
 /**
- * Feedback for a tap on a preview-only control. One short sentence - the
- * "why" is already stated once at the top of the page, and repeating the
- * full explanation on every press is what made the old screen feel like it
- * was arguing with the user.
+ * The screen's single feedback line: what the server just did, or why a
+ * control did nothing. One short sentence - the previous layout repeated a
+ * paragraph of rationale beside every card, which read as a debug screen.
  */
-function ActionBanner({ action, onDismiss }: ActionBannerProps) {
+function NoticeBanner({ notice, onDismiss }: NoticeBannerProps) {
   const { t } = useTranslation();
 
   return (
@@ -78,13 +92,16 @@ function ActionBanner({ action, onDismiss }: ActionBannerProps) {
       // Android announces this through the live region. iOS has no
       // equivalent prop, so `RewardsCenterScreen` pushes the same sentence
       // through `AccessibilityInfo.announceForAccessibility` there - without
-      // it, a VoiceOver user who taps a CTA further down the scroll view
-      // gets no feedback at all.
+      // it, a VoiceOver user who acts on a control further down the scroll
+      // view gets no confirmation at all.
       accessibilityLiveRegion="polite"
       accessibilityRole="alert"
-      style={styles.actionBanner}
+      style={[styles.actionBanner, notice.tone === 'success' && styles.actionBannerSuccess]}
       testID="rewards-action-banner">
-      <Text style={styles.actionBannerText}>{describePendingAction(t, action)}</Text>
+      <Text
+        style={[styles.actionBannerText, notice.tone === 'success' && styles.actionBannerTextSuccess]}>
+        {notice.message}
+      </Text>
       <Pressable
         accessibilityLabel={t('rewards.dismissNotice')}
         accessibilityRole="button"
@@ -99,50 +116,125 @@ function ActionBanner({ action, onDismiss }: ActionBannerProps) {
 
 export type RewardsCenterScreenProps = {
   /**
-   * Defaults to the placeholder snapshot so the screen is renderable before
-   * any service exists.
-   *
-   * INTEGRATION NOTE: when a real rewards service lands, make this prop
-   * REQUIRED and delete the default. Otherwise a caller that forgets to
-   * thread real state silently ships a plausible-looking balance.
+   * REQUIRED, with no default. The previous slice defaulted to a fixture
+   * snapshot so the screen was renderable before a service existed; that
+   * default is gone precisely so it can never be reached again.
    */
-  readonly state?: RewardsViewState;
+  readonly state: RewardsViewState;
+  readonly ledger: RewardsLedgerState;
+  /** Server-driven feedback. Outranks a local unsupported-tap acknowledgement. */
+  readonly notice?: RewardsNotice | null;
+  /** `'check-in'` or an offer id while that request is in flight. */
+  readonly pendingActionId?: string | null;
   readonly onRetry?: () => void;
+  readonly onCheckIn?: () => void;
+  readonly onRedeem?: (redemption: RewardRedemption) => void;
+  readonly onDismissNotice?: () => void;
+  readonly onRetryLedger?: () => void;
+  readonly onLoadMoreLedger?: () => void;
+  readonly onSignIn?: () => void;
   /** When provided, renders a back control. Omitted = tab root. */
   readonly onClose?: () => void;
-  readonly onPrototypeAction?: (action: RewardsPrototypeAction) => void;
+  readonly onUnavailableAction?: (action: RewardsUnavailableAction) => void;
 };
 
 export function RewardsCenterScreen({
   state,
+  ledger,
+  notice = null,
+  pendingActionId = null,
   onRetry,
+  onCheckIn,
+  onRedeem,
+  onDismissNotice,
+  onRetryLedger,
+  onLoadMoreLedger,
+  onSignIn,
   onClose,
-  onPrototypeAction,
+  onUnavailableAction,
 }: RewardsCenterScreenProps) {
   const { t } = useTranslation();
-  const [pendingAction, setPendingAction] = useState<RewardsPrototypeAction | null>(null);
-  // Built per language rather than read from a module constant, so switching
-  // the app language re-renders the preview copy with everything else.
-  const resolvedState: RewardsViewState = state ?? {
-    status: 'ready',
-    snapshot: buildFixtureRewardsSnapshot(t),
-  };
+  const [unavailableAction, setUnavailableAction] = useState<RewardsUnavailableAction | null>(null);
 
-  const handlePrototypeAction = useCallback(
-    (action: RewardsPrototypeAction) => {
-      // The entire effect of every CTA on this screen. No balance, no claim,
-      // no entitlement - just a record of what was tapped, an announcement
-      // for screen-reader users, plus an optional notification to the host.
-      setPendingAction(action);
+  // A real, server-sourced notice always wins: if the backend just said
+  // something happened, that outranks "you tapped a button that does
+  // nothing".
+  const activeNotice: RewardsNotice | null =
+    notice ??
+    (unavailableAction
+      ? { tone: 'info', message: describeUnavailableAction(t, unavailableAction) }
+      : null);
+  const activeNoticeMessage = activeNotice?.message ?? null;
 
-      if (Platform.OS === 'ios') {
-        AccessibilityInfo.announceForAccessibility(describePendingAction(t, action));
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || !activeNoticeMessage) {
+      return;
+    }
+
+    AccessibilityInfo.announceForAccessibility(activeNoticeMessage);
+  }, [activeNoticeMessage]);
+
+  const handleUnavailableAction = useCallback(
+    (action: RewardsUnavailableAction) => {
+      // The entire effect of pressing a control the SERVER marked
+      // unsupported: record the tap so it is acknowledged rather than
+      // silently ignored. No balance, no claim, no entitlement, no network.
+      setUnavailableAction(action);
+      onUnavailableAction?.(action);
+    },
+    [onUnavailableAction]
+  );
+
+  const handleDismissNotice = useCallback(() => {
+    setUnavailableAction(null);
+    onDismissNotice?.();
+  }, [onDismissNotice]);
+
+  const handleCheckIn = useCallback(
+    (checkIn: DailyCheckIn) => {
+      // `isClaimSupported` is the server's answer to "can this be claimed at
+      // all?", and a false one never reaches the network.
+      if (!checkIn.isClaimSupported) {
+        handleUnavailableAction({
+          kind: 'DAILY_CHECK_IN',
+          id: 'daily_check_in',
+          label: checkIn.ctaLabel,
+        });
+
+        return;
       }
 
-      onPrototypeAction?.(action);
+      // An ALREADY-CLAIMED day deliberately still goes through. The backend
+      // answers 200 with `awardedPoints: 0` and the wallet unchanged, so the
+      // user is told the truth by the authority that knows it - rather than
+      // by this screen guessing from a snapshot that may be minutes old.
+      onCheckIn?.();
     },
-    [onPrototypeAction, t]
+    [handleUnavailableAction, onCheckIn]
   );
+
+  const handleRedeem = useCallback(
+    (redemption: RewardRedemption) => {
+      // Availability is the SERVER's answer, read here and never recomputed
+      // from the balance in the hero. An offer the server has not enabled
+      // never reaches the network.
+      if (!redemption.isRedeemSupported) {
+        handleUnavailableAction({
+          kind: 'REDEMPTION',
+          id: redemption.id,
+          label: redemption.title,
+        });
+
+        return;
+      }
+
+      onRedeem?.(redemption);
+    },
+    [handleUnavailableAction, onRedeem]
+  );
+
+  const isReady = state.status === 'ready';
+  const isServerAuthoritative = isReady && state.snapshot.wallet.isServerAuthoritative;
 
   return (
     <View style={styles.container} testID="rewards-center-screen">
@@ -162,17 +254,46 @@ export function RewardsCenterScreen({
         <Text accessibilityRole="header" style={styles.title}>
           {t('rewards.title')}
         </Text>
-        <PreviewBadge />
+        {isReady && !isServerAuthoritative ? <PreviewBadge /> : null}
       </View>
 
-      {resolvedState.status === 'loading' ? (
+      {state.status === 'loading' ? (
         <View style={styles.centered} testID="rewards-loading">
           <ActivityIndicator color={Palette.primary} size="large" />
           <Text style={styles.centeredText}>{t('rewards.loading')}</Text>
         </View>
-      ) : resolvedState.status === 'error' ? (
+      ) : state.status === 'signInRequired' ? (
+        // Rewards is account state by definition: there is no wallet without
+        // an owner and no anonymous streak to attach one to. A guest is
+        // offered the way in, never a zeroed or preview balance.
+        <View style={styles.centered} testID="rewards-sign-in-required">
+          <Text accessibilityRole="header" style={styles.stateTitle}>
+            {t('rewards.signInTitle')}
+          </Text>
+          <Text style={styles.stateBody}>{t('rewards.signInBody')}</Text>
+          {onSignIn ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={onSignIn}
+              style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+              testID="rewards-sign-in-button">
+              <Text style={styles.retryButtonText}>{t('rewards.signInCta')}</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : state.status === 'unavailable' ? (
+        // The deployment has the feature switched off. A bounded dead end
+        // with no retry - retrying cannot turn a server flag on - and, above
+        // all, no fallback to preview numbers.
+        <View style={styles.centered} testID="rewards-unavailable">
+          <Text accessibilityRole="header" style={styles.stateTitle}>
+            {t('rewards.unavailableTitle')}
+          </Text>
+          <Text style={styles.stateBody}>{state.message}</Text>
+        </View>
+      ) : state.status === 'error' ? (
         <View style={styles.centered} testID="rewards-error">
-          <Text style={styles.errorText}>{resolvedState.message}</Text>
+          <Text style={styles.errorText}>{state.message}</Text>
           {onRetry ? (
             <Pressable
               accessibilityRole="button"
@@ -185,29 +306,24 @@ export function RewardsCenterScreen({
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.content}>
-          {/* The one place the preview status is explained. */}
-          <PreviewBanner />
+          {/* Rendered only while the balance is NOT server-authoritative. */}
+          {isServerAuthoritative ? null : <PreviewBanner />}
 
           <PointsBalanceCard
-            streakDays={resolvedState.snapshot.dailyCheckIn?.currentStreakDays ?? null}
-            wallet={resolvedState.snapshot.wallet}
+            streakDays={state.snapshot.dailyCheckIn?.currentStreakDays ?? null}
+            wallet={state.snapshot.wallet}
           />
 
-          {pendingAction ? (
-            <ActionBanner action={pendingAction} onDismiss={() => setPendingAction(null)} />
+          {activeNotice ? (
+            <NoticeBanner notice={activeNotice} onDismiss={handleDismissNotice} />
           ) : null}
 
           <RewardsSection title={t('rewards.sectionDaily')} testID="rewards-section-daily">
-            {resolvedState.snapshot.dailyCheckIn ? (
+            {state.snapshot.dailyCheckIn ? (
               <DailyCheckInCard
-                checkIn={resolvedState.snapshot.dailyCheckIn}
-                onPressCta={() =>
-                  handlePrototypeAction({
-                    kind: 'DAILY_CHECK_IN',
-                    id: 'daily_check_in',
-                    label: resolvedState.snapshot.dailyCheckIn?.ctaLabel ?? '',
-                  })
-                }
+                checkIn={state.snapshot.dailyCheckIn}
+                isPending={pendingActionId === 'check-in'}
+                onPressCta={() => handleCheckIn(state.snapshot.dailyCheckIn!)}
               />
             ) : (
               <RewardEmptyState
@@ -218,20 +334,20 @@ export function RewardsCenterScreen({
           </RewardsSection>
 
           <RewardsSection title={t('rewards.sectionEarn')} testID="rewards-section-earn">
-            <EarnPanel onAction={handlePrototypeAction} tasks={resolvedState.snapshot.tasks} />
+            <EarnPanel onAction={handleUnavailableAction} tasks={state.snapshot.tasks} />
           </RewardsSection>
 
           <RewardsSection title={t('rewards.sectionWatch')} testID="rewards-section-watch">
-            {resolvedState.snapshot.watchTime ? (
+            {state.snapshot.watchTime ? (
               <WatchTimeCard
                 onPressCta={() =>
-                  handlePrototypeAction({
+                  handleUnavailableAction({
                     kind: 'WATCH_TIME',
                     id: 'watch_time',
                     label: t('rewards.watchTimeCta'),
                   })
                 }
-                watchTime={resolvedState.snapshot.watchTime}
+                watchTime={state.snapshot.watchTime}
               />
             ) : (
               <RewardEmptyState
@@ -243,8 +359,17 @@ export function RewardsCenterScreen({
 
           <RewardsSection title={t('rewards.sectionRedeem')} testID="rewards-section-redeem">
             <RedeemPanel
-              onAction={handlePrototypeAction}
-              redemptions={resolvedState.snapshot.redemptions}
+              onRedeem={handleRedeem}
+              pendingRedemptionId={pendingActionId}
+              redemptions={state.snapshot.redemptions}
+            />
+          </RewardsSection>
+
+          <RewardsSection title={t('rewards.sectionHistory')} testID="rewards-section-history">
+            <TransactionHistoryPanel
+              onLoadMore={() => onLoadMoreLedger?.()}
+              onRetry={() => onRetryLedger?.()}
+              state={ledger}
             />
           </RewardsSection>
         </ScrollView>
@@ -293,7 +418,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 48,
     // Sections breathe more than the cards inside them, which is what makes
-    // the five blocks readable as five blocks.
+    // the blocks readable as blocks.
     gap: 22,
   },
   centered: {
@@ -308,6 +433,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: FontFamily.semiBold,
     color: Palette.textSecondary,
+  },
+  stateTitle: {
+    fontSize: 17,
+    fontFamily: FontFamily.extraBold,
+    color: Palette.text,
+    textAlign: 'center',
+  },
+  stateBody: {
+    fontSize: 13.5,
+    lineHeight: scaledLineHeight(13.5),
+    fontFamily: FontFamily.regular,
+    color: Palette.textSecondary,
+    textAlign: 'center',
   },
   errorText: {
     fontSize: 13.5,
@@ -339,6 +477,13 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 122, 26, 0.35)',
     backgroundColor: 'rgba(255, 122, 26, 0.09)',
   },
+  actionBannerSuccess: {
+    // A confirmed credit is not a caution. Success gets its own tint so
+    // "+10 points" does not read with the same visual weight as "not
+    // available".
+    borderColor: 'rgba(76, 201, 132, 0.4)',
+    backgroundColor: 'rgba(76, 201, 132, 0.10)',
+  },
   actionBannerText: {
     flex: 1,
     minWidth: 0,
@@ -346,6 +491,9 @@ const styles = StyleSheet.create({
     lineHeight: scaledLineHeight(12.5),
     fontFamily: FontFamily.semiBold,
     color: Palette.primaryHover,
+  },
+  actionBannerTextSuccess: {
+    color: '#8FE3B4',
   },
   dismissButton: {
     minHeight: 44,

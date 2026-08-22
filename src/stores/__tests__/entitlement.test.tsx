@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react-native';
+import { act, render, renderHook, waitFor } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
 import { getMyEntitlement } from '@/services/entitlement/entitlement-service';
@@ -103,6 +103,51 @@ describe('EntitlementProvider', () => {
 
     await waitFor(() => expect(mockedGetMyEntitlement).toHaveBeenCalledTimes(1));
     expect(getByTestId('is-premium').props.children).toBe('false');
+  });
+
+  it('keeps a KNOWN entitled status when a later refresh fails', async () => {
+    // The scenario this exists for: a reward redemption has already debited
+    // the user's points and granted premium in one server-side transaction,
+    // and the follow-up `refresh()` hits a transient network error.
+    // Replacing the known `true` with `false` would charge the user, tell
+    // them the purchase succeeded, and then lock them out of the episode
+    // they just bought - with no other refresh trigger in the app to correct
+    // it before the next sign-in.
+    mockAuth({ isAuthenticated: true, user: USER_A });
+    mockedGetMyEntitlement.mockResolvedValueOnce({ isPremium: true, expiresAt: null });
+
+    const { result } = await renderHook(() => useEntitlement(), {
+      wrapper: ({ children }) => <EntitlementProvider>{children}</EntitlementProvider>,
+    });
+
+    await waitFor(() => expect(result.current.isPremium).toBe(true));
+
+    mockedGetMyEntitlement.mockRejectedValueOnce(new Error('offline'));
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.isPremium).toBe(true);
+  });
+
+  it('keeps a KNOWN non-entitled status too, rather than re-asserting it', async () => {
+    // Preserving is not the same as opening the gate: whatever the server
+    // last actually said is what survives, `false` included.
+    mockAuth({ isAuthenticated: true, user: USER_A });
+    mockedGetMyEntitlement.mockResolvedValueOnce({ isPremium: false, expiresAt: null });
+
+    const { result } = await renderHook(() => useEntitlement(), {
+      wrapper: ({ children }) => <EntitlementProvider>{children}</EntitlementProvider>,
+    });
+
+    await waitFor(() => expect(mockedGetMyEntitlement).toHaveBeenCalledTimes(1));
+
+    mockedGetMyEntitlement.mockRejectedValueOnce(new Error('offline'));
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.isPremium).toBe(false);
   });
 
   it('does not leak a stale entitled status across an account switch, even before the new fetch resolves', async () => {

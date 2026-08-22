@@ -42,8 +42,16 @@ export function PointsBalanceCard({ wallet, streakDays = null }: PointsBalanceCa
   const hasStreak = typeof streakDays === 'number' && streakDays > 0;
 
   return (
-    <View style={styles.card} testID="rewards-balance-card">
-      <View accessible accessibilityLabel={t('rewards.balanceA11y', { points: balanceLabel })}>
+    <View style={styles.card} testID="rewards-balance">
+      {/* The announced sentence carries the SAME qualifier the visible tag
+          does. A screen-reader user must not be the only one who hears an
+          unqualified figure when the balance did not come from the server. */}
+      <View
+        accessible
+        accessibilityLabel={t(
+          wallet.isServerAuthoritative ? 'rewards.balanceA11y' : 'rewards.balancePreviewA11y',
+          { points: balanceLabel }
+        )}>
         <Text style={styles.label}>{t('rewards.yourPoints')}</Text>
         <View style={styles.balanceRow}>
           <Text style={styles.balanceValue} testID="rewards-balance-value">

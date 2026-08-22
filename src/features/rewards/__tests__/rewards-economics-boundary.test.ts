@@ -8,36 +8,68 @@ import '@/features/rewards/components/redeem-card';
 import '@/features/rewards/components/redeem-panel';
 import '@/features/rewards/components/reward-task-card';
 import '@/features/rewards/components/rewards-primitives';
+import '@/features/rewards/components/transaction-history-panel';
 import '@/features/rewards/components/watch-time-card';
 
 /**
- * Architectural guardrails for the Rewards foundation.
+ * Architectural guardrails for the Rewards feature.
  *
- * The screen tests prove the UI does not pay out today. This file protects
- * the *structure* that keeps it that way, so the guarantee cannot be
- * quietly undone by a later edit.
+ * The screen and route tests prove the UI does not invent a balance. This
+ * file protects the *structure* that keeps it that way, so the guarantee
+ * cannot be quietly undone by a later edit.
  *
- * Each `jest.mock` factory below is a tripwire, not a stub: the factory
- * body only runs if some module actually imports that path. Because module
+ * Each `jest.mock` factory below is a tripwire, not a stub: the factory body
+ * only runs if some module actually imports that path. Because module
  * resolution is transitive, this catches an indirect dependency (component
- * -> helper -> entitlement store) that a source-text grep would miss.
+ * -> helper -> rewards service) that a source-text grep would miss.
  *
- * Note the screen itself is deliberately NOT imported here - it is the one
- * module allowed to import the fixtures, and doing so would trip the first
- * wire. That the screen does read the fixtures is covered by the
- * "falls back to the clearly-labelled fixture snapshot" case in
- * `rewards-center-screen.test.tsx`.
+ * WHAT CHANGED NOW THAT REWARDS IS LIVE. The old tripwire on
+ * `rewards-fixtures` is gone because that module is gone - the fixture set
+ * was deleted outright rather than left importable, which is a stronger
+ * guarantee than a test that it stays unimported. In its place are wires on
+ * the modules that CAN now move a balance: the `/rewards/*` client, the
+ * container hook, and the DTO mapper. A presentational component that
+ * imported any of them could fetch, claim or redeem on its own, which is
+ * precisely the arrangement this split exists to prevent.
+ *
+ * The screen and the route are deliberately NOT imported here - the route is
+ * the one module allowed to hold the container, and importing it would trip
+ * the wires by design.
  */
 
-const mockFixturesImported = jest.fn();
+const mockRewardsServiceImported = jest.fn();
+const mockRewardsMapperImported = jest.fn();
+const mockRewardsContainerImported = jest.fn();
 const mockEntitlementStoreImported = jest.fn();
 const mockEntitlementServiceImported = jest.fn();
+const mockApiClientImported = jest.fn();
+const mockAuthStoreImported = jest.fn();
 const mockAdGateImported = jest.fn();
 const mockAdsSdkImported = jest.fn();
 const mockRouterImported = jest.fn();
 
-jest.mock('@/features/rewards/rewards-fixtures', () => {
-  mockFixturesImported();
+jest.mock('@/services/rewards/rewards-service', () => {
+  mockRewardsServiceImported();
+  return {};
+});
+
+jest.mock('@/features/rewards/rewards-mapper', () => {
+  mockRewardsMapperImported();
+  return {};
+});
+
+jest.mock('@/features/rewards/use-rewards-center', () => {
+  mockRewardsContainerImported();
+  return {};
+});
+
+jest.mock('@/services/api/client', () => {
+  mockApiClientImported();
+  return {};
+});
+
+jest.mock('@/stores/auth', () => {
+  mockAuthStoreImported();
   return {};
 });
 
@@ -80,67 +112,61 @@ jest.mock('expo-router', () => {
  */
 
 describe('rewards economics boundary', () => {
-  it('keeps every economic value out of the presentational components', () => {
-    // A component importing the fixtures would be re-introducing hardcoded
-    // reward values through the back door. Numbers arrive as props only.
-    expect(mockFixturesImported).not.toHaveBeenCalled();
+  it('gives the presentational components no way to read or move a balance', () => {
+    // A component that could call the rewards API could claim, redeem, or
+    // refresh a wallet on its own - and would then own economics that
+    // belong to the server. Numbers arrive as props only.
+    expect(mockRewardsServiceImported).not.toHaveBeenCalled();
+    expect(mockApiClientImported).not.toHaveBeenCalled();
   });
-});
 
-describe('rewards scope boundary', () => {
+  it('keeps the container and the wire-format mapper out of the components', () => {
+    // The mapper is where DTOs become view models. A component holding it
+    // could render a raw server payload the screen never validated, and a
+    // component holding the container could fetch during render.
+    expect(mockRewardsMapperImported).not.toHaveBeenCalled();
+    expect(mockRewardsContainerImported).not.toHaveBeenCalled();
+  });
+
   it('gives the rewards components no path to the entitlement system', () => {
+    // Redemption grants premium in the same server transaction as the
+    // debit. A component that could reach the entitlement store could
+    // create a SECOND premium authority, and "am I premium?" would start
+    // depending on which screen asked.
     expect(mockEntitlementStoreImported).not.toHaveBeenCalled();
     expect(mockEntitlementServiceImported).not.toHaveBeenCalled();
   });
 
+  it('gives the rewards components no path to the auth session', () => {
+    // Rewards routes are authenticated, but the components must not be the
+    // ones deciding who is signed in - that is the container's job, and a
+    // component reading the session could render one user's balance to
+    // another during an account switch.
+    expect(mockAuthStoreImported).not.toHaveBeenCalled();
+  });
+
   it('gives the rewards components no path to the ads SDK or ad gate', () => {
+    // The rewarded-ad task is served UNCLAIMABLE. A component that could
+    // start an ad would be building the earn path the backend refuses to
+    // pay, because it cannot verify an ad completed.
     expect(mockAdGateImported).not.toHaveBeenCalled();
     expect(mockAdsSdkImported).not.toHaveBeenCalled();
   });
 
   it('keeps the rewards components navigation-agnostic', () => {
-    // The screen takes an `onClose` callback rather than driving the
-    // router, so this slice cannot affect root/bottom navigation.
+    // The screen takes callbacks rather than driving the router, so this
+    // feature cannot affect root/bottom navigation.
     expect(mockRouterImported).not.toHaveBeenCalled();
   });
 });
 
-describe('rewards fixtures', () => {
-  // `requireActual` bypasses the tripwire above on purpose: these cases
-  // assert on the real placeholder data.
-  const { buildFixtureRewardsSnapshot } = jest.requireActual<
-    typeof import('@/features/rewards/rewards-fixtures')
-  >('@/features/rewards/rewards-fixtures');
-
-  // The snapshot is localized, so building it needs a `t`. This stub returns
-  // the key it was given: every case below asserts on FLAGS, never on copy,
-  // and a key-returning stub keeps it that way - a test that started
-  // depending on Indonesian wording would fail loudly here instead of
-  // silently pinning one language.
-  const FIXTURE_REWARDS_SNAPSHOT = buildFixtureRewardsSnapshot((key) => key);
-
-  it('marks the placeholder wallet as not server-authoritative', () => {
-    expect(FIXTURE_REWARDS_SNAPSHOT.wallet.isServerAuthoritative).toBe(false);
-  });
-
-  it('ships every task with claiming switched off', () => {
-    const claimable = FIXTURE_REWARDS_SNAPSHOT.tasks.filter((task) => task.isClaimSupported);
-
-    expect(claimable).toEqual([]);
-  });
-
-  it('ships every redemption with redeeming switched off', () => {
-    const redeemable = FIXTURE_REWARDS_SNAPSHOT.redemptions.filter(
-      (redemption) => redemption.isRedeemSupported
-    );
-
-    expect(redeemable).toEqual([]);
-  });
-
-  it('ships check-in and watch-time as unclaimable placeholder data', () => {
-    expect(FIXTURE_REWARDS_SNAPSHOT.dailyCheckIn?.isClaimSupported).toBe(false);
-    expect(FIXTURE_REWARDS_SNAPSHOT.watchTime?.isClaimSupported).toBe(false);
-    // A local timer must never be able to claim it produced this number.
-    expect(FIXTURE_REWARDS_SNAPSHOT.watchTime?.source).toBe('PLACEHOLDER');
+describe('rewards fixture removal', () => {
+  it('no longer ships a fixture snapshot module at all', () => {
+    // The strongest form of "no fixture runtime fallback": the module the
+    // screen used to fall back to does not exist. Resolved at RUNTIME rather
+    // than imported, because a missing module has to be an observable
+    // resolution failure here, not a compile error that stops this file from
+    // building at all.
+    expect(() => jest.requireActual('@/features/rewards/rewards-fixtures')).toThrow();
   });
 });

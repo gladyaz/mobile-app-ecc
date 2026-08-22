@@ -3,7 +3,7 @@ import { StyleSheet, View } from 'react-native';
 import { RewardTaskCard } from '@/features/rewards/components/reward-task-card';
 import { RewardEmptyState } from '@/features/rewards/components/rewards-primitives';
 import { useTranslation } from '@/stores/language';
-import type { RewardTask, RewardsPrototypeAction } from '@/types/rewards';
+import type { RewardTask, RewardsUnavailableAction } from '@/types/rewards';
 
 /**
  * The Earn Points list.
@@ -16,11 +16,19 @@ import type { RewardTask, RewardsPrototypeAction } from '@/types/rewards';
  *
  * The per-type caveat dedup that used to live here is gone with the notices
  * themselves - see `rewards-primitives.tsx` for why.
+ *
+ * EVERY TASK THE BACKEND SERVES IS CURRENTLY UNCLAIMABLE, and pressing one
+ * reports the tap and nothing else. That is not this component's decision:
+ * `isClaimSupported` arrives false on each task because the server has no
+ * way to verify a social follow, a finished ad or a campaign, and a reward
+ * it cannot verify is one it will not pay. The flag is server-owned, so the
+ * day a verifiable signal exists these rows become claimable with no change
+ * here and no mobile release.
  */
 
 type EarnPanelProps = {
   readonly tasks: readonly RewardTask[];
-  readonly onAction: (action: RewardsPrototypeAction) => void;
+  readonly onAction: (action: RewardsUnavailableAction) => void;
 };
 
 export function EarnPanel({ tasks, onAction }: EarnPanelProps) {

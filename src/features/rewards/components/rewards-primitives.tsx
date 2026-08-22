@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useFormatPoints } from '@/features/rewards/format-points';
@@ -202,6 +202,15 @@ type RewardCtaProps = {
    * command ambiguous. Callers pass the row's subject in here.
    */
   readonly accessibilityLabel?: string;
+  /**
+   * A request this control started is in flight.
+   *
+   * It renders a spinner INSTEAD OF a changed number, which is the whole
+   * point: the balance must not move until the server has answered, so the
+   * only honest thing to show meanwhile is that we are waiting. It also
+   * blocks the press, so a double-tap cannot open a second request.
+   */
+  readonly isPending?: boolean;
 };
 
 export function RewardCta({
@@ -211,6 +220,7 @@ export function RewardCta({
   testID,
   compact = false,
   accessibilityLabel,
+  isPending = false,
 }: RewardCtaProps) {
   const { t } = useTranslation();
 
@@ -219,6 +229,8 @@ export function RewardCta({
       accessibilityHint={isSupported ? undefined : t(UNAVAILABLE_CTA_HINT_KEY)}
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
+      accessibilityState={{ disabled: isPending, busy: isPending }}
+      disabled={isPending}
       onPress={onPress}
       style={({ pressed }) => [
         styles.cta,
@@ -227,10 +239,20 @@ export function RewardCta({
         pressed && styles.pressed,
       ]}
       testID={testID}>
-      <Text
-        style={[styles.ctaText, isSupported ? styles.ctaTextSupported : styles.ctaTextUnavailable]}>
-        {label}
-      </Text>
+      {isPending ? (
+        <ActivityIndicator
+          color={isSupported ? Palette.background : RewardUnavailable.text}
+          size="small"
+        />
+      ) : (
+        <Text
+          style={[
+            styles.ctaText,
+            isSupported ? styles.ctaTextSupported : styles.ctaTextUnavailable,
+          ]}>
+          {label}
+        </Text>
+      )}
     </Pressable>
   );
 }

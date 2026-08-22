@@ -41,11 +41,22 @@ const AVAILABILITY_LABEL_KEY: Record<RewardRedemptionAvailability, TranslationKe
 type RedeemCardProps = {
   readonly redemption: RewardRedemption;
   readonly onPressCta: (redemption: RewardRedemption) => void;
+  /** This offer's redemption request is in flight. Blocks a second press. */
+  readonly isPending?: boolean;
 };
 
-export function RedeemCard({ redemption, onPressCta }: RedeemCardProps) {
+export function RedeemCard({ redemption, onPressCta, isPending = false }: RedeemCardProps) {
   const { t } = useTranslation();
   const formatPoints = useFormatPoints();
+  /**
+   * Both halves come from the server and neither is recomputed here.
+   * `isRedeemSupported` says the offer is purchasable in principle;
+   * `availability` says whether THIS account can afford it right now, decided
+   * against the server's own balance. Re-deriving affordability from the
+   * number in the hero would let a stale balance light up a button the
+   * backend is about to refuse.
+   */
+  const isActionable = redemption.isRedeemSupported && redemption.availability === 'AVAILABLE';
 
   return (
     <View style={styles.row} testID={`redeem-card-${redemption.id}`}>
@@ -81,7 +92,8 @@ export function RedeemCard({ redemption, onPressCta }: RedeemCardProps) {
             title: redemption.title,
           })}
           compact
-          isSupported={redemption.isRedeemSupported}
+          isPending={isPending}
+          isSupported={isActionable}
           label={redemption.ctaLabel}
           onPress={() => onPressCta(redemption)}
           testID={`redeem-cta-${redemption.id}`}

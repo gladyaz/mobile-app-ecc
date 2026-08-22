@@ -5,7 +5,7 @@ import { AccessibilityInfo, AppState, Platform, StyleSheet } from 'react-native'
 
 import { DramaFeedItem, touchDistance } from '@/components/drama-feed-item';
 import { AUTO_CLEAR_DISPLAY_DELAY_MS } from '@/constants/clear-display';
-import { FeedBottomGap } from '@/constants/theme';
+import { FeedBottomGap, Typography } from '@/constants/theme';
 import { useClearDisplayState } from '@/hooks/use-clear-display-state';
 import { ApiError } from '@/services/api/client';
 import { resetPlaybackInvariantForTests } from '@/services/debug/playback-invariant';
@@ -527,6 +527,74 @@ describe('DramaFeedItem', () => {
     expect(within(titleOverlay).getByText(video.title)).toBeTruthy();
     expect(queryByText(video.channelName)).toBeNull();
     expect(queryByText(`EP 1 · ${video.channelName}`)).toBeNull();
+  });
+
+  // ===== FEED OVERLAY TYPOGRAPHY HIERARCHY ============================
+  // These pin the RELATIVE hierarchy and the token each overlay reads from,
+  // never a rendered pixel box: the point is that the title stays the
+  // strongest text in the feed and that the video keeps the screen. A layout
+  // assertion here would fail on any device-metrics change while still
+  // passing if someone quietly doubled a font size.
+
+  it('renders the feed title from the shared title token, not a local literal', async () => {
+    // UI polish (2026-08-22): the size is deliberately UNCHANGED (18) - what
+    // is pinned is that it comes from `Typography.title`, so the feed title
+    // and the brand mark above it can only move together through the scale.
+    const video = buildVideo();
+    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    const titleStyle = StyleSheet.flatten(getByText(video.title).props.style);
+
+    expect(titleStyle.fontSize).toBe(Typography.title.fontSize);
+    expect(titleStyle.fontFamily).toBe(Typography.title.fontFamily);
+  });
+
+  it('keeps the feed title heavier and larger than body-sized overlay text', async () => {
+    // The hierarchy itself, expressed against the token scale rather than
+    // against two numbers copied into two StyleSheets. `Typography.body` is
+    // what the Home brand mark directly above the title renders at, so this
+    // is the cross-component contract "title outranks the line above it".
+    const video = buildVideo();
+    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    const titleStyle = StyleSheet.flatten(getByText(video.title).props.style);
+
+    expect(titleStyle.fontSize).toBeGreaterThan(Typography.body.fontSize);
+    expect(titleStyle.fontFamily).not.toBe(Typography.body.fontFamily);
+  });
+
+  it('bounds the feed title text scaling and keeps it to two truncated lines', async () => {
+    // An unbounded OS text size is the one input that can push the two-line
+    // title down into the lower-left episode cluster; `numberOfLines` is what
+    // makes a long title truncate instead of growing the block.
+    const video = buildVideo({
+      title: 'A deliberately very long drama title that has to wrap and then truncate cleanly',
+    });
+    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    const title = getByText(video.title);
+
+    expect(title.props.numberOfLines).toBe(2);
+    expect(title.props.maxFontSizeMultiplier).toBeLessThanOrEqual(1.3);
+  });
+
+  it('bounds every feed overlay text to the same scale cap', async () => {
+    // Title, EP indicator and Next Episode all share one cap - a regression
+    // that bounds only some of them still lets the row clip at 200% text.
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
+    const { getByText, getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    const caps = [
+      getByText(video.title).props.maxFontSizeMultiplier,
+      getByTestId('feed-item-episode-indicator').props.maxFontSizeMultiplier,
+      within(getByTestId('feed-item-next-episode')).getByText('Episode Berikutnya').props
+        .maxFontSizeMultiplier,
+    ];
+
+    expect(caps).toEqual([1.3, 1.3, 1.3]);
   });
 
   it('shows the EP indicator beneath the next-episode control on the right', async () => {

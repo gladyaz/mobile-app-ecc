@@ -11,7 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PlaybackSettingsSheet } from '@/components/playback-settings-sheet';
 import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { AUTO_CLEAR_DISPLAY_DELAY_MS, type ClearDisplayOrigin } from '@/constants/clear-display';
-import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { FontFamily, Palette, Radius, Typography } from '@/constants/theme';
 import { FeedProgressBar } from '@/components/feed-progress-bar';
 import { useAppForeground } from '@/hooks/use-app-foreground';
 import { useAssistiveTechEnabled } from '@/hooks/use-assistive-tech-enabled';
@@ -71,6 +71,13 @@ export function touchDistance(
 // the same upper-left hierarchy, clearly below that brand line, on every
 // notch/Dynamic-Island/SE-class screen.
 const TITLE_OVERLAY_TOP_OFFSET = 44;
+
+// The cap every text overlay in this component shares, matching the tab bar's
+// own labels (see `(tabs)/_layout.tsx`) and Discover's poster overlays. Named
+// here because three separate overlays now depend on the SAME number: an OS
+// text size at 200% is what turns the two-line title into a block that reaches
+// the episode cluster, and the episode row into a clipped one.
+const OVERLAY_MAX_FONT_SCALE = 1.3;
 
 // The kebab sits alone in the top-right safe area. 48 is the button's own
 // size; nothing else is anchored to the top-right any more (the episode
@@ -1975,7 +1982,10 @@ export function DramaFeedItem({
             router.push({ pathname: '/series/[id]', params: { id: video.seriesId } })
           }
           style={({ pressed }) => [pressed && styles.buttonPressed]}>
-          <Text numberOfLines={2} style={[styles.title, styles.textShadow]}>
+          <Text
+            maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}
+            numberOfLines={2}
+            style={[styles.title, styles.textShadow]}>
             {video.title}
           </Text>
         </Pressable>
@@ -2039,7 +2049,7 @@ export function DramaFeedItem({
             container handles the row's width. */}
         <Text
           testID="feed-item-episode-indicator"
-          maxFontSizeMultiplier={1.3}
+          maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}
           style={[styles.episodeIndicator, styles.textShadow]}>
           {`EP ${video.episodeNumber}`}
         </Text>
@@ -2050,7 +2060,7 @@ export function DramaFeedItem({
             accessibilityLabel={t('feed.nextEpisode')}
             onPress={handleNextEpisode}
             style={({ pressed }) => [styles.nextEpisodeButton, pressed && styles.buttonPressed]}>
-            <Text maxFontSizeMultiplier={1.3} numberOfLines={1} style={styles.nextEpisodeText}>
+            <Text maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE} numberOfLines={1} style={styles.nextEpisodeText}>
               {t('feed.nextEpisode')}
             </Text>
           </Pressable>
@@ -2405,9 +2415,14 @@ const styles = StyleSheet.create({
     textShadowRadius: 3,
   },
   title: {
-    fontSize: 18,
+    // UI polish (2026-08-22): unchanged in SIZE - 18/extraBold was already
+    // exactly `Typography.title` - but taken from the token now rather than
+    // re-declaring the same two values. That is what makes the hierarchy
+    // enforceable: the brand mark above reads `Typography.body` (14/regular),
+    // so "title is larger and heavier than the line above it" is a property of
+    // the token scale, not of two literals that can drift apart.
+    ...Typography.title,
     lineHeight: 23,
-    fontFamily: FontFamily.extraBold,
     color: Palette.text,
   },
   actions: {

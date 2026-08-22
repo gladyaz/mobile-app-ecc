@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { render, waitFor } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 import { router } from 'expo-router';
 
 import HomeScreen from '@/app/(tabs)/index';
@@ -7,6 +8,7 @@ import { VideoCatalogProvider } from '@/features/videos/video-catalog-provider';
 import { ApiError, request } from '@/services/api/client';
 import { login, register } from '@/services/auth/auth-service';
 import { __resetTokenStoreForTests, getTokens } from '@/services/auth/token-store';
+import { Typography } from '@/constants/theme';
 import { setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
 import { AuthProvider } from '@/stores/auth';
 import { EntitlementProvider } from '@/stores/entitlement';
@@ -331,5 +333,45 @@ describe('guest-first app entry - signed-out feed placeholder', () => {
 
     expect(queryByTestId('feed-item-video-1')).toBeNull();
     assertNoAuthRedirect();
+  });
+});
+
+describe('home feed overlay typography hierarchy', () => {
+  // UI polish (2026-08-22): the upper-left of the feed stacks the "Red Panda"
+  // brand mark directly above the per-item video title. Both used to be
+  // extraBold (16 and 18), which read as ONE oversized text block competing
+  // with the video for attention. These pin the resulting hierarchy against
+  // the shared token scale - never against a rendered box, so they survive a
+  // device-metrics change but still fail if either line is resized on its own.
+
+  it('renders the brand mark at the body token, below the title token', async () => {
+    const { getByText } = await renderApp();
+
+    const brandStyle = StyleSheet.flatten(getByText('Red Panda').props.style);
+
+    expect(brandStyle.fontSize).toBe(Typography.body.fontSize);
+    expect(brandStyle.fontFamily).toBe(Typography.body.fontFamily);
+    // The whole point of the change: the brand line must not outrank, or tie
+    // with, the video title that sits under it.
+    expect(brandStyle.fontSize).toBeLessThan(Typography.title.fontSize);
+    expect(brandStyle.fontFamily).not.toBe(Typography.title.fontFamily);
+  });
+
+  it('bounds the brand mark text scaling to the shared overlay cap', async () => {
+    // The brand sits a fixed 34px above the title block, so an unbounded OS
+    // text size is the one input that could grow it down into that title.
+    const { getByText } = await renderApp();
+
+    expect(getByText('Red Panda').props.maxFontSizeMultiplier).toBeLessThanOrEqual(1.3);
+  });
+
+  it('keeps the brand mark left-aligned with the title block', async () => {
+    // Both overlays anchor to the same left gutter; a hierarchy change must
+    // not turn the upper-left stack into a ragged one.
+    const { getByText } = await renderApp();
+
+    const brandStyle = StyleSheet.flatten(getByText('Red Panda').props.style);
+
+    expect(brandStyle.textAlign ?? 'left').toBe('left');
   });
 });

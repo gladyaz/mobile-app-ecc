@@ -19,7 +19,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DramaFeedItem } from '@/components/drama-feed-item';
-import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { FontFamily, Palette, Radius, Typography } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { useClearDisplayState } from '@/hooks/use-clear-display-state';
 import { useFeedPagingGuard } from '@/hooks/use-feed-paging-guard';
@@ -49,6 +49,12 @@ const VIEWABILITY_CONFIG: ViewabilityConfig = {
 // brand and title form one upper-left hierarchy that clears the
 // notch/Dynamic Island on every screen instead of relying on a fixed 64px.
 const BRAND_OVERLAY_TOP_OFFSET = 10;
+
+// UI polish (2026-08-22): the brand mark is bounded to the same 1.3 text-scale
+// cap the tab bar labels and the feed's episode cluster already use. It sits
+// 34px above the per-item title block, so an unbounded OS text size is the one
+// input that could grow it down INTO that title.
+const BRAND_OVERLAY_MAX_FONT_SCALE = 1.3;
 
 export default function HomeScreen() {
   const { t } = useTranslation();
@@ -431,7 +437,9 @@ export default function HomeScreen() {
           { top: insets.top + BRAND_OVERLAY_TOP_OFFSET },
           isClearDisplay && styles.brandOverlayHidden,
         ]}>
-        <Text style={styles.brandOverlayText}>Red Panda</Text>
+        <Text maxFontSizeMultiplier={BRAND_OVERLAY_MAX_FONT_SCALE} style={styles.brandOverlayText}>
+          Red Panda
+        </Text>
         <View style={styles.brandOverlayDot} />
       </View>
     </View>
@@ -488,8 +496,15 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   brandOverlayText: {
-    fontSize: 16,
-    fontFamily: FontFamily.extraBold,
+    // UI polish (2026-08-22): the brand mark used to be 16/extraBold - a
+    // second heavyweight line stacked directly above an 18/extraBold title,
+    // so the upper-left read as one oversized text block competing with the
+    // video. Dropping it to `Typography.body` (14/regular) keeps the wordmark
+    // legible over moving footage (the shadow below does that work) while
+    // making the TITLE unambiguously the strongest text on screen. Taken from
+    // the shared token rather than a new literal, so the brand line and every
+    // other body-sized string move together.
+    ...Typography.body,
     color: Palette.text,
     textShadowColor: 'rgba(0, 0, 0, 0.7)',
     textShadowOffset: { width: 0, height: 1 },

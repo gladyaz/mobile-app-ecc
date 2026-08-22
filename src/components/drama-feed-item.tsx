@@ -70,24 +70,31 @@ export function touchDistance(
 // which the per-item title block sits. Home renders its brand overlay at
 // `insets.top + 10` (see `(tabs)/index.tsx`); this offset places the title in
 // the same upper-left hierarchy, clearly below that brand line, on every
-// notch/Dynamic-Island/SE-class screen. The next-episode control shares this
-// same band on the right, which is why the title overlay leaves its right
-// edge free (see `titleOverlay`).
+// notch/Dynamic-Island/SE-class screen.
 const TITLE_OVERLAY_TOP_OFFSET = 44;
 
-// Review fix (cycle 1, Finding 1): the next-episode pill no longer shares
-// the title's vertical band - its Indonesian label ("Episode Berikutnya")
-// renders far wider than the pill's 74px minimum, so a shared band could
-// overlap the title's second line and steal its taps. Anchoring the pill a
-// fixed distance below the title block's maximum extent (2 title lines at
-// 23px line-height + the meta line + breathing room) makes the two
-// deterministically non-overlapping at every title length and locale.
-// The kebab sits in the top-right safe area; the episode cluster starts
-// below it. 48 is the button's own size, so the two never overlap.
+// The kebab sits alone in the top-right safe area. 48 is the button's own
+// size; nothing else is anchored to the top-right any more (the episode
+// cluster moved to the lower-left band - see `episodeCluster`).
 const OVERFLOW_TOP_OFFSET = 8;
 const OVERFLOW_BUTTON_SIZE = 48;
 
-const NEXT_EPISODE_TOP_OFFSET = TITLE_OVERLAY_TOP_OFFSET + 76;
+// Product feedback (2026-08-22): the episode cluster moved out of the
+// upper-right corner and into the lower-left band, directly above the bottom
+// tab bar, so it reads as part of the lower navigation/content controls
+// rather than as an overlay floating over the middle of the frame. Its
+// vertical anchor is NOT a constant: it comes from `useFeedBottomAnchor`
+// (`overlayBottom`), the same tab-bar/safe-area-derived value the action
+// rail already uses, so the two sit in one band on every device and the
+// cluster can never end up underneath the tab bar or the Android gesture
+// area.
+//
+// Horizontally it is bounded on the right so it can never run under the
+// action rail. The rail's own buttons are `ACTION_BUTTON_SIZE` wide and sit
+// inside the bottom overlay's 18px horizontal padding; this reserves that
+// column plus a further 18px of clearance between the two.
+const ACTION_BUTTON_SIZE = 48;
+const ACTION_RAIL_CLEARANCE = 18 + ACTION_BUTTON_SIZE + 18;
 
 // How often to persist playback progress while a video is actively
 // playing - a throttle, not a per-frame write.
@@ -153,6 +160,27 @@ const MAX_PLAYBACK_AUTH_AUTO_RETRIES = PLAYBACK_AUTH_RETRY_DELAYS_MS.length;
  */
 function isRetryablePlaybackAuthError(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 429 || error.code === 'NETWORK_ERROR');
+}
+
+/**
+ * Guest-first feed (2026-08-22): whether a playback-authorization failure
+ * means "no session," and nothing else.
+ *
+ * 401 is the ONLY status that qualifies, because it is the only one the
+ * backend uses for it (`GET /videos/:id/playback`: 401
+ * `INVALID_ACCESS_TOKEN` unauthenticated, 403 `ENTITLEMENT_REQUIRED`
+ * premium-without-entitlement, 404 not found/published, 409 no usable
+ * storage - docs/api-contract.md). Deliberately NOT keyed on the error
+ * `code`: the client's own refresh-on-401 interceptor already consumed and
+ * retried `INVALID_ACCESS_TOKEN` before this point, so what reaches here is
+ * whichever 401 survived that - and a signed-out viewer's 401 may carry any
+ * code at all.
+ *
+ * This classifies a REFUSAL for display purposes. It never converts one
+ * into access.
+ */
+function isMissingSessionPlaybackAuthError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
 }
 
 /**
@@ -401,6 +429,18 @@ export function DramaFeedItem({
   const requiresAccessToken = !isDemoMode();
   const [playbackAuth, setPlaybackAuth] = useState<PlaybackAuthorization | null>(null);
   const [hasPlaybackAuthError, setHasPlaybackAuthError] = useState(false);
+  // Guest-first feed (2026-08-22): narrows the ONE generic playback-failure
+  // state into the one cause the viewer can actually act on - "you are not
+  // signed in." It is set only for the two cases that genuinely mean that:
+  // this build requires a session and holds no token at all, or the backend
+  // itself answered 401 (`GET /videos/:id/playback` is `Auth required: Yes`
+  // in the canonical contract - see docs/api-contract.md). It grants
+  // NOTHING: no entitlement is inferred, no request is retried without a
+  // token, and a 403 `ENTITLEMENT_REQUIRED` keeps the generic unavailable
+  // state exactly as before. It only replaces a misleading "check the local
+  // media server connection" hint with the truthful reason and the existing
+  // /login entry point.
+  const [isSignInRequiredForPlayback, setIsSignInRequiredForPlayback] = useState(false);
   // Guards `handlePlayPause`'s re-authorization branch against stacking a
   // second concurrent network request while one is already in flight - a
   // rapid series of taps (exactly what a viewer does when a video is stuck
@@ -434,6 +474,7 @@ export function DramaFeedItem({
     setLastVideoId(video.id);
     setPlaybackAuth(null);
     setHasPlaybackAuthError(false);
+    setIsSignInRequiredForPlayback(false);
     setAuthRetryAttempt(0);
     setIsAuthErrorRetryable(false);
     setHasStartedPlaying(false);
@@ -544,9 +585,16 @@ export function DramaFeedItem({
     // matching the pre-Slice-11M "logged out -> error state" behavior.
     // Demo builds need no token at all (requiresAccessToken is false
     // there).
+    //
+    // Guest-first feed (2026-08-22): this branch is UNCHANGED as an
+    // authorization decision - it still refuses to play and still never
+    // asks the backend without a session. What changed is only that it now
+    // records WHY, so the viewer is told "sign in to play" instead of being
+    // pointed at a media server that is not the problem.
     if (requiresAccessToken && !accessToken) {
       setPlaybackAuth(null);
       setHasPlaybackAuthError(true);
+      setIsSignInRequiredForPlayback(true);
       setIsAuthErrorRetryable(false);
       return;
     }
@@ -554,6 +602,7 @@ export function DramaFeedItem({
     playbackRequestIdRef.current += 1;
     const requestId = playbackRequestIdRef.current;
     setHasPlaybackAuthError(false);
+    setIsSignInRequiredForPlayback(false);
     // 11R remediation ADDENDUM: flipped for the lifetime of THIS request
     // only (see the `finally` block's own requestId check below) - it is
     // what lets `handlePlayPause`'s re-authorization branch tell "already
@@ -613,6 +662,12 @@ export function DramaFeedItem({
 
       setPlaybackAuth(null);
       setHasPlaybackAuthError(true);
+      // The backend is the authority on this, not the client: a 401 is the
+      // only response that means "this needed a session." Every other
+      // failure - including 403 ENTITLEMENT_REQUIRED - keeps the generic
+      // unavailable state, so a premium refusal is never re-labelled as a
+      // login problem.
+      setIsSignInRequiredForPlayback(isMissingSessionPlaybackAuthError(requestError));
       setIsAuthErrorRetryable(isRetryablePlaybackAuthError(requestError));
     } finally {
       if (playbackRequestIdRef.current === requestId) {
@@ -1556,6 +1611,17 @@ export function DramaFeedItem({
   }, [hasPlaybackError]);
 
   const handleNextEpisode = useCallback(() => {
+    // Only the ACTIVE item may navigate, mirroring `handlePlayPause`'s own
+    // guard and for the same reason: a tap can land on a mounted-but-
+    // inactive neighbour (reachable on web, and during a mid-swipe layout).
+    // That mattered less while this control sat in the upper-right corner;
+    // it matters now that it sits in the lower band where a thumb already
+    // is. Without it, one gesture could navigate away using a NEIGHBOUR's
+    // series - an accidental jump, from the wrong episode.
+    if (!isActive) {
+      return;
+    }
+
     if (!nextEpisode) {
       return;
     }
@@ -1580,7 +1646,7 @@ export function DramaFeedItem({
     // Opens the series page rather than jumping straight into the next clip,
     // so the viewer lands on the episode list and can pick where to go.
     router.push({ pathname: '/series/[id]', params: { id: video.seriesId } });
-  }, [nextEpisode, isPremium, video.seriesId]);
+  }, [isActive, nextEpisode, isPremium, video.seriesId]);
 
   const handleGoToFreeEpisode = useCallback(() => {
     setIsPremiumModalVisible(false);
@@ -1589,6 +1655,16 @@ export function DramaFeedItem({
       router.push({ pathname: '/', params: { videoId: firstFreeEpisodeInSeries.videoId } });
     }
   }, [firstFreeEpisodeInSeries]);
+
+  // Guest-first feed (2026-08-22): the EXISTING login entry point (the same
+  // `/login` route profile.tsx pushes), reached from the one place a
+  // signed-out viewer actually hits the wall. Pushed, not replaced, so the
+  // feed is still behind it and backing out returns to browsing - a guest
+  // may decline and keep scrolling indefinitely. Nothing here creates an
+  // account or signs anyone in.
+  const handleGoToLogin = useCallback(() => {
+    router.push('/login');
+  }, []);
 
   const handleFullscreenEnter = useCallback(() => {
     setIsInFullscreen(true);
@@ -1678,7 +1754,29 @@ export function DramaFeedItem({
         setIsPinchInProgress(false);
       }}>
       <View style={styles.videoLayer}>
-        {hasPlaybackError ? (
+        {hasPlaybackError && isSignInRequiredForPlayback ? (
+          // Guest-first feed (2026-08-22): a signed-out viewer reaches the
+          // feed, the metadata, the poster and the whole action rail - only
+          // PLAYBACK needs a session, because the backend's playback
+          // endpoint requires one. Saying so, with the existing /login entry
+          // point attached, is the truthful version of the state this used
+          // to render as "check the local media server connection."
+          //
+          // Not the tap-to-retry Pressable below: retrying without a session
+          // cannot succeed, so the actionable control is the one that can.
+          <View testID="feed-item-signin-gate" style={styles.errorState}>
+            <Text style={styles.errorTitle}>{t('feed.signInToPlay')}</Text>
+            <Text style={styles.errorHint}>{t('feed.signInToPlayHint')}</Text>
+            <Pressable
+              testID="feed-item-signin-button"
+              accessibilityRole="button"
+              accessibilityLabel={t('feed.signIn')}
+              onPress={handleGoToLogin}
+              style={({ pressed }) => [styles.signInButton, pressed && styles.buttonPressed]}>
+              <Text style={styles.signInButtonText}>{t('feed.signIn')}</Text>
+            </Pressable>
+          </View>
+        ) : hasPlaybackError ? (
           // 11R remediation ADDENDUM: pressable so a failed/expired
           // authorization is reachable for a retry from here too - the
           // normal play/pause button below is hidden for this same
@@ -1879,12 +1977,18 @@ export function DramaFeedItem({
         </Pressable>
       )}
 
-      {/* Right-side episode cluster (product feedback 2026-08-12): the "EP n"
-          indicator lives directly BENEATH the next-episode control, not in
-          the title block and never in a bottom corner. When this is the last
-          episode (no next-episode control) the indicator still renders here,
-          so the current episode stays identifiable - every episode of a
-          series shares the same title. */}
+      {/* Lower-left episode cluster (product feedback 2026-08-22): "EP n" and
+          the next-episode control moved out of the upper-right corner and
+          down into the lower control band, reading left to right as
+          `EP n  Episode Berikutnya` directly above the bottom tab bar. It
+          shares the action rail's own `overlayBottom` anchor
+          (`useFeedBottomAnchor`), so it is tab-bar- and safe-area-aware by
+          construction rather than by a device-specific number, and it is
+          bounded on the right by `ACTION_RAIL_CLEARANCE` so it can never run
+          under the rail. When this is the last episode (no next-episode
+          control) the indicator still renders here, so the current episode
+          stays identifiable - every episode of a series shares the same
+          title. */}
       <View
         testID="feed-item-episode-cluster"
         pointerEvents={isClearDisplay ? 'none' : 'box-none'}
@@ -1893,23 +1997,33 @@ export function DramaFeedItem({
         importantForAccessibility={isClearDisplay ? 'no-hide-descendants' : 'auto'}
         style={[
           styles.episodeCluster,
-          { top: insets.top + NEXT_EPISODE_TOP_OFFSET },
+          { bottom: overlayBottom },
           isClearDisplay && styles.contentHidden,
         ]}>
+        {/* `maxFontSizeMultiplier` matches the cap the tab bar's own labels
+            use (see `(tabs)/_layout.tsx`): this row now shares the bottom
+            band with those labels, and an uncapped OS text size at 200% on a
+            small Android screen is what turns a two-item row into a clipped
+            one. The cap bounds each line's height; `flexWrap` on the
+            container handles the row's width. */}
+        <Text
+          testID="feed-item-episode-indicator"
+          maxFontSizeMultiplier={1.3}
+          style={[styles.episodeIndicator, styles.textShadow]}>
+          {`EP ${video.episodeNumber}`}
+        </Text>
         {nextEpisode ? (
           <Pressable
             testID="feed-item-next-episode"
             accessibilityRole="button"
+            accessibilityLabel={t('feed.nextEpisode')}
             onPress={handleNextEpisode}
             style={({ pressed }) => [styles.nextEpisodeButton, pressed && styles.buttonPressed]}>
-            <Text numberOfLines={1} style={styles.nextEpisodeText}>
+            <Text maxFontSizeMultiplier={1.3} numberOfLines={1} style={styles.nextEpisodeText}>
               {t('feed.nextEpisode')}
             </Text>
           </Pressable>
         ) : null}
-        <Text style={[styles.episodeIndicator, styles.textShadow]}>
-          {`EP ${video.episodeNumber}`}
-        </Text>
       </View>
 
       {/* Mobile UI revision (2026-08-12): the bottom overlay now carries the
@@ -2097,6 +2211,24 @@ const styles = StyleSheet.create({
     color: Palette.textSecondary,
     textAlign: 'center',
   },
+  // Guest-first feed (2026-08-22): the one control in the signed-out
+  // playback state, sized to the same 44pt floor the next-episode pill
+  // already respects.
+  signInButton: {
+    marginTop: 6,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: Radius.pill,
+    backgroundColor: Palette.primary,
+  },
+  signInButtonText: {
+    fontSize: 15,
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
+  },
   playPauseButton: {
     position: 'absolute',
     top: '50%',
@@ -2118,14 +2250,37 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // Positions the next-episode control and the "EP n" indicator beneath it
-  // as one right-aligned cluster; `top` is provided inline (inset-aware,
-  // below the title block - see NEXT_EPISODE_TOP_OFFSET).
+  // Lays "EP n" and the next-episode control out as one LEFT-aligned row in
+  // the lower control band; `bottom` is provided inline from
+  // `useFeedBottomAnchor`'s `overlayBottom`, the same tab-bar/safe-area-
+  // derived anchor the action rail uses, so the two share one band and
+  // neither can end up under the tab bar or the Android gesture area.
+  //
+  // `left` matches the title overlay and Home's brand overlay, so all three
+  // sit on one 18px left rail. `right` reserves the action rail's column so
+  // a long localized pill label wraps its own ellipsis instead of sliding
+  // underneath the rail's buttons. `flexWrap` is the small-screen backstop:
+  // if a narrow viewport plus a large OS text size ever leaves the row wider
+  // than that budget, the pill wraps onto the line below the indicator
+  // rather than being clipped.
+  //
+  // `zIndex` is load-bearing now, in a way it was not while this sat in the
+  // upper-right corner: the bottom overlay is declared AFTER this view and
+  // spans the full width, so by paint order it lies on top of this one. It
+  // is `box-none`, so it does not take touches itself and its only child
+  // (the action rail) is off in the reserved column - but relying on that to
+  // keep the next-episode control tappable is relying on a hit-testing
+  // detail. Lifting this above it makes the control's tap target explicit
+  // instead, matching what `overflowButton` already does for the kebab.
   episodeCluster: {
     position: 'absolute',
-    right: 18,
-    alignItems: 'flex-end',
-    gap: 6,
+    left: 18,
+    right: ACTION_RAIL_CLEARANCE,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 10,
+    zIndex: 2,
   },
   // Full-bleed single-tap target for clear display. Declared FIRST among the
   // overlays so paint order keeps it under every real control.
@@ -2200,10 +2355,11 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     paddingHorizontal: 18,
   },
-  // The upper-left title block. Overlap with the next-episode pill is
-  // prevented VERTICALLY (the pill sits below this block's maximum extent -
-  // see NEXT_EPISODE_TOP_OFFSET); `right: 112` is an aesthetic measure so a
-  // long title wraps as a compact block instead of running edge-to-edge.
+  // The upper-left title block. It can no longer collide with the
+  // next-episode pill at all - that moved to the lower control band
+  // (`episodeCluster`) - so `right: 112` is now purely the aesthetic measure
+  // it always also was: a long title wraps as a compact block instead of
+  // running edge-to-edge, and it stays clear of the top-right kebab.
   titleOverlay: {
     position: 'absolute',
     left: 18,

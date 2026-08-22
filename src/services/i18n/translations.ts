@@ -244,6 +244,9 @@ const id = {
 
   'feed.videoUnavailable': 'Video unavailable',
   'feed.videoUnavailableHint': 'Check the local media server connection.',
+  'feed.signInToPlay': 'Masuk untuk memutar',
+  'feed.signInToPlayHint': 'Pemutaran video butuh akun. Katalog tetap bisa dijelajahi tanpa masuk.',
+  'feed.signIn': 'Masuk',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Episode Berikutnya',
   'feed.clearDisplay': 'Tampilan bersih',
@@ -559,6 +562,9 @@ const en: Copy = {
 
   'feed.videoUnavailable': 'Video unavailable',
   'feed.videoUnavailableHint': 'Check the local media server connection.',
+  'feed.signInToPlay': 'Sign in to play',
+  'feed.signInToPlayHint': 'Playback needs an account. Browsing the catalog does not.',
+  'feed.signIn': 'Sign in',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Next Episode',
   'feed.clearDisplay': 'Clear display',
@@ -869,6 +875,9 @@ const zh: Copy = {
 
   'feed.videoUnavailable': '视频不可用',
   'feed.videoUnavailableHint': '请检查本地媒体服务器连接。',
+  'feed.signInToPlay': '登录后播放',
+  'feed.signInToPlayHint': '播放需要账号，浏览目录则不需要。',
+  'feed.signIn': '登录',
   'feed.fullscreen': '全屏',
   'feed.nextEpisode': '下一集',
   'feed.clearDisplay': '清屏模式',

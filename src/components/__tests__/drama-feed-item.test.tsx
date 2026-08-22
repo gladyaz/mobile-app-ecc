@@ -40,8 +40,10 @@ jest.mock('expo-router', () => ({
 // (native-tabs, splash, router-store, ...) which needs native modules
 // unavailable under Jest. DramaFeedItem only needs the one hook it
 // exports, so stub that directly with a fixed value.
+const mockBottomTabBarHeight = jest.fn(() => 56);
+
 jest.mock('expo-router/js-tabs', () => ({
-  useBottomTabBarHeight: jest.fn(() => 56),
+  useBottomTabBarHeight: () => mockBottomTabBarHeight(),
 }));
 
 jest.mock('expo-screen-orientation', () => ({
@@ -470,6 +472,10 @@ describe('DramaFeedItem', () => {
       .spyOn(AppState, 'addEventListener')
       .mockImplementation((() => ({ remove: jest.fn() })) as never);
     mockUseEntitlement.mockReturnValue({ isPremium: false, refresh: jest.fn() });
+    // `clearMocks` clears calls, not return values, so a case that drives the
+    // tab bar to a different height would otherwise leak it into every case
+    // after it. 56 is the default shape: a visible bar, no extra inset.
+    mockBottomTabBarHeight.mockReturnValue(56);
     // Slice 11R: defaults to HLS preferred/enabled; the "prefer-MP4
     // rollback flag" describe block below overrides this per test.
     mockIsHlsPlaybackEnabled.mockReturnValue(true);
@@ -563,28 +569,115 @@ describe('DramaFeedItem', () => {
     });
   });
 
-  it('anchors the episode cluster below the title block so the two can never overlap', async () => {
-    // Review fix (cycle 1, Finding 1): "Episode Berikutnya" renders far
-    // wider than the pill's 74px minimum, so the cluster must not share the
-    // title's vertical band. Insets are mocked to 0, so the offsets below
-    // are the raw constants from drama-feed-item.tsx.
+  it('anchors the episode cluster to the lower-left control band, on the same tab-bar anchor as the action rail', async () => {
+    // Product feedback (2026-08-22): "EP n" and the next-episode control
+    // moved out of the upper-right corner into the lower control band,
+    // directly above the bottom tab bar. The vertical anchor is the SAME
+    // `useFeedBottomAnchor` value the action rail already uses - not a
+    // device-specific number - which is what keeps it clear of the tab bar,
+    // the iOS home indicator and the Android gesture area everywhere.
+    // `useBottomTabBarHeight` is mocked to 56 and insets to 0, so the bar is
+    // present and `overlayBottom` is `FeedBottomGap`.
     const video = buildVideo();
     const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
     const { getByTestId, getByText } = await renderFeedItem(
       <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
     );
 
-    const titleOverlayStyle = StyleSheet.flatten(getByTestId('feed-item-title-overlay').props.style);
     const clusterStyle = StyleSheet.flatten(getByTestId('feed-item-episode-cluster').props.style);
+    const overlayStyle = StyleSheet.flatten(getByTestId('feed-item-bottom-overlay').props.style);
     const pillStyle = StyleSheet.flatten(getByTestId('feed-item-next-episode').props.style);
 
-    // The cluster starts below the title block's maximum extent (2 title
-    // lines), and the pill's label is single-line + width-capped so no
-    // locale can grow it back across the frame.
-    expect(titleOverlayStyle.top).toBe(44);
-    expect(clusterStyle.top).toBe(120);
+    // Bottom-anchored, never top-anchored - a `top` here would re-float it
+    // over the middle of the video.
+    expect(clusterStyle.top).toBeUndefined();
+    expect(clusterStyle.bottom).toBe(FeedBottomGap);
+    // One band with the action rail: same anchor, from the same hook.
+    expect(clusterStyle.bottom).toBe(overlayStyle.bottom);
+    // Left-aligned on the same 18px rail as the title overlay, and bounded
+    // on the right so it can never slide under the action rail's buttons.
+    expect(clusterStyle.left).toBe(18);
+    expect(clusterStyle.right).toBe(84);
+    expect(clusterStyle.flexDirection).toBe('row');
+    // A long localized label still ellipsizes inside a capped pill instead
+    // of growing the row across the frame.
     expect(getByText('Episode Berikutnya').props.numberOfLines).toBe(1);
     expect(pillStyle.maxWidth).toBe(180);
+    // Small-screen backstop: the pill wraps onto its own line rather than
+    // being clipped.
+    expect(clusterStyle.flexWrap).toBe('wrap');
+    // The bottom overlay is declared after this view and spans the full
+    // width, so paint order alone would put it on top of the next-episode
+    // control's tap target. Lifting the cluster above it is what keeps that
+    // control reachable without depending on `box-none` hit-testing.
+    expect(clusterStyle.zIndex).toBe(2);
+  });
+
+  it('clears the gesture/home-indicator area when no tab bar is there to consume the inset', async () => {
+    // A hidden navbar reports height 0, so the item's box now extends to the
+    // physical bottom edge - under the iOS home indicator and the Android
+    // gesture bar. The cluster follows `useFeedBottomAnchor` into that case
+    // automatically, which is the whole point of not hardcoding an offset.
+    // (`useFeedBottomAnchor`'s own suite covers the arithmetic across device
+    // shapes; this pins that the MOVED control actually consumes it.)
+    mockBottomTabBarHeight.mockReturnValue(0);
+
+    const video = buildVideo();
+    const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    const clusterStyle = StyleSheet.flatten(getByTestId('feed-item-episode-cluster').props.style);
+    const overlayStyle = StyleSheet.flatten(getByTestId('feed-item-bottom-overlay').props.style);
+
+    // Still one band with the action rail, and still whatever the anchor
+    // says - never a device-specific constant of its own.
+    expect(clusterStyle.bottom).toBe(overlayStyle.bottom);
+    expect(clusterStyle.bottom).toBeGreaterThanOrEqual(FeedBottomGap);
+  });
+
+  it('caps OS text scaling in the lower band, the way the tab bar labels already do', async () => {
+    // The row now shares the bottom band with the tab bar's own labels. An
+    // uncapped 200% OS text size on a small Android screen is what turns it
+    // into a clipped one.
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
+    const { getByTestId, getByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    expect(getByTestId('feed-item-episode-indicator').props.maxFontSizeMultiplier).toBe(1.3);
+    expect(getByText('Episode Berikutnya').props.maxFontSizeMultiplier).toBe(1.3);
+  });
+
+  it('reads left to right as "EP n" then the next-episode control', async () => {
+    // The approved lower-band order. Asserted on the rendered child order,
+    // not on coordinates, so it stays true under Appium/Playwright too.
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
+    const { getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    const cluster = getByTestId('feed-item-episode-cluster');
+    const childTestIds = cluster.children.map((child) =>
+      typeof child === 'string' ? child : child.props.testID
+    );
+
+    expect(childTestIds).toEqual(['feed-item-episode-indicator', 'feed-item-next-episode']);
+  });
+
+  it('renders the EP indicator on the ACTIVE item, under its own stable testID for automation', async () => {
+    // `baseProps` is the active item. The ID is semantic, not positional,
+    // so an Appium/Playwright locator survives the move from the upper-right
+    // corner to the lower band - and any later move too.
+    const video = buildVideo({ episodeNumber: 3 });
+    const { getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} isActive />
+    );
+
+    expect(getByTestId('feed-item-episode-indicator').props.children).toBe('EP 3');
+    expect(
+      within(getByTestId('feed-item-episode-cluster')).getByTestId('feed-item-episode-indicator')
+    ).toBeTruthy();
   });
 
   it('renders no episode badge or category chip in the title overlay or bottom overlay', async () => {
@@ -654,6 +747,34 @@ describe('DramaFeedItem', () => {
     expect(episodeCluster.props.pointerEvents).toBe('none');
     expect(episodeCluster.props.accessibilityElementsHidden).toBe(true);
     expect(getByTestId('feed-item-progress-track')).toBeTruthy();
+  });
+
+  it('brings the lower-band episode controls back when clear display is switched off', async () => {
+    // Clear Display semantics are UNCHANGED by the move: the cluster hides
+    // and returns with the rest of the chrome, and never becomes the one
+    // thing left visible over a cleared frame.
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
+
+    const cleared = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} isClearDisplay />
+    );
+    const clearedCluster = cleared.getByTestId('feed-item-episode-cluster', {
+      includeHiddenElements: true,
+    });
+
+    expect(StyleSheet.flatten(clearedCluster.props.style).opacity).toBe(0);
+
+    const shown = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+    const shownCluster = shown.getByTestId('feed-item-episode-cluster');
+
+    expect(StyleSheet.flatten(shownCluster.props.style).opacity).toBeUndefined();
+    expect(shownCluster.props.pointerEvents).toBe('box-none');
+    expect(shownCluster.props.accessibilityElementsHidden).toBe(false);
+    expect(within(shownCluster).getByTestId('feed-item-episode-indicator')).toBeTruthy();
+    expect(within(shownCluster).getByTestId('feed-item-next-episode')).toBeTruthy();
   });
 
   it('opens clear display from a single tap on the open video surface', async () => {
@@ -875,7 +996,7 @@ describe('DramaFeedItem', () => {
     });
   });
 
-  it('shows the existing "Video unavailable" error state (not a crash or stuck player) when logged out with no access token', async () => {
+  it('shows a truthful sign-in gate (not a crash, a stuck player, or a media-server error) when logged out with no access token', async () => {
     const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
       '@/services/auth/token-store'
     );
@@ -888,13 +1009,70 @@ describe('DramaFeedItem', () => {
     (getTokens as jest.Mock).mockReturnValue(null);
 
     const video = buildVideo();
-    const { getByText } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+    const { getByTestId, getByText, queryByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
 
-    expect(getByText('Video unavailable')).toBeTruthy();
+    // Guest-first feed (2026-08-22): the refusal is unchanged, the COPY is
+    // not. "Check the local media server connection" blamed the wrong thing
+    // for a signed-out viewer and offered nothing to do about it.
+    expect(getByTestId('feed-item-signin-gate')).toBeTruthy();
+    expect(getByText('Masuk untuk memutar')).toBeTruthy();
+    expect(queryByText('Check the local media server connection.')).toBeNull();
     // Slice 11M: no token means the real `/videos/:id/playback` endpoint
     // would just 401 - the component must skip that wasted round trip
     // entirely rather than firing it and discarding the result.
     expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('routes the signed-out gate to the existing /login screen, and creates no account on the way', async () => {
+    const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
+      '@/services/auth/token-store'
+    );
+    (getTokens as jest.Mock).mockReturnValue(null);
+
+    const video = buildVideo();
+    const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    fireEvent.press(getByTestId('feed-item-signin-button'));
+
+    // PUSHED, not replaced: the feed stays underneath, so declining the
+    // gate returns to browsing rather than trapping the viewer on /login.
+    expect(router.push).toHaveBeenCalledWith('/login');
+    // The gate is an entry point to an EXPLICIT sign-in, never a silent one:
+    // it must not have quietly authorized anything on the viewer's behalf.
+    expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('keeps a 403 ENTITLEMENT_REQUIRED on the generic unavailable state - a premium refusal is not a login problem', async () => {
+    // Guest-first feed (2026-08-22): only a 401 means "no session." The
+    // premium gate must never be relabelled as one, or a signed-in viewer
+    // without an entitlement would be told to sign in again.
+    mockGetPlaybackAuthorization.mockRejectedValue(
+      new ApiError(403, 'ENTITLEMENT_REQUIRED', 'Entitlement required.')
+    );
+
+    const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+    const { getByText, queryByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
+
+    expect(getByText('Video unavailable')).toBeTruthy();
+    expect(queryByTestId('feed-item-signin-gate')).toBeNull();
+  });
+
+  it('shows the sign-in gate when the backend itself answers 401 for playback', async () => {
+    // The backend is the authority: `GET /videos/:id/playback` is
+    // `Auth required: Yes` (docs/api-contract.md), so a 401 is the one
+    // response that genuinely means "this needed a session."
+    mockGetPlaybackAuthorization.mockRejectedValue(
+      new ApiError(401, 'INVALID_ACCESS_TOKEN', 'Unauthenticated.')
+    );
+
+    const video = buildVideo();
+    const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+    expect(getByTestId('feed-item-signin-gate')).toBeTruthy();
   });
 
   it('plays a bundled clip before login in a demo build, where nothing is token-protected', async () => {
@@ -970,6 +1148,75 @@ describe('DramaFeedItem', () => {
       pathname: '/series/[id]',
       params: { id: 'series-ceo-dingin' },
     });
+  });
+
+  it('performs exactly one navigation per tap on the next-episode control', async () => {
+    // Moving the control into the lower band must not turn one gesture into
+    // two transitions.
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
+    const { getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    await fireEvent.press(getByTestId('feed-item-next-episode'));
+
+    expect(router.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('never navigates from a mounted-but-INACTIVE item, so a mid-swipe tap cannot jump the feed', async () => {
+    // The control now sits in the lower band, where a thumb already is, and
+    // a paged FlatList keeps neighbours mounted. A tap that lands on one of
+    // them must do nothing rather than navigate using the NEIGHBOUR's
+    // series - the same rule `handlePlayPause` has always enforced.
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'free', videoId: 'video-2' });
+    const { getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} isActive={false} nextEpisode={nextEpisode} />
+    );
+
+    await fireEvent.press(getByTestId('feed-item-next-episode'));
+
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it('carries the item\'s OWN episode number and series into the lower band', async () => {
+    // Per-item, never a screen-level overlay: the indicator and the control
+    // both belong to the video this instance renders, so the active item can
+    // never display or navigate a neighbour's episode.
+    const video = buildVideo({ id: 'video-9', seriesId: 'series-nona-shen', episodeNumber: 4 });
+    const nextEpisode = buildEpisode({
+      accessType: 'free',
+      videoId: 'video-10',
+      seriesId: 'series-nona-shen',
+      episodeNumber: 5,
+    });
+    const { getByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    expect(getByTestId('feed-item-episode-indicator').props.children).toBe('EP 4');
+
+    await fireEvent.press(getByTestId('feed-item-next-episode'));
+
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/series/[id]',
+      params: { id: 'series-nona-shen' },
+    });
+  });
+
+  it('renders no next-episode control on the last episode, and nothing there can navigate', async () => {
+    // Last-episode behavior is unchanged by the move: the indicator stays
+    // (every episode of a series shares one title, so it is the only thing
+    // identifying which one this is), the control does not appear.
+    const video = buildVideo({ episodeNumber: 5 });
+    const { getByTestId, queryByTestId } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
+
+    expect(queryByTestId('feed-item-next-episode')).toBeNull();
+    expect(getByTestId('feed-item-episode-indicator').props.children).toBe('EP 5');
+    expect(router.push).not.toHaveBeenCalled();
   });
 
   it('opens the premium modal instead of navigating for a premium next episode', async () => {

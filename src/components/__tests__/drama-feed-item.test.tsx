@@ -1291,27 +1291,336 @@ describe('DramaFeedItem', () => {
     });
   });
 
-  it('F: keeps a SIGNED-IN viewer\'s 403 ENTITLEMENT_REQUIRED on the generic unavailable state - a premium refusal is not a login problem', async () => {
-    // `beforeEach` leaves a valid token in place, so this is the signed-in
-    // non-premium viewer. The backend returns the SAME 403 it returns to a
-    // guest (deliberately byte-identical, so the response leaks nothing
-    // about who asked) - which is exactly why the client must pair it with
-    // "does this viewer hold a token?" before calling it a sign-in problem.
-    // Telling someone who is already signed in to sign in would be false,
-    // and would send them to a screen that cannot fix anything.
-    mockGetPlaybackAuthorization.mockRejectedValue(
-      new ApiError(403, 'ENTITLEMENT_REQUIRED', 'Entitlement required.')
+  // PREMIUM ENTITLEMENT ERROR UX (2026-08-22). The backend answers a
+  // SIGNED-IN non-entitled viewer with the same `403 ENTITLEMENT_REQUIRED`
+  // it answers a guest with - deliberately byte-identical, so the response
+  // leaks nothing about who asked. Before this work unit the client, having
+  // correctly refused to call that a LOGIN problem, dropped it into the
+  // generic "Video unavailable / Check the local media server connection."
+  // copy instead - which blamed a perfectly healthy media server for a
+  // missing entitlement. These cases pin the third truthful state: already
+  // signed in, media fine, entitlement missing.
+  describe('premium entitlement gate (signed in, no entitlement)', () => {
+    // `beforeEach` leaves a valid token in place, so every case in this block
+    // is the SIGNED-IN viewer unless it says otherwise.
+    const ENTITLEMENT_REFUSAL = new ApiError(
+      403,
+      'ENTITLEMENT_REQUIRED',
+      'Entitlement required.'
     );
 
-    const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
-    const { getByText, queryByTestId, queryByText } = await renderFeedItem(
-      <DramaFeedItem video={video} {...baseProps} />
-    );
+    it('C: shows the premium gate when the backend answers 403 ENTITLEMENT_REQUIRED to a signed-in viewer', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
 
-    expect(getByText('Video unavailable')).toBeTruthy();
-    expect(queryByTestId('feed-item-signin-gate')).toBeNull();
-    expect(queryByTestId('feed-item-signin-button')).toBeNull();
-    expect(queryByText('Sign in to watch this episode')).toBeNull();
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId, getByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(getByTestId('feed-item-premium-required-gate')).toBeTruthy();
+      expect(getByText('Episode Premium')).toBeTruthy();
+      expect(getByTestId('feed-item-premium-required-title').props.children).toBe(
+        'Episode Premium'
+      );
+    });
+
+    it('D: never tells a signed-in viewer to sign in', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { queryByTestId, queryByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      // They already are signed in, and /login cannot fix a missing
+      // entitlement - so neither the guest gate nor its copy may appear.
+      expect(queryByTestId('feed-item-signin-gate')).toBeNull();
+      expect(queryByTestId('feed-item-signin-button')).toBeNull();
+      expect(queryByText('Masuk untuk menonton episode ini')).toBeNull();
+      expect(queryByText('Masuk')).toBeNull();
+    });
+
+    it('E: never blames the media server for a missing entitlement', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { queryByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      // THE regression this work unit exists for: the media server is
+      // healthy and reachable; the entitlement is what is missing.
+      expect(queryByText('Video unavailable')).toBeNull();
+      expect(queryByText('Check the local media server connection.')).toBeNull();
+    });
+
+    it('F/K: routes the premium CTA to the Rewards route by identity, never by tab position', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      fireEvent.press(getByTestId('feed-item-premium-required-action'));
+
+      // Route IDENTITY. Rewards may be moved to any slot in the tab bar -
+      // including the centre - without touching this CTA, which is exactly
+      // why an index/position-based navigation must never appear here.
+      //
+      // The other half of the guarantee (that `/rewards` resolves to a real
+      // route file) is the repo's established one: `(tabs)/rewards.test.tsx`
+      // imports `@/app/(tabs)/rewards` by path, so a missing or renamed
+      // route file fails there - see the note in `tabs-navigation.test.tsx`.
+      expect(router.push).toHaveBeenCalledWith('/rewards');
+
+      const pushedTargets = (router.push as jest.Mock).mock.calls.map(([target]) =>
+        JSON.stringify(target)
+      );
+
+      expect(pushedTargets.some((target) => /\bindex\b|tabIndex|\/\(tabs\)\//.test(target))).toBe(
+        false
+      );
+    });
+
+    it('redeems nothing on the way: the CTA only opens Rewards', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+      const refresh = jest.fn();
+      mockUseEntitlement.mockReturnValue({ isPremium: false, refresh });
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      fireEvent.press(getByTestId('feed-item-premium-required-action'));
+
+      // No entitlement is granted, refreshed, or spent from here: the viewer
+      // decides what to do with their points once Rewards is open.
+      expect(refresh).not.toHaveBeenCalled();
+      expect(router.push).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads the backend refusal, not the client entitlement flag', async () => {
+      // The client store claiming premium must NOT override a backend
+      // refusal - the playback authorization contract is the authority, and
+      // a stale/optimistic local flag turning a refusal into "it should have
+      // played" would be exactly the wrong failure mode.
+      mockUseEntitlement.mockReturnValue({ isPremium: true, refresh: jest.fn() });
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      expect(getByTestId('feed-item-premium-required-gate')).toBeTruthy();
+    });
+
+    it('never plays a premium episode it was refused', async () => {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      // The gate is DISPLAY only: it never coincides with a playable source.
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toBeNull();
+    });
+
+    it('does not reinterpret a 403 that is NOT the canonical entitlement code', async () => {
+      // Only the backend's canonical `ENTITLEMENT_REQUIRED` means "you need
+      // Premium." Any other 403 is an unclassified refusal and keeps the
+      // generic unavailable copy rather than being turned into an upsell.
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(403, 'REGION_BLOCKED', 'Forbidden.')
+      );
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByText, queryByTestId } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+      expect(queryByTestId('feed-item-signin-gate')).toBeNull();
+      expect(getByText('Video unavailable')).toBeTruthy();
+    });
+
+    it('H: keeps a real network failure on the generic unavailable state', async () => {
+      // A transport failure is not an entitlement problem. Turning every
+      // error into a Premium upsell would be its own lie - and would send a
+      // viewer to Rewards to fix their wifi.
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(0, 'NETWORK_ERROR', 'Network request failed.')
+      );
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByText, queryByTestId } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+      expect(getByText('Video unavailable')).toBeTruthy();
+      expect(getByText('Check the local media server connection.')).toBeTruthy();
+    });
+
+    it('keeps a 409 with no usable media on the generic unavailable state', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(409, 'MEDIA_PLAYBACK_SOURCE_UNAVAILABLE', 'No source.')
+      );
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByText, queryByTestId } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+      expect(getByText('Video unavailable')).toBeTruthy();
+    });
+
+    it('I: keeps a dead session on the sign-in gate, never the premium gate', async () => {
+      // A 401 that survived the client's own refresh-and-retry is an
+      // auth/session problem for a viewer who HOLDS a token. Sending them to
+      // Rewards would be useless - Rewards needs a live session too.
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(401, 'INVALID_ACCESS_TOKEN', 'Unauthenticated.')
+      );
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId, queryByTestId } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(getByTestId('feed-item-signin-gate')).toBeTruthy();
+      expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+    });
+
+    it('Clear Display can neither hide nor cover the premium gate', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId, toJSON } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isClearDisplay={true} />
+      );
+
+      // Visible and in the accessibility tree without `includeHiddenElements`
+      // - unlike the chrome overlays, which Clear Display legitimately hides.
+      const gate = getByTestId('feed-item-premium-required-gate');
+      const action = getByTestId('feed-item-premium-required-action');
+
+      expect(gate).toBeTruthy();
+      expect(getByTestId('feed-item-premium-required-title')).toBeTruthy();
+
+      // ...and it is NOT underneath the full-bleed clear-display surface,
+      // which would swallow every tap on the only actionable control. RN
+      // paints and hit-tests LATER siblings on top, so the gate must appear
+      // after that surface in tree order - the regression this pins is the
+      // gate being moved back inside the video layer, which renders first.
+      // The rendered tree serializes in render order, and both testIDs are
+      // unique, so their positions in it ARE their sibling order.
+      const tree = JSON.stringify(toJSON());
+      const surfacePosition = tree.indexOf('feed-item-clear-display-surface');
+      const gatePosition = tree.indexOf('feed-item-premium-required-gate');
+
+      expect(surfacePosition).toBeGreaterThan(-1);
+      expect(gatePosition).toBeGreaterThan(surfacePosition);
+
+      // Reviewer B (LOW): and the ordering is not left to declaration order
+      // alone. `episodeCluster`/`overflowButton` carry an explicit `zIndex: 2`
+      // and would otherwise paint over the gate wherever the boxes met, so
+      // the gate layer outranks them explicitly.
+      const gateLayerZIndex = StyleSheet.flatten(gate.parent?.props.style).zIndex;
+      const clusterZIndex = StyleSheet.flatten(
+        getByTestId('feed-item-episode-cluster', { includeHiddenElements: true }).props.style
+      ).zIndex;
+
+      expect(gateLayerZIndex).toBeGreaterThan(clusterZIndex);
+
+      // And the CTA still works from inside Clear Display, in one press.
+      fireEvent.press(action);
+
+      expect(router.push).toHaveBeenCalledWith('/rewards');
+    });
+
+    it('L: announces the requirement and the destination to a screen reader', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      const title = getByTestId('feed-item-premium-required-title');
+      const action = getByTestId('feed-item-premium-required-action');
+
+      expect(title.props.accessibilityRole).toBe('header');
+      expect(action.props.accessibilityRole).toBe('button');
+      expect(action.props.accessibilityLabel).toBe('Buka Rewards');
+      // Names where the button goes, and that pressing it spends nothing.
+      expect(action.props.accessibilityHint).toBe(
+        'Membuka halaman Rewards. Poin kamu tidak langsung terpakai.'
+      );
+    });
+
+    it('G: no premium gate flashes while authorization is still in flight', async () => {
+      // A gate rendered optimistically - before the backend has answered -
+      // would flash in front of an ENTITLED viewer on every premium episode.
+      // The gate is reachable only from an actual refusal.
+      const deferred = createDeferred<PlaybackAuthorization>();
+      mockUseEntitlement.mockReturnValue({ isPremium: true, refresh: jest.fn() });
+      mockGetPlaybackAuthorization.mockReturnValue(deferred.promise);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { queryByTestId, queryByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+      expect(queryByTestId('feed-item-signin-gate')).toBeNull();
+      expect(queryByText('Video unavailable')).toBeNull();
+
+      await act(async () => {
+        deferred.resolve(
+          buildPlaybackAuthorization({
+            playbackUrl: 'https://media.example.com/premium-episode.mp4',
+          })
+        );
+      });
+
+      // ...and it never appears after a SUCCESSFUL authorization either.
+      expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+    });
+
+    it('clears the premium gate once a later authorization succeeds', async () => {
+      // A redemption in Rewards makes the very next request succeed. The
+      // requirement must not outlive the refusal that produced it, or a
+      // viewer who just bought Premium would keep being told to buy it.
+      jest.useFakeTimers();
+
+      try {
+        mockGetPlaybackAuthorization.mockRejectedValueOnce(ENTITLEMENT_REFUSAL);
+
+        const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+        const { getByTestId, queryByTestId, rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} />
+        );
+
+        expect(getByTestId('feed-item-premium-required-gate')).toBeTruthy();
+
+        mockGetPlaybackAuthorization.mockResolvedValue(
+          buildPlaybackAuthorization({
+            playbackUrl: 'https://media.example.com/premium-episode.mp4',
+          })
+        );
+
+        // The ordinary scroll-away-and-back refetch - no bespoke retry path.
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+        });
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+
+        expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 
   it('G: still plays a premium episode for a signed-in entitled viewer', async () => {

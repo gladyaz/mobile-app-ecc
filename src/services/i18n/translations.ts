@@ -314,6 +314,17 @@ const id = {
   'feed.signInToPlay': 'Masuk untuk menonton episode ini',
   'feed.signInToPlayHint': 'Episode ini butuh akun yang sudah masuk. Episode gratis tetap bisa diputar tanpa masuk.',
   'feed.signIn': 'Masuk',
+  // PREMIUM ENTITLEMENT ERROR UX (2026-08-22): the signed-in, non-entitled
+  // viewer. Separate keys from `feed.signIn*` above because the two states
+  // are different truths - this viewer is already signed in, and the media
+  // server is fine. Rewards is named because it is where Premium is
+  // actually obtainable today; nothing here promises a purchase flow that
+  // does not exist.
+  'feed.premiumRequired': 'Episode Premium',
+  'feed.premiumRequiredHint':
+    'Aktifkan Premium untuk menonton episode ini. Kamu bisa menukarnya dengan poin di Rewards.',
+  'feed.openRewards': 'Buka Rewards',
+  'feed.premiumRequiredActionHint': 'Membuka halaman Rewards. Poin kamu tidak langsung terpakai.',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Episode Berikutnya',
   'feed.clearDisplay': 'Tampilan bersih',
@@ -693,6 +704,11 @@ const en: Copy = {
   'feed.signInToPlay': 'Sign in to watch this episode',
   'feed.signInToPlayHint': 'This episode needs a signed-in account. Free episodes play without one.',
   'feed.signIn': 'Sign in',
+  'feed.premiumRequired': 'Premium Episode',
+  'feed.premiumRequiredHint':
+    'Activate Premium to watch this episode. You can redeem it with points in Rewards.',
+  'feed.openRewards': 'Open Rewards',
+  'feed.premiumRequiredActionHint': 'Opens the Rewards page. No points are spent by opening it.',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Next Episode',
   'feed.clearDisplay': 'Clear display',
@@ -1067,6 +1083,10 @@ const zh: Copy = {
   'feed.signInToPlay': '登录后观看本集',
   'feed.signInToPlayHint': '本集需要已登录的账号。免费剧集无需登录即可播放。',
   'feed.signIn': '登录',
+  'feed.premiumRequired': '会员剧集',
+  'feed.premiumRequiredHint': '开通会员后即可观看本集。你可以在奖励页用积分兑换。',
+  'feed.openRewards': '打开奖励',
+  'feed.premiumRequiredActionHint': '打开奖励页面。仅打开不会扣除积分。',
   'feed.fullscreen': '全屏',
   'feed.nextEpisode': '下一集',
   'feed.clearDisplay': '清屏模式',

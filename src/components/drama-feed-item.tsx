@@ -174,55 +174,81 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 
 /**
- * Guest-first feed (2026-08-22) / ANONYMOUS FREE-EPISODE PLAYBACK: whether
- * a playback-authorization REFUSAL is one the viewer can act on by signing
- * in - the single narrowing of the otherwise-generic "video unavailable"
- * state.
+ * What a playback-authorization REFUSAL requires of the viewer before this
+ * episode could play - the two truthful narrowings of the otherwise-generic
+ * "video unavailable" state.
  *
- * This classifies a refusal the backend has ALREADY made, for display
- * purposes only. It is never consulted before a request, it never converts
- * a refusal into access, and it never runs a FREE/PREMIUM judgement of its
- * own - it reads the status the backend returned and nothing else. In
- * particular it never looks at `episodeNumber` or `accessTier`.
+ * - `'sign-in'`: there is no usable session. Signing in is the next step.
+ * - `'premium'`: there IS a session, and the backend refused it for want of
+ *   an entitlement. Acquiring Premium is the next step.
  *
- * Two cases qualify, and only these two:
- *
- * 1. Any 401. The backend answers `401 INVALID_ACCESS_TOKEN` for a SUPPLIED
- *    but invalid/expired/malformed credential (`OptionalJwtAuthGuard` never
- *    downgrades one to an anonymous request), and the client's own
- *    refresh-on-401 interceptor has already consumed and retried
- *    `INVALID_ACCESS_TOKEN` before this point - so what reaches here is a
- *    401 that survived a refresh attempt, i.e. a genuinely dead session.
- *    Deliberately NOT keyed on the error `code`, since whichever 401
- *    survives that retry may carry any code at all.
- *
- * 2. A `403 ENTITLEMENT_REQUIRED` for a viewer holding NO access token.
- *    Since the guard swap, this is exactly the guest-on-a-PREMIUM-episode
- *    case: the backend refused for want of an entitlement, and a guest has
- *    no account that could hold one, so the first real step is signing in.
- *    The `accessToken` check is what keeps this honest in the other
- *    direction - a SIGNED-IN non-entitled viewer gets the identical 403
- *    (the backend deliberately returns it byte-for-byte the same so the
- *    response leaks nothing about who asked), and telling THEM to "sign in"
- *    would be false, so they keep the generic unavailable state.
+ * `null` (see `classifyPlaybackAccessRequirement` below) means the refusal
+ * is NOT an access problem at all - a network failure, a 409 with no usable
+ * media, an unparseable 200 - and keeps the generic unavailable copy.
  */
-function isSignInActionablePlaybackAuthError(
+type PlaybackAccessRequirement = 'sign-in' | 'premium';
+
+/**
+ * Guest-first feed (2026-08-22) / ANONYMOUS FREE-EPISODE PLAYBACK, extended
+ * by PREMIUM ENTITLEMENT ERROR UX (2026-08-22): LABELS a refusal the backend
+ * has ALREADY made, for display purposes only.
+ *
+ * It is never consulted before a request, it never converts a refusal into
+ * access, and it never runs a FREE/PREMIUM judgement of its own - it reads
+ * the status/code the backend returned plus whether this viewer holds a
+ * token at all, and nothing else. In particular it never looks at
+ * `episodeNumber`, `accessTier`, or the client's own entitlement store
+ * (`useEntitlement`): "am I premium?" according to the client must never
+ * decide what a backend playback refusal MEANS, or a stale/failed
+ * entitlement read would start rewriting the reason playback was blocked.
+ *
+ * Three cases qualify, and only these three:
+ *
+ * 1. Any 401 -> `'sign-in'`. The backend answers `401 INVALID_ACCESS_TOKEN`
+ *    for a SUPPLIED but invalid/expired/malformed credential
+ *    (`OptionalJwtAuthGuard` never downgrades one to an anonymous request),
+ *    and the client's own refresh-on-401 interceptor has already consumed
+ *    and retried `INVALID_ACCESS_TOKEN` before this point - so what reaches
+ *    here is a 401 that survived a refresh attempt, i.e. a genuinely dead
+ *    session. Deliberately NOT keyed on the error `code`, since whichever
+ *    401 survives that retry may carry any code at all.
+ *
+ * 2. A `403 ENTITLEMENT_REQUIRED` for a viewer holding NO access token ->
+ *    `'sign-in'`. Since the guard swap, this is exactly the
+ *    guest-on-a-PREMIUM-episode case: the backend refused for want of an
+ *    entitlement, and a guest has no account that could hold one, so the
+ *    first real step is signing in - never Rewards, which a signed-out
+ *    viewer cannot redeem from.
+ *
+ * 3. A `403 ENTITLEMENT_REQUIRED` for a viewer who DOES hold an access token
+ *    -> `'premium'`. The backend returns this byte-for-byte identically to a
+ *    guest's (so the response leaks nothing about who asked), which is why
+ *    the token is what separates the two. Telling this viewer to "sign in"
+ *    would be false - they already are - and calling it a media/network
+ *    failure would be false too: the media server is healthy, the
+ *    entitlement is what is missing.
+ *
+ * The `code` check is what keeps case 2/3 honest in the other direction: a
+ * 403 carrying any OTHER code is not the canonical entitlement refusal and
+ * is deliberately NOT reinterpreted as a Premium upsell.
+ */
+function classifyPlaybackAccessRequirement(
   error: unknown,
   accessToken: string | undefined
-): boolean {
+): PlaybackAccessRequirement | null {
   if (!(error instanceof ApiError)) {
-    return false;
+    return null;
   }
 
   if (error.status === HTTP_UNAUTHORIZED) {
-    return true;
+    return 'sign-in';
   }
 
-  return (
-    !accessToken &&
-    error.status === HTTP_FORBIDDEN &&
-    error.code === ENTITLEMENT_REQUIRED_ERROR_CODE
-  );
+  if (error.status === HTTP_FORBIDDEN && error.code === ENTITLEMENT_REQUIRED_ERROR_CODE) {
+    return accessToken ? 'premium' : 'sign-in';
+  }
+
+  return null;
 }
 
 /**
@@ -464,17 +490,25 @@ export function DramaFeedItem({
   const accessToken = getTokens()?.accessToken;
   const [playbackAuth, setPlaybackAuth] = useState<PlaybackAuthorization | null>(null);
   const [hasPlaybackAuthError, setHasPlaybackAuthError] = useState(false);
-  // Guest-first feed (2026-08-22) / ANONYMOUS FREE-EPISODE PLAYBACK: narrows
-  // the ONE generic playback-failure state into the one cause the viewer can
-  // actually act on - "signing in is the next step." It is set ONLY from a
-  // refusal the BACKEND already returned, never ahead of one, and only for
-  // the cases `isSignInActionablePlaybackAuthError` (above) admits.
+  // Guest-first feed (2026-08-22) / ANONYMOUS FREE-EPISODE PLAYBACK, extended
+  // by PREMIUM ENTITLEMENT ERROR UX (2026-08-22): narrows the ONE generic
+  // playback-failure state into the cause the viewer can actually act on -
+  // "signing in is the next step" (`'sign-in'`) or "Premium is the next
+  // step" (`'premium'`). `null` keeps the generic unavailable copy, which is
+  // what every non-access failure (network, transport, unusable media) still
+  // lands on.
+  //
+  // It is set ONLY from a refusal the BACKEND already returned, never ahead
+  // of one, and only for the cases `classifyPlaybackAccessRequirement`
+  // (above) admits.
   //
   // It grants NOTHING: no entitlement is inferred, no request is ever
-  // retried without a token to get a different answer, and a signed-in
-  // viewer's 403 `ENTITLEMENT_REQUIRED` keeps the generic unavailable state
-  // exactly as before. It only chooses which truthful copy to render.
-  const [isSignInRequiredForPlayback, setIsSignInRequiredForPlayback] = useState(false);
+  // retried without a token to get a different answer, and the client's own
+  // `useEntitlement` premium flag is deliberately not consulted here. It
+  // only chooses which truthful copy to render over a decision the backend
+  // already made.
+  const [playbackAccessRequirement, setPlaybackAccessRequirement] =
+    useState<PlaybackAccessRequirement | null>(null);
   // Guards `handlePlayPause`'s re-authorization branch against stacking a
   // second concurrent network request while one is already in flight - a
   // rapid series of taps (exactly what a viewer does when a video is stuck
@@ -508,7 +542,7 @@ export function DramaFeedItem({
     setLastVideoId(video.id);
     setPlaybackAuth(null);
     setHasPlaybackAuthError(false);
-    setIsSignInRequiredForPlayback(false);
+    setPlaybackAccessRequirement(null);
     setAuthRetryAttempt(0);
     setIsAuthErrorRetryable(false);
     setHasStartedPlaying(false);
@@ -633,7 +667,7 @@ export function DramaFeedItem({
     playbackRequestIdRef.current += 1;
     const requestId = playbackRequestIdRef.current;
     setHasPlaybackAuthError(false);
-    setIsSignInRequiredForPlayback(false);
+    setPlaybackAccessRequirement(null);
     // 11R remediation ADDENDUM: flipped for the lifetime of THIS request
     // only (see the `finally` block's own requestId check below) - it is
     // what lets `handlePlayPause`'s re-authorization branch tell "already
@@ -695,14 +729,13 @@ export function DramaFeedItem({
       setHasPlaybackAuthError(true);
       // The backend is the authority on this, not the client. This only
       // LABELS the refusal it already made - see
-      // `isSignInActionablePlaybackAuthError` for the two cases that qualify
-      // (a session-dead 401, or a guest's 403 ENTITLEMENT_REQUIRED). A
-      // SIGNED-IN viewer's 403 keeps the generic unavailable state, so a
-      // premium refusal is never re-labelled as a login problem for someone
-      // who is already logged in.
-      setIsSignInRequiredForPlayback(
-        isSignInActionablePlaybackAuthError(requestError, accessToken)
-      );
+      // `classifyPlaybackAccessRequirement` for the three cases that qualify
+      // (a session-dead 401, a guest's 403 ENTITLEMENT_REQUIRED, and a
+      // SIGNED-IN viewer's 403 ENTITLEMENT_REQUIRED). A premium refusal is
+      // never re-labelled as a login problem for someone who is already
+      // logged in, and a network/transport failure is never re-labelled as a
+      // premium upsell.
+      setPlaybackAccessRequirement(classifyPlaybackAccessRequirement(requestError, accessToken));
       setIsAuthErrorRetryable(isRetryablePlaybackAuthError(requestError));
     } finally {
       if (playbackRequestIdRef.current === requestId) {
@@ -1113,6 +1146,15 @@ export function DramaFeedItem({
   // Only an explicit authorization failure or a player-reported error
   // counts as "this cannot play."
   const hasPlaybackError = hasPlaybackAuthError || status === 'error';
+  // PREMIUM ENTITLEMENT ERROR UX (2026-08-22): whether the CURRENT failure is
+  // an ACCESS gate (the backend refused this viewer) rather than a media or
+  // network one. Paired with `hasPlaybackError` so a stale requirement can
+  // never outlive the failure that produced it: a `status === 'error'` from
+  // the player alone is never an access gate, and a resolved authorization
+  // clears the requirement at request start.
+  const accessRequirement = hasPlaybackError ? playbackAccessRequirement : null;
+  const isPlaybackAccessGated = accessRequirement !== null;
+  const isSignInRequiredForPlayback = accessRequirement === 'sign-in';
   const hasLoggedErrorRef = useRef(false);
 
   // Prefer backend-provided dimensions (instant); fall back to the actual
@@ -1709,6 +1751,24 @@ export function DramaFeedItem({
     router.push('/login');
   }, []);
 
+  // PREMIUM ENTITLEMENT ERROR UX (2026-08-22): the EXISTING Rewards route -
+  // by route IDENTITY (`/rewards`, the `(tabs)/rewards.tsx` screen), never by
+  // tab index or position, so moving Rewards to a different slot in the tab
+  // bar cannot break this CTA.
+  //
+  // Rewards is where Premium is actually acquired today (redemption debits
+  // points and grants the entitlement server-side - see
+  // `features/rewards/use-rewards-center.ts`), so it is the honest
+  // destination for a signed-in viewer who lacks it. There is no checkout to
+  // invent, and nothing here redeems anything: this only OPENS the surface,
+  // and the viewer chooses whether to spend their points.
+  //
+  // Pushed, not replaced, for the same reason the sign-in gate pushes: the
+  // feed stays underneath, so declining returns to browsing.
+  const handleGoToRewards = useCallback(() => {
+    router.push('/rewards');
+  }, []);
+
   const handleFullscreenEnter = useCallback(() => {
     setIsInFullscreen(true);
     lockOrientation(ScreenOrientation.OrientationLock.LANDSCAPE);
@@ -1797,32 +1857,15 @@ export function DramaFeedItem({
         setIsPinchInProgress(false);
       }}>
       <View style={styles.videoLayer}>
-        {hasPlaybackError && isSignInRequiredForPlayback ? (
-          // ANONYMOUS FREE-EPISODE PLAYBACK (2026-08-22): a signed-out
-          // viewer now reaches the feed, the metadata, the poster, the whole
-          // action rail AND free playback itself - so this gate is no longer
-          // "playback needs a session." It is the narrower, truthful thing
-          // it is now reachable for: THIS episode was refused, and signing
-          // in is the next step (a guest's premium refusal, or a session
-          // that has genuinely died). Free episodes never render it at all,
-          // because they never fail.
-          //
-          // Not the tap-to-retry Pressable below: retrying the identical
-          // request with the identical (absent or dead) credential cannot
-          // produce a different answer, so the actionable control is the one
-          // that can.
-          <View testID="feed-item-signin-gate" style={styles.errorState}>
-            <Text style={styles.errorTitle}>{t('feed.signInToPlay')}</Text>
-            <Text style={styles.errorHint}>{t('feed.signInToPlayHint')}</Text>
-            <Pressable
-              testID="feed-item-signin-button"
-              accessibilityRole="button"
-              accessibilityLabel={t('feed.signIn')}
-              onPress={handleGoToLogin}
-              style={({ pressed }) => [styles.signInButton, pressed && styles.buttonPressed]}>
-              <Text style={styles.signInButtonText}>{t('feed.signIn')}</Text>
-            </Pressable>
-          </View>
+        {isPlaybackAccessGated ? (
+          // PREMIUM ENTITLEMENT ERROR UX (2026-08-22): an ACCESS refusal
+          // renders its gate in the dedicated layer further down (after the
+          // clear-display surface), not here - so this leaves the frame
+          // black and hands the explanation to that layer. Deliberately NOT
+          // the tap-to-retry Pressable below either: retrying the identical
+          // request with the identical credential cannot produce a different
+          // answer, so the actionable control is the one that can.
+          null
         ) : hasPlaybackError ? (
           // 11R remediation ADDENDUM: pressable so a failed/expired
           // authorization is reachable for a retry from here too - the
@@ -1891,7 +1934,7 @@ export function DramaFeedItem({
           visible, and this surface only ever receives taps on otherwise open
           video. In clear display, where all of those are gone, it is the
           whole screen - which is what makes a tap the way back.
-          
+
           WHY THIS DOES NOT BREAK PAGING: a Pressable claims the responder
           only on touch-START. The moment the finger moves, the enclosing
           FlatList wins it through onMoveShouldSetResponderCapture, so a
@@ -1899,7 +1942,7 @@ export function DramaFeedItem({
           pinch is likewise unaffected - the container's capture handlers
           above return true only for exactly two touches, and capture runs
           before this child is offered the gesture at all.
-          
+
           NOT rendered in the plain error state. The error view is its own
           Pressable (the 11R ADDENDUM's tap-to-retry re-authorization path),
           and this surface is a LATER root sibling with no zIndex - which
@@ -1909,7 +1952,14 @@ export function DramaFeedItem({
           still rendered when the error coincides with clear display, so
           hidden chrome always has a way back - recovery there is two taps
           (exit clear display, then retry), which is deliberate: the
-          alternative is a failed video with no way back to its own chrome. */}
+          alternative is a failed video with no way back to its own chrome.
+
+          PREMIUM ENTITLEMENT ERROR UX (2026-08-22) carves out exactly one
+          exception, and only for an ACCESS gate: the gate layer declared
+          immediately below is a LATER sibling still, so it - and only it -
+          sits above this surface. Everything else here is unchanged, and
+          `box-none` on that layer means the frame AROUND the gate keeps
+          reaching this surface, so the way back to hidden chrome survives. */}
       {hasPlaybackError && !isClearDisplay ? null : (
         <Pressable
           testID="feed-item-clear-display-surface"
@@ -1925,6 +1975,86 @@ export function DramaFeedItem({
           style={styles.clearDisplaySurface}
         />
       )}
+
+      {/* PREMIUM ENTITLEMENT ERROR UX (2026-08-22): the authorization gate is
+          an UNAVAILABLE/ACCESS state, not playback chrome, so Clear Display
+          must never be able to hide - or sit on top of - the only
+          explanation for why this episode will not play, nor the only
+          control that can do anything about it.
+
+          That is exactly why this is a ROOT-LEVEL sibling declared AFTER the
+          full-bleed clear-display surface above rather than a child of the
+          video layer, where it used to live: RN paints (and hit-tests) later
+          siblings on top, so from inside the video layer the surface
+          swallowed every tap on the gate's CTA whenever the two coincided.
+          `box-none` keeps the REST of the frame belonging to that surface,
+          so the existing "tap anywhere to bring the chrome back" behaviour
+          for other chrome is untouched - only the gate itself is carved out.
+
+          Both gates live here because both are the same kind of state: the
+          backend refused THIS viewer, and there is one truthful next step.
+          Which one renders is decided by `classifyPlaybackAccessRequirement`
+          from the backend's own answer - never by the client's entitlement
+          flag, and never by `accessTier`/`episodeNumber`. */}
+      {isPlaybackAccessGated ? (
+        <View pointerEvents="box-none" style={styles.accessGateLayer}>
+          {isSignInRequiredForPlayback ? (
+            // ANONYMOUS FREE-EPISODE PLAYBACK (2026-08-22): a signed-out
+            // viewer now reaches the feed, the metadata, the poster, the
+            // whole action rail AND free playback itself - so this gate is
+            // not "playback needs a session." It is the narrower, truthful
+            // thing it is reachable for: THIS episode was refused, and
+            // signing in is the next step (a guest's premium refusal, or a
+            // session that has genuinely died). Free episodes never render
+            // it at all, because they never fail.
+            //
+            // A guest is deliberately NOT sent to Rewards: there is nothing
+            // to redeem from without an account, so sign-in comes first.
+            <View testID="feed-item-signin-gate" style={styles.errorState}>
+              <Text accessibilityRole="header" style={styles.errorTitle}>
+                {t('feed.signInToPlay')}
+              </Text>
+              <Text style={styles.errorHint}>{t('feed.signInToPlayHint')}</Text>
+              <Pressable
+                testID="feed-item-signin-button"
+                accessibilityRole="button"
+                accessibilityLabel={t('feed.signIn')}
+                onPress={handleGoToLogin}
+                style={({ pressed }) => [styles.signInButton, pressed && styles.buttonPressed]}>
+                <Text style={styles.signInButtonText}>{t('feed.signIn')}</Text>
+              </Pressable>
+            </View>
+          ) : (
+            // The signed-in, non-entitled viewer. Everything here is true of
+            // them and of nobody else: they are already signed in (so "sign
+            // in" would be false), and the media server is healthy (so
+            // "check the media server connection" would be false too) - the
+            // entitlement is the only thing missing, and Rewards is where it
+            // is actually obtainable today.
+            <View testID="feed-item-premium-required-gate" style={styles.errorState}>
+              <Text
+                testID="feed-item-premium-required-title"
+                accessibilityRole="header"
+                style={styles.errorTitle}>
+                {t('feed.premiumRequired')}
+              </Text>
+              <Text style={styles.errorHint}>{t('feed.premiumRequiredHint')}</Text>
+              <Pressable
+                testID="feed-item-premium-required-action"
+                accessibilityRole="button"
+                accessibilityLabel={t('feed.openRewards')}
+                // Names the DESTINATION, so a screen-reader user knows where
+                // the button goes before pressing it - and that pressing it
+                // spends nothing on its own.
+                accessibilityHint={t('feed.premiumRequiredActionHint')}
+                onPress={handleGoToRewards}
+                style={({ pressed }) => [styles.signInButton, pressed && styles.buttonPressed]}>
+                <Text style={styles.signInButtonText}>{t('feed.openRewards')}</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      ) : null}
 
       {hasPlaybackError || isClearDisplay ? null : (
         <Pressable
@@ -2340,6 +2470,31 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
+  },
+  // Full-bleed so the gate lands in the optical centre of the frame exactly
+  // where it did as a child of the video layer; `pointerEvents="box-none"` on
+  // the element itself is what keeps the empty area around the gate belonging
+  // to the clear-display surface underneath.
+  //
+  // Reviewer B (LOW): the `zIndex` makes "the gate is topmost" STRUCTURAL
+  // rather than positional. Declaration order alone is not enough here -
+  // `episodeCluster` and `overflowButton` both carry an explicit `zIndex: 2`,
+  // which would paint them over this layer wherever the boxes overlapped, no
+  // matter that this one is declared first. They do not overlap at today's
+  // spacing, but that is an implicit invariant ("the gate card never grows
+  // tall enough to reach the bottom band") that a longer localized hint or a
+  // short viewport at a large OS text size could quietly break. 3 beats both
+  // of them, so the one explanation for why playback is blocked can never
+  // end up underneath a control.
+  accessGateLayer: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 3,
   },
   overflowButton: {
     position: 'absolute',

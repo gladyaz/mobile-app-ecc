@@ -244,8 +244,8 @@ const id = {
 
   'feed.videoUnavailable': 'Video unavailable',
   'feed.videoUnavailableHint': 'Check the local media server connection.',
-  'feed.signInToPlay': 'Masuk untuk memutar',
-  'feed.signInToPlayHint': 'Pemutaran video butuh akun. Katalog tetap bisa dijelajahi tanpa masuk.',
+  'feed.signInToPlay': 'Masuk untuk menonton episode ini',
+  'feed.signInToPlayHint': 'Episode ini butuh akun yang sudah masuk. Episode gratis tetap bisa diputar tanpa masuk.',
   'feed.signIn': 'Masuk',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Episode Berikutnya',
@@ -562,8 +562,8 @@ const en: Copy = {
 
   'feed.videoUnavailable': 'Video unavailable',
   'feed.videoUnavailableHint': 'Check the local media server connection.',
-  'feed.signInToPlay': 'Sign in to play',
-  'feed.signInToPlayHint': 'Playback needs an account. Browsing the catalog does not.',
+  'feed.signInToPlay': 'Sign in to watch this episode',
+  'feed.signInToPlayHint': 'This episode needs a signed-in account. Free episodes play without one.',
   'feed.signIn': 'Sign in',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Next Episode',
@@ -875,8 +875,8 @@ const zh: Copy = {
 
   'feed.videoUnavailable': '视频不可用',
   'feed.videoUnavailableHint': '请检查本地媒体服务器连接。',
-  'feed.signInToPlay': '登录后播放',
-  'feed.signInToPlayHint': '播放需要账号，浏览目录则不需要。',
+  'feed.signInToPlay': '登录后观看本集',
+  'feed.signInToPlayHint': '本集需要已登录的账号。免费剧集无需登录即可播放。',
   'feed.signIn': '登录',
   'feed.fullscreen': '全屏',
   'feed.nextEpisode': '下一集',

@@ -284,20 +284,38 @@ export function resolvePlaybackSource(
  * Fetches short-lived authorization to play one video (Slice 11M, `GET
  * /videos/:id/playback` - see the control workspace `DECISIONS.md`, "Slice
  * 11M approved; playback contract decided (Option A, dedicated endpoint)",
- * 2026-08-08). Requires auth. Callers must attach `Authorization: Bearer
- * <accessToken>` to the returned `playbackUrl` ONLY when
- * `requiresAuthHeader` is true - a presigned R2 GET URL rejects a request
- * that also carries an Authorization header.
+ * 2026-08-08). Callers must attach `Authorization: Bearer <accessToken>` to
+ * the returned `playbackUrl` ONLY when `requiresAuthHeader` is true - a
+ * presigned R2 GET URL rejects a request that also carries an Authorization
+ * header, and (work unit "ANONYMOUS FREE-EPISODE PLAYBACK") a FREE
+ * local-backed row now reports `requiresAuthHeader: false` precisely so a
+ * guest with no token has nothing to attach. `resolvePlaybackSource` above
+ * is the one place that reads the flag.
+ *
+ * Work unit "ANONYMOUS FREE-EPISODE PLAYBACK": this endpoint no longer
+ * REQUIRES a session. It is `OptionalJwtAuthGuard`-guarded on the backend -
+ * no `Authorization` header at all is a valid anonymous request, and the
+ * backend's single `enforceEntitlementGate` then decides FREE-vs-PREMIUM
+ * and entitlement identically for guests and signed-in callers. Note that
+ * `requiresAuth: true` below is therefore NOT "refuse without a token":
+ * `request`'s auth handling attaches a header only when one exists
+ * (`buildAuthHeader` returns `{}` otherwise) and, critically, keeps the
+ * refresh-and-retry-once behavior on a `401 INVALID_ACCESS_TOKEN`. Dropping
+ * it would silently turn an expired session into an anonymous request -
+ * exactly the downgrade the backend's guard refuses to make.
  *
  * Throws for every failure mode: an `ApiError` for 404 (not found / not
- * published), 401 (unauthenticated), 403 `ENTITLEMENT_REQUIRED` (premium
- * episode, no entitlement), 409 `MEDIA_PLAYBACK_SOURCE_UNAVAILABLE` (row
- * has no usable storage); a plain `Error` (never containing the URL or any
- * other response field - see `parsePlaybackAuthorization` above) for a 200
- * response whose shape doesn't validate as either the HLS (Slice 11R) or
- * legacy/MP4 (Slice 11M) shape. None of these are caught here; callers are
- * expected to fold all of them into the same "video unavailable" error
- * state rather than distinguishing them in the UI.
+ * published), 401 `INVALID_ACCESS_TOKEN` (a SUPPLIED but invalid/expired
+ * credential - never a guest, who supplies none), 403 `ENTITLEMENT_REQUIRED`
+ * (premium episode, no entitlement - returned byte-for-byte identically to a
+ * guest and to a signed-in non-entitled caller), 409
+ * `MEDIA_PLAYBACK_SOURCE_UNAVAILABLE` (row has no usable storage); a plain
+ * `Error` (never containing the URL or any other response field - see
+ * `parsePlaybackAuthorization` above) for a 200 response whose shape doesn't
+ * validate as either the HLS (Slice 11R) or legacy/MP4 (Slice 11M) shape.
+ * None of these are caught here; callers decide how to present them - see
+ * `drama-feed-item.tsx`'s `isSignInActionablePlaybackAuthError`, which
+ * LABELS a refusal for display and never makes one.
  *
  * In mock-data mode this never reaches the network: it synthesizes a
  * `kind: 'mp4'` authorization from the matching mock video's own bundled

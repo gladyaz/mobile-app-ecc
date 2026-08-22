@@ -18,8 +18,18 @@
  *   A, dedicated endpoint)", 2026-08-08): `{ playbackUrl, expiresAt,
  *   requiresAuthHeader }` on the wire (no `type` field), normalized to
  *   `Mp4PlaybackAuthorization` (`kind: 'mp4'`):
- *   - local-backed media: `requiresAuthHeader: true`, `playbackUrl` is the
- *     existing `/videos/:id/stream` URL.
+ *   - local-backed media: `playbackUrl` is the existing `/videos/:id/stream`
+ *     URL. `requiresAuthHeader` used to be an unconditional `true` here, but
+ *     since the backend work unit "ANONYMOUS FREE-EPISODE PLAYBACK" it is
+ *     DERIVED from the row's authoritative effective access tier: `false`
+ *     for a FREE row (that route now serves free content to anonymous
+ *     callers, so a guest with no token has nothing to attach and must not
+ *     invent a `Bearer undefined`), `true` for a PREMIUM one (that route
+ *     still refuses it without an active entitlement). It is a function of
+ *     the CONTENT, never of the caller - the same row yields the same value
+ *     for a guest, a signed-in non-entitled viewer, and a subscriber - so it
+ *     leaks nothing about who asked and never contradicts the authorization
+ *     decision the backend will actually make.
  *   - R2-backed media: `requiresAuthHeader: false`, `playbackUrl` is a
  *     short-lived (15 minute) presigned GET URL straight to the storage
  *     provider. Attaching an Authorization header to this source is what

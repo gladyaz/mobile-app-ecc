@@ -22,7 +22,6 @@ import {
   reportPlaybackDecision,
   reportPlayingState,
 } from '@/services/debug/playback-invariant';
-import { isDemoMode } from '@/services/demo/demo-mode';
 import { useTranslation } from '@/stores/language';
 import { DEFAULT_PLAYBACK_SPEED, type PlaybackSpeed } from '@/constants/playback-speed';
 import { trackEvent } from '@/services/analytics/analytics-queue';
@@ -162,25 +161,60 @@ function isRetryablePlaybackAuthError(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 429 || error.code === 'NETWORK_ERROR');
 }
 
+const ENTITLEMENT_REQUIRED_ERROR_CODE = 'ENTITLEMENT_REQUIRED';
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
+
 /**
- * Guest-first feed (2026-08-22): whether a playback-authorization failure
- * means "no session," and nothing else.
+ * Guest-first feed (2026-08-22) / ANONYMOUS FREE-EPISODE PLAYBACK: whether
+ * a playback-authorization REFUSAL is one the viewer can act on by signing
+ * in - the single narrowing of the otherwise-generic "video unavailable"
+ * state.
  *
- * 401 is the ONLY status that qualifies, because it is the only one the
- * backend uses for it (`GET /videos/:id/playback`: 401
- * `INVALID_ACCESS_TOKEN` unauthenticated, 403 `ENTITLEMENT_REQUIRED`
- * premium-without-entitlement, 404 not found/published, 409 no usable
- * storage - docs/api-contract.md). Deliberately NOT keyed on the error
- * `code`: the client's own refresh-on-401 interceptor already consumed and
- * retried `INVALID_ACCESS_TOKEN` before this point, so what reaches here is
- * whichever 401 survived that - and a signed-out viewer's 401 may carry any
- * code at all.
+ * This classifies a refusal the backend has ALREADY made, for display
+ * purposes only. It is never consulted before a request, it never converts
+ * a refusal into access, and it never runs a FREE/PREMIUM judgement of its
+ * own - it reads the status the backend returned and nothing else. In
+ * particular it never looks at `episodeNumber` or `accessTier`.
  *
- * This classifies a REFUSAL for display purposes. It never converts one
- * into access.
+ * Two cases qualify, and only these two:
+ *
+ * 1. Any 401. The backend answers `401 INVALID_ACCESS_TOKEN` for a SUPPLIED
+ *    but invalid/expired/malformed credential (`OptionalJwtAuthGuard` never
+ *    downgrades one to an anonymous request), and the client's own
+ *    refresh-on-401 interceptor has already consumed and retried
+ *    `INVALID_ACCESS_TOKEN` before this point - so what reaches here is a
+ *    401 that survived a refresh attempt, i.e. a genuinely dead session.
+ *    Deliberately NOT keyed on the error `code`, since whichever 401
+ *    survives that retry may carry any code at all.
+ *
+ * 2. A `403 ENTITLEMENT_REQUIRED` for a viewer holding NO access token.
+ *    Since the guard swap, this is exactly the guest-on-a-PREMIUM-episode
+ *    case: the backend refused for want of an entitlement, and a guest has
+ *    no account that could hold one, so the first real step is signing in.
+ *    The `accessToken` check is what keeps this honest in the other
+ *    direction - a SIGNED-IN non-entitled viewer gets the identical 403
+ *    (the backend deliberately returns it byte-for-byte the same so the
+ *    response leaks nothing about who asked), and telling THEM to "sign in"
+ *    would be false, so they keep the generic unavailable state.
  */
-function isMissingSessionPlaybackAuthError(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 401;
+function isSignInActionablePlaybackAuthError(
+  error: unknown,
+  accessToken: string | undefined
+): boolean {
+  if (!(error instanceof ApiError)) {
+    return false;
+  }
+
+  if (error.status === HTTP_UNAUTHORIZED) {
+    return true;
+  }
+
+  return (
+    !accessToken &&
+    error.status === HTTP_FORBIDDEN &&
+    error.code === ENTITLEMENT_REQUIRED_ERROR_CODE
+  );
 }
 
 /**
@@ -420,26 +454,18 @@ export function DramaFeedItem({
   // flag (autoplay guard, progress-recording guard, the error-state UI)
   // already means "is there a real playable source right now."
   const accessToken = getTokens()?.accessToken;
-  // A demo build plays clips bundled into the binary, so there is no
-  // token-protected endpoint in front of them and nothing to authorise -
-  // demanding a token there would hide the whole product behind a login for
-  // no reason. Every other build keeps the Phase 10 contract intact: the
-  // real stream/presigned URL this resolves to requires a real session, so
-  // without a token there genuinely is nothing to authorize.
-  const requiresAccessToken = !isDemoMode();
   const [playbackAuth, setPlaybackAuth] = useState<PlaybackAuthorization | null>(null);
   const [hasPlaybackAuthError, setHasPlaybackAuthError] = useState(false);
-  // Guest-first feed (2026-08-22): narrows the ONE generic playback-failure
-  // state into the one cause the viewer can actually act on - "you are not
-  // signed in." It is set only for the two cases that genuinely mean that:
-  // this build requires a session and holds no token at all, or the backend
-  // itself answered 401 (`GET /videos/:id/playback` is `Auth required: Yes`
-  // in the canonical contract - see docs/api-contract.md). It grants
-  // NOTHING: no entitlement is inferred, no request is retried without a
-  // token, and a 403 `ENTITLEMENT_REQUIRED` keeps the generic unavailable
-  // state exactly as before. It only replaces a misleading "check the local
-  // media server connection" hint with the truthful reason and the existing
-  // /login entry point.
+  // Guest-first feed (2026-08-22) / ANONYMOUS FREE-EPISODE PLAYBACK: narrows
+  // the ONE generic playback-failure state into the one cause the viewer can
+  // actually act on - "signing in is the next step." It is set ONLY from a
+  // refusal the BACKEND already returned, never ahead of one, and only for
+  // the cases `isSignInActionablePlaybackAuthError` (above) admits.
+  //
+  // It grants NOTHING: no entitlement is inferred, no request is ever
+  // retried without a token to get a different answer, and a signed-in
+  // viewer's 403 `ENTITLEMENT_REQUIRED` keeps the generic unavailable state
+  // exactly as before. It only chooses which truthful copy to render.
   const [isSignInRequiredForPlayback, setIsSignInRequiredForPlayback] = useState(false);
   // Guards `handlePlayPause`'s re-authorization branch against stacking a
   // second concurrent network request while one is already in flight - a
@@ -580,25 +606,22 @@ export function DramaFeedItem({
       return;
     }
 
-    // No token yet means the real endpoint would just 401 - skip the
-    // network round trip entirely and fail the same way synchronously,
-    // matching the pre-Slice-11M "logged out -> error state" behavior.
-    // Demo builds need no token at all (requiresAccessToken is false
-    // there).
+    // ANONYMOUS FREE-EPISODE PLAYBACK (2026-08-22): there is deliberately NO
+    // pre-request short-circuit here any more. The client used to refuse
+    // outright whenever it held no access token, which made the MOBILE app
+    // the authority on who may watch what - and, now that the backend
+    // serves FREE episodes to guests, made it wrong: a signed-out viewer was
+    // refused before the backend was ever asked, so a free episode the
+    // backend would happily authorize never played.
     //
-    // Guest-first feed (2026-08-22): this branch is UNCHANGED as an
-    // authorization decision - it still refuses to play and still never
-    // asks the backend without a session. What changed is only that it now
-    // records WHY, so the viewer is told "sign in to play" instead of being
-    // pointed at a media server that is not the problem.
-    if (requiresAccessToken && !accessToken) {
-      setPlaybackAuth(null);
-      setHasPlaybackAuthError(true);
-      setIsSignInRequiredForPlayback(true);
-      setIsAuthErrorRetryable(false);
-      return;
-    }
-
+    // Every caller now ASKS. `GET /videos/:id/playback` is
+    // `OptionalJwtAuthGuard`-guarded (backend `videos.controller.ts`): no
+    // header at all is a valid anonymous request, and the SAME
+    // `enforceEntitlementGate` decides FREE-vs-PREMIUM and entitlement for
+    // guests and signed-in callers alike. The client attaches whatever token
+    // it has (via `buildAuthHeader` in `services/api/client.ts`, which sends
+    // no header when there is none) and consumes the answer. It classifies
+    // the refusal for DISPLAY below; it never makes one.
     playbackRequestIdRef.current += 1;
     const requestId = playbackRequestIdRef.current;
     setHasPlaybackAuthError(false);
@@ -662,12 +685,16 @@ export function DramaFeedItem({
 
       setPlaybackAuth(null);
       setHasPlaybackAuthError(true);
-      // The backend is the authority on this, not the client: a 401 is the
-      // only response that means "this needed a session." Every other
-      // failure - including 403 ENTITLEMENT_REQUIRED - keeps the generic
-      // unavailable state, so a premium refusal is never re-labelled as a
-      // login problem.
-      setIsSignInRequiredForPlayback(isMissingSessionPlaybackAuthError(requestError));
+      // The backend is the authority on this, not the client. This only
+      // LABELS the refusal it already made - see
+      // `isSignInActionablePlaybackAuthError` for the two cases that qualify
+      // (a session-dead 401, or a guest's 403 ENTITLEMENT_REQUIRED). A
+      // SIGNED-IN viewer's 403 keeps the generic unavailable state, so a
+      // premium refusal is never re-labelled as a login problem for someone
+      // who is already logged in.
+      setIsSignInRequiredForPlayback(
+        isSignInActionablePlaybackAuthError(requestError, accessToken)
+      );
       setIsAuthErrorRetryable(isRetryablePlaybackAuthError(requestError));
     } finally {
       if (playbackRequestIdRef.current === requestId) {
@@ -675,19 +702,19 @@ export function DramaFeedItem({
         isPlaybackAuthRequestInFlightRef.current = false;
       }
     }
-  }, [video.id, accessToken, requiresAccessToken]);
+  }, [video.id, accessToken]);
 
   // 11R remediation ADDENDUM (fix cycle 2, Finding 1): a request left
   // outstanding by the PREVIOUS `requestAuthorization` identity (i.e. for
-  // the previous video.id/accessToken/requiresAccessToken generation) must
-  // never block the FIRST request of a NEW one - that old request is
+  // the previous video.id/accessToken generation) must never block the
+  // FIRST request of a NEW one - that old request is
   // already destined to be ignored on arrival via the `playbackRequestIdRef`
   // staleness check above, which is what lets a genuinely newer request
   // supersede it instead of the two racing. Without this reset, the
   // in-flight guard added above would (incorrectly) treat that now-stale
   // pending request as still blocking, silently dropping the new
   // generation's own first fetch. `requestAuthorization` is only recreated
-  // when one of its three deps actually changes, so this deliberately does
+  // when one of its two deps actually changes, so this deliberately does
   // NOT fire on every render - only on an actual identity change, leaving
   // the same-generation duplicate-request guard (debounce vs. a press, a
   // scheduled retry vs. a press) fully intact.
@@ -1755,15 +1782,19 @@ export function DramaFeedItem({
       }}>
       <View style={styles.videoLayer}>
         {hasPlaybackError && isSignInRequiredForPlayback ? (
-          // Guest-first feed (2026-08-22): a signed-out viewer reaches the
-          // feed, the metadata, the poster and the whole action rail - only
-          // PLAYBACK needs a session, because the backend's playback
-          // endpoint requires one. Saying so, with the existing /login entry
-          // point attached, is the truthful version of the state this used
-          // to render as "check the local media server connection."
+          // ANONYMOUS FREE-EPISODE PLAYBACK (2026-08-22): a signed-out
+          // viewer now reaches the feed, the metadata, the poster, the whole
+          // action rail AND free playback itself - so this gate is no longer
+          // "playback needs a session." It is the narrower, truthful thing
+          // it is now reachable for: THIS episode was refused, and signing
+          // in is the next step (a guest's premium refusal, or a session
+          // that has genuinely died). Free episodes never render it at all,
+          // because they never fail.
           //
-          // Not the tap-to-retry Pressable below: retrying without a session
-          // cannot succeed, so the actionable control is the one that can.
+          // Not the tap-to-retry Pressable below: retrying the identical
+          // request with the identical (absent or dead) credential cannot
+          // produce a different answer, so the actionable control is the one
+          // that can.
           <View testID="feed-item-signin-gate" style={styles.errorState}>
             <Text style={styles.errorTitle}>{t('feed.signInToPlay')}</Text>
             <Text style={styles.errorHint}>{t('feed.signInToPlayHint')}</Text>

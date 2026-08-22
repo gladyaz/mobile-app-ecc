@@ -996,104 +996,329 @@ describe('DramaFeedItem', () => {
     });
   });
 
-  it('shows a truthful sign-in gate (not a crash, a stuck player, or a media-server error) when logged out with no access token', async () => {
-    const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
-      '@/services/auth/token-store'
-    );
-    // A persistent `mockReturnValue` (not `...Once`) matters here: without
-    // a token, the component's authorization effect sets an error state,
-    // which causes a re-render - and that re-render reads `getTokens()`
-    // again. A one-shot `Once` mock would answer that second read with the
-    // logged-in default from `beforeEach`, "fixing" the logged-out state
-    // mid-test and hiding the very case this test exists to cover.
-    (getTokens as jest.Mock).mockReturnValue(null);
+  // ANONYMOUS FREE-EPISODE PLAYBACK (2026-08-22). Before this work unit the
+  // component short-circuited on `requiresAccessToken && !accessToken`: a
+  // signed-out viewer was refused BEFORE the backend was ever asked, which
+  // made the mobile app the access authority and, once the backend began
+  // serving FREE episodes to guests, made it wrong. These cases pin the
+  // replacement contract: the client ASKS for every viewer and CONSUMES the
+  // backend's answer, and the only thing it decides for itself is which
+  // truthful copy to render over a refusal the backend already made.
+  describe('guest playback (signed out, no access token)', () => {
+    // Signs the viewer out for every case in this block. A persistent
+    // `mockReturnValue` (not `...Once`) matters: the authorization effect's
+    // resolution re-renders, and that re-render reads `getTokens()` again -
+    // a one-shot mock would answer the second read with the logged-in
+    // default from `beforeEach`, silently "signing in" the viewer mid-test
+    // and hiding the very case each test exists to cover.
+    function signOut() {
+      const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
+        '@/services/auth/token-store'
+      );
+      (getTokens as jest.Mock).mockReturnValue(null);
+    }
 
-    const video = buildVideo();
-    const { getByTestId, getByText, queryByText } = await renderFeedItem(
-      <DramaFeedItem video={video} {...baseProps} />
-    );
+    it('A: asks the backend for playback authorization instead of refusing on its own', async () => {
+      signOut();
 
-    // Guest-first feed (2026-08-22): the refusal is unchanged, the COPY is
-    // not. "Check the local media server connection" blamed the wrong thing
-    // for a signed-out viewer and offered nothing to do about it.
-    expect(getByTestId('feed-item-signin-gate')).toBeTruthy();
-    expect(getByText('Masuk untuk memutar')).toBeTruthy();
-    expect(queryByText('Check the local media server connection.')).toBeNull();
-    // Slice 11M: no token means the real `/videos/:id/playback` endpoint
-    // would just 401 - the component must skip that wasted round trip
-    // entirely rather than firing it and discarding the result.
-    expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
+      const video = buildVideo();
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      // THE regression test for the removed short-circuit. Reinstating any
+      // "no token -> do not ask" branch fails here: a guest must reach the
+      // backend, because the backend is the only thing that knows whether
+      // this episode is FREE.
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledWith(video.id);
+    });
+
+    it('B: plays the authorized source when the backend allows a free episode', async () => {
+      signOut();
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      // What the backend answers for a FREE row: authorized, and (since
+      // `/stream` serves free content to anyone) no header required.
+      mockGetPlaybackAuthorization.mockResolvedValue(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/free-episode.mp4',
+          requiresAuthHeader: false,
+        })
+      );
+
+      const video = buildVideo({ accessTier: 'free', episodeNumber: 1 });
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      const lastSource = (useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0] as {
+        uri: string;
+        headers?: Record<string, string>;
+      } | null;
+
+      // A successful guest authorization must actually reach the player. A
+      // regression that authorized and then dropped the result on the floor
+      // (a null source, a stuck poster) fails here rather than looking like
+      // a pass because no error was shown.
+      expect(lastSource).toEqual({
+        uri: 'https://media.example.com/free-episode.mp4',
+        headers: undefined,
+      });
+    });
+
+    it('C: shows no sign-in CTA at all for a free episode', async () => {
+      signOut();
+      mockGetPlaybackAuthorization.mockResolvedValue(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/free-episode.mp4',
+          requiresAuthHeader: false,
+        })
+      );
+
+      const video = buildVideo({ accessTier: 'free', episodeNumber: 1 });
+      const { queryByTestId, queryByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      // The whole point of the product change: a guest who can watch is
+      // never asked to sign in, and never shown a failure either.
+      expect(queryByTestId('feed-item-signin-gate')).toBeNull();
+      expect(queryByTestId('feed-item-signin-button')).toBeNull();
+      expect(queryByText('Video unavailable')).toBeNull();
+    });
+
+    it('I: attaches no Authorization header when the contract says requiresAuthHeader is false', async () => {
+      signOut();
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      mockGetPlaybackAuthorization.mockResolvedValue(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/free-episode.mp4',
+          requiresAuthHeader: false,
+        })
+      );
+
+      const video = buildVideo();
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      const lastSource = (useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0] as {
+        headers?: Record<string, string>;
+      } | null;
+
+      // `Bearer undefined` is the specific failure this pins: a guest has no
+      // token, so inventing a header from one would send a malformed
+      // credential to an endpoint that answers 401 for exactly that - turning
+      // a playable free episode into a dead one. The flag is the backend's to
+      // set and the client's to obey.
+      expect(lastSource?.headers).toBeUndefined();
+      expect(JSON.stringify(lastSource)).not.toContain('Bearer');
+    });
+
+    it('D: shows the sign-in gate when the backend answers 403 ENTITLEMENT_REQUIRED', async () => {
+      signOut();
+      // The backend's guest+PREMIUM answer. Byte-identical to a signed-in
+      // non-entitled caller's - which is exactly why the client pairs it
+      // with "this viewer holds no token" before calling it a sign-in
+      // problem.
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(403, 'ENTITLEMENT_REQUIRED', 'Entitlement required.')
+      );
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId, queryByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(getByTestId('feed-item-signin-gate')).toBeTruthy();
+      // Not the generic media-server error, which blamed the wrong thing.
+      expect(queryByText('Check the local media server connection.')).toBeNull();
+    });
+
+    it('E: never plays a premium episode it was refused', async () => {
+      signOut();
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(403, 'ENTITLEMENT_REQUIRED', 'Entitlement required.')
+      );
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      // The gate is DISPLAY only. It must never be reachable via a state
+      // that also handed the player a source: no source, and nothing
+      // resembling a playable URL, may exist for a refused episode.
+      const lastSource = (useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0] as unknown;
+
+      expect(lastSource).toBeNull();
+    });
+
+    it('routes the sign-in gate to the existing /login screen, and creates no account on the way', async () => {
+      signOut();
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(403, 'ENTITLEMENT_REQUIRED', 'Entitlement required.')
+      );
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      fireEvent.press(getByTestId('feed-item-signin-button'));
+
+      // PUSHED, not replaced: the feed stays underneath, so declining the
+      // gate returns to browsing rather than trapping the viewer on /login.
+      expect(router.push).toHaveBeenCalledWith('/login');
+    });
+
+    it('J: keeps the lower-left episode controls exactly where d48fef6 put them', async () => {
+      signOut();
+      mockGetPlaybackAuthorization.mockResolvedValue(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/free-episode.mp4',
+          requiresAuthHeader: false,
+        })
+      );
+
+      const video = buildVideo({ episodeNumber: 3 });
+      const { getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} nextEpisode={buildEpisode()} />
+      );
+
+      const cluster = getByTestId('feed-item-episode-cluster');
+      const childTestIds = cluster.children.map((child) =>
+        typeof child === 'string' ? child : child.props.testID
+      );
+
+      // Guest playback must not have disturbed the lower-left band: the
+      // indicator still leads, the next-episode control still follows, and
+      // both still share the action rail's own bottom anchor.
+      expect(childTestIds).toEqual(['feed-item-episode-indicator', 'feed-item-next-episode']);
+      expect(within(cluster).getByTestId('feed-item-episode-indicator').props.children).toBe(
+        'EP 3'
+      );
+      expect(StyleSheet.flatten(cluster.props.style).bottom).toBe(
+        StyleSheet.flatten(getByTestId('feed-item-bottom-overlay').props.style).bottom
+      );
+    });
+
+    it('K: still hides the episode controls in Clear Display for a guest', async () => {
+      signOut();
+      mockGetPlaybackAuthorization.mockResolvedValue(
+        buildPlaybackAuthorization({
+          playbackUrl: 'https://media.example.com/free-episode.mp4',
+          requiresAuthHeader: false,
+        })
+      );
+
+      const video = buildVideo({ episodeNumber: 3 });
+      const { getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isClearDisplay={true} />
+      );
+
+      // `includeHiddenElements` because the cluster is (correctly) out of the
+      // accessibility tree in Clear Display - the same query this file's
+      // existing Clear Display cases use.
+      const cluster = getByTestId('feed-item-episode-cluster', {
+        includeHiddenElements: true,
+      });
+
+      // Clear Display's contract is unchanged by guest playback: the cluster
+      // stays mounted but is hidden, non-interactive, and out of the
+      // accessibility tree.
+      expect(cluster.props.pointerEvents).toBe('none');
+      expect(cluster.props.accessibilityElementsHidden).toBe(true);
+      expect(cluster.props.importantForAccessibility).toBe('no-hide-descendants');
+    });
   });
 
-  it('routes the signed-out gate to the existing /login screen, and creates no account on the way', async () => {
-    const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
-      '@/services/auth/token-store'
-    );
-    (getTokens as jest.Mock).mockReturnValue(null);
-
-    const video = buildVideo();
-    const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
-
-    fireEvent.press(getByTestId('feed-item-signin-button'));
-
-    // PUSHED, not replaced: the feed stays underneath, so declining the
-    // gate returns to browsing rather than trapping the viewer on /login.
-    expect(router.push).toHaveBeenCalledWith('/login');
-    // The gate is an entry point to an EXPLICIT sign-in, never a silent one:
-    // it must not have quietly authorized anything on the viewer's behalf.
-    expect(mockGetPlaybackAuthorization).not.toHaveBeenCalled();
-  });
-
-  it('keeps a 403 ENTITLEMENT_REQUIRED on the generic unavailable state - a premium refusal is not a login problem', async () => {
-    // Guest-first feed (2026-08-22): only a 401 means "no session." The
-    // premium gate must never be relabelled as one, or a signed-in viewer
-    // without an entitlement would be told to sign in again.
+  it('F: keeps a SIGNED-IN viewer\'s 403 ENTITLEMENT_REQUIRED on the generic unavailable state - a premium refusal is not a login problem', async () => {
+    // `beforeEach` leaves a valid token in place, so this is the signed-in
+    // non-premium viewer. The backend returns the SAME 403 it returns to a
+    // guest (deliberately byte-identical, so the response leaks nothing
+    // about who asked) - which is exactly why the client must pair it with
+    // "does this viewer hold a token?" before calling it a sign-in problem.
+    // Telling someone who is already signed in to sign in would be false,
+    // and would send them to a screen that cannot fix anything.
     mockGetPlaybackAuthorization.mockRejectedValue(
       new ApiError(403, 'ENTITLEMENT_REQUIRED', 'Entitlement required.')
     );
 
     const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
-    const { getByText, queryByTestId } = await renderFeedItem(
+    const { getByText, queryByTestId, queryByText } = await renderFeedItem(
       <DramaFeedItem video={video} {...baseProps} />
     );
 
     expect(getByText('Video unavailable')).toBeTruthy();
     expect(queryByTestId('feed-item-signin-gate')).toBeNull();
+    expect(queryByTestId('feed-item-signin-button')).toBeNull();
+    expect(queryByText('Sign in to watch this episode')).toBeNull();
   });
 
-  it('shows the sign-in gate when the backend itself answers 401 for playback', async () => {
-    // The backend is the authority: `GET /videos/:id/playback` is
-    // `Auth required: Yes` (docs/api-contract.md), so a 401 is the one
-    // response that genuinely means "this needed a session."
+  it('G: still plays a premium episode for a signed-in entitled viewer', async () => {
+    const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+    mockUseEntitlement.mockReturnValue({ isPremium: true, refresh: jest.fn() });
+    // The backend authorizes: an entitled caller clears `enforceEntitlementGate`.
+    mockGetPlaybackAuthorization.mockResolvedValue(
+      buildPlaybackAuthorization({
+        playbackUrl: 'https://media.example.com/premium-episode.mp4',
+        requiresAuthHeader: true,
+      })
+    );
+
+    const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+    const { queryByTestId, queryByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} />
+    );
+
+    const lastSource = (useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0] as {
+      uri: string;
+      headers?: Record<string, string>;
+    } | null;
+
+    // No regression from the guest work: the paying case still plays, and
+    // still carries its Authorization header for the token-gated source.
+    expect(lastSource).toEqual({
+      uri: 'https://media.example.com/premium-episode.mp4',
+      headers: { Authorization: 'Bearer test-access-token' },
+    });
+    expect(queryByTestId('feed-item-signin-gate')).toBeNull();
+    expect(queryByText('Video unavailable')).toBeNull();
+  });
+
+  it('H: does not downgrade a supplied-but-invalid token to an anonymous request', async () => {
+    // The backend's `OptionalJwtAuthGuard` never treats a SUPPLIED but
+    // invalid/expired credential as a guest - it answers 401
+    // INVALID_ACCESS_TOKEN. The client must mirror that: invalid credentials
+    // stay invalid credentials. Retrying the same episode WITHOUT the token
+    // to "see if it is free" would be a real authentication bypass attempt,
+    // and would also contradict the refresh-and-retry-once flow that already
+    // ran inside `services/api/client.ts` before this rejection surfaced.
     mockGetPlaybackAuthorization.mockRejectedValue(
       new ApiError(401, 'INVALID_ACCESS_TOKEN', 'Unauthenticated.')
     );
 
-    const video = buildVideo();
+    const video = buildVideo({ accessTier: 'free', episodeNumber: 1 });
     const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
 
+    // A dead session is still a session problem, so the actionable copy is
+    // correct here - even for a FREE episode, which a true guest could have
+    // played. What must NOT happen is a second, token-less attempt.
     expect(getByTestId('feed-item-signin-gate')).toBeTruthy();
+    expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
   });
 
   it('plays a bundled clip before login in a demo build, where nothing is token-protected', async () => {
-    // Arrange: signed out, demo build. The clips ship inside the binary, so
-    // there is no stream endpoint to authorise against and no reason to make
-    // someone log in before they can see the product.
+    // Arrange: signed out, with `getPlaybackAuthorization` answering the way
+    // a DEMO build's own mock-data branch would (see `video-service.ts`,
+    // which still owns that branching entirely).
+    //
+    // ANONYMOUS FREE-EPISODE PLAYBACK (2026-08-22): this case no longer
+    // proves the COMPONENT branches on demo mode - it deliberately does not
+    // any more, since the `isDemoMode`/`requiresAccessToken` short-circuit
+    // was removed. What it still proves, and what matters, is the outcome:
+    // a signed-out viewer whose authorization resolves with
+    // `requiresAuthHeader: false` gets a real playable source and no
+    // invented `Bearer undefined` header. The demo path is simply the
+    // longest-standing real-world producer of that response shape.
     const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
       '@/services/auth/token-store'
     );
-    const { isDemoMode } = jest.requireMock<typeof import('@/services/demo/demo-mode')>(
-      '@/services/demo/demo-mode'
-    );
     const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
     (getTokens as jest.Mock).mockReturnValue(null);
-    (isDemoMode as jest.Mock).mockReturnValue(true);
 
     const video = buildVideo();
-    // A demo build's own playback-authorization path (the mock-data branch
-    // of `getPlaybackAuthorization`, see video-service.ts) resolves the
-    // bundled clip's own URL with no Authorization header - simulated here
-    // directly, since this file mocks `getPlaybackAuthorization` wholesale.
     mockGetPlaybackAuthorization.mockResolvedValueOnce(
       buildPlaybackAuthorization({ playbackUrl: video.playbackUrl, requiresAuthHeader: false })
     );

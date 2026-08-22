@@ -67,3 +67,54 @@ export const RewardUnavailable = {
 export function scaledLineHeight(fontSize: number, ratio = 1.45): number {
   return Math.round(fontSize * PixelRatio.getFontScale() * ratio);
 }
+
+/**
+ * Surfaces for the refined Rewards Center.
+ *
+ * Deliberately a touch darker than `Palette.surface` (#18181B): the redesign
+ * puts a warm ambient wash behind the top of the page, and a card that sits
+ * ON that wash needs to read as a distinct plane rather than dissolve into
+ * it. Contrast against the values actually rendered on these fills is pinned
+ * in `__tests__/rewards-theme.test.ts`, not just asserted here:
+ *   Palette.text          on card #141417 -> 17.7:1
+ *   Palette.textSecondary on card #141417 -> 7.5:1
+ *   RewardAccent.gold     on card #141417 -> 11.1:1
+ *
+ * Kept feature-local for the same reason `RewardAccent` is: this slice adds
+ * no churn to the file every other screen imports.
+ */
+export const RewardSurface = {
+  card: '#141417',
+  cardBorder: '#26262B',
+  /** Inner chips (day chips, milestone chips) sitting ON a card. */
+  chip: '#1C1C21',
+  chipBorder: '#2E2E35',
+} as const;
+
+/**
+ * The balance hero's warm gradient.
+ *
+ * Three stops rather than two so the card darkens toward its lower-left and
+ * the balance keeps a calm backdrop, instead of a single flat wash that
+ * fights the largest number on the page. Rendered through
+ * `expo-linear-gradient`, which this app already ships and already uses for
+ * its primary buttons - no blur, no shadow layers, nothing that costs a
+ * frame on the low-end Android this demo targets.
+ */
+export const RewardHero = {
+  gradient: ['#4E1A14', '#331419', '#1C1216'] as const,
+  border: 'rgba(255, 138, 61, 0.32)',
+  /** Soft light at the upper right, as one translucent circle. */
+  glow: 'rgba(255, 168, 96, 0.16)',
+} as const;
+
+/**
+ * The page-level warm wash behind the header and hero.
+ *
+ * Ends fully transparent so the rest of the scroll sits on the plain
+ * near-black page background - the warmth is a top-of-page accent, not a
+ * tint over the whole screen.
+ */
+export const RewardAmbient = {
+  gradient: ['rgba(104, 28, 22, 0.55)', 'rgba(42, 17, 19, 0.24)', 'rgba(13, 13, 15, 0)'] as const,
+} as const;

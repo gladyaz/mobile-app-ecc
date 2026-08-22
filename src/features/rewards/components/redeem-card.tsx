@@ -1,15 +1,15 @@
 import { StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
-import { RewardCta } from '@/features/rewards/components/rewards-primitives';
+import { CoinMark, RewardCta } from '@/features/rewards/components/rewards-primitives';
 import { useFormatPoints } from '@/features/rewards/format-points';
-import { RewardAccent, scaledLineHeight } from '@/features/rewards/rewards-theme';
+import { RewardAccent, RewardSurface, scaledLineHeight } from '@/features/rewards/rewards-theme';
 import type { TranslationKey } from '@/services/i18n/translations';
 import { useTranslation } from '@/stores/language';
 import type { RewardRedemption, RewardRedemptionAvailability } from '@/types/rewards';
 
 /**
- * A VIP redemption offer, as a comparable row.
+ * A VIP redemption offer, as a comparable card.
  *
  * This file deliberately imports nothing from `@/stores/entitlement` or
  * `@/services/entitlement`. Redemption is a server-side transaction - the
@@ -18,14 +18,19 @@ import type { RewardRedemption, RewardRedemptionAvailability } from '@/types/rew
  * both wrong and trivially abusable, so the wiring does not exist here even
  * as a placeholder, and a boundary test fails if it ever appears.
  *
- * The UX pass made the three offers comparable at a glance: cost is the
- * prominent figure on a consistent right edge, so 1.000 / 2.500 / 5.000 line
- * up down the column. The per-card "redemption is not active" paragraph is
- * gone; availability is one short phrase and the page-level banner carries
- * the preview status.
+ * The three offers stay comparable at a glance: title, what it grants, then
+ * the cost on its own line behind a coin mark, so 1.000 / 2.500 / 5.000 line
+ * up down the column with the CTA on a clean right edge.
+ *
+ * NO "BEST VALUE" RIBBON. The reference design badges its middle tier
+ * `TERBAIK`. Nothing in the redemption contract marks a recommended offer -
+ * there is no `isRecommended`, no rank, no tag - so the badge would be this
+ * screen picking a product winner on the backend's behalf. When the contract
+ * gains a marker, render it from that field; do not restore it from a
+ * position in the list.
  *
  * INTEGRATION NOTE: `redemption.grantsDays` is intentionally not rendered.
- * Today every fixture title already spells the duration out ("VIP 1 Hari"),
+ * Today every offer title already spells the duration out ("VIP 1 Hari"),
  * so showing both would just repeat it. If a real backend ever sends a
  * generic title ("VIP Access") with `grantsDays` as the only source of
  * truth, the tiers would become indistinguishable except by cost - render
@@ -59,65 +64,79 @@ export function RedeemCard({ redemption, onPressCta, isPending = false }: Redeem
   const isActionable = redemption.isRedeemSupported && redemption.availability === 'AVAILABLE';
 
   return (
-    <View style={styles.row} testID={`redeem-card-${redemption.id}`}>
+    <View
+      style={[styles.card, isActionable && styles.cardActionable]}
+      testID={`rewards-redemption-${redemption.id}`}>
       <View style={styles.body}>
         <Text style={styles.title}>{redemption.title}</Text>
         <Text style={styles.description}>{redemption.description}</Text>
-        {/* Availability is a word, never a colour cue on its own.
-            Only AVAILABLE is downgraded, and only while redemption is
-            unsupported: "Bisa ditukar"/"Redeemable" is a promise this
-            preview cannot keep. With a 1.250-point preview balance sitting
-            above a 1.000-point cost, that word makes the offer read as real
-            AND affordable, and the grey button alone is too quiet to correct
-            it. When redemption goes live, `isRedeemSupported` flips and the
-            true label appears with no copy change here. */}
-        <Text style={styles.availability} testID={`redeem-availability-${redemption.id}`}>
-          {t(
-            redemption.availability === 'AVAILABLE' && !redemption.isRedeemSupported
-              ? 'rewards.availComingSoon'
-              : AVAILABILITY_LABEL_KEY[redemption.availability]
-          )}
-        </Text>
+
+        <View style={styles.costRow}>
+          <CoinMark isMuted={!isActionable} size={13} />
+          <Text style={styles.costValue} testID={`rewards-redemption-cost-${redemption.id}`}>
+            {t('rewards.costPoints', { points: formatPoints(redemption.costPoints) })}
+          </Text>
+          {/* Availability is a word, never a colour cue on its own.
+              Only AVAILABLE is downgraded, and only while redemption is
+              unsupported: "Bisa ditukar"/"Redeemable" is a promise an
+              unsupported offer cannot keep, and with a balance sitting above
+              the cost that word makes the offer read as real AND affordable,
+              which the grey button alone is too quiet to correct. When
+              redemption goes live, `isRedeemSupported` flips and the true
+              label appears with no copy change here. */}
+          <Text
+            style={styles.availability}
+            testID={`rewards-redemption-availability-${redemption.id}`}>
+            {t(
+              redemption.availability === 'AVAILABLE' && !redemption.isRedeemSupported
+                ? 'rewards.availComingSoon'
+                : AVAILABILITY_LABEL_KEY[redemption.availability]
+            )}
+          </Text>
+        </View>
       </View>
 
-      <View style={styles.trailing}>
-        <Text style={styles.costValue} testID={`redeem-cost-${redemption.id}`}>
-          {t('rewards.costPoints', { points: formatPoints(redemption.costPoints) })}
-        </Text>
-        <RewardCta
-          // Two of the three offers ship the same CTA word, so the announced
-          // name carries the tier ("Tukar: VIP 3 Hari").
-          accessibilityLabel={t('rewards.ctaA11y', {
-            label: redemption.ctaLabel,
-            title: redemption.title,
-          })}
-          compact
-          isPending={isPending}
-          isSupported={isActionable}
-          label={redemption.ctaLabel}
-          onPress={() => onPressCta(redemption)}
-          testID={`redeem-cta-${redemption.id}`}
-        />
-      </View>
+      <RewardCta
+        // Two of the three offers ship the same CTA word, so the announced
+        // name carries the tier ("Tukar: VIP 3 Hari").
+        accessibilityLabel={t('rewards.ctaA11y', {
+          label: redemption.ctaLabel,
+          title: redemption.title,
+        })}
+        compact
+        isPending={isPending}
+        isSupported={isActionable}
+        label={redemption.ctaLabel}
+        onPress={() => onPressCta(redemption)}
+        testID={`rewards-redeem-button-${redemption.id}`}
+        tone="primary"
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  row: {
+  card: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    padding: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
     borderWidth: 1,
-    borderColor: Palette.border,
+    borderColor: RewardSurface.cardBorder,
     borderRadius: Radius.xl,
-    backgroundColor: Palette.surface,
+    backgroundColor: RewardSurface.card,
+  },
+  cardActionable: {
+    // A warm rim on the offers that can actually be bought right now. It is
+    // a SECOND cue only: the CTA word and the availability word already say
+    // so, so nothing here depends on seeing the border.
+    borderColor: 'rgba(255, 122, 26, 0.30)',
   },
   body: {
     flex: 1,
     minWidth: 0,
-    gap: 2,
+    gap: 3,
   },
   title: {
     fontSize: 14.5,
@@ -130,19 +149,21 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.regular,
     color: Palette.textSecondary,
   },
-  availability: {
-    marginTop: 1,
-    fontSize: 11,
-    fontFamily: FontFamily.bold,
-    color: Palette.textSecondary,
-  },
-  trailing: {
-    alignItems: 'flex-end',
-    gap: 8,
+  costRow: {
+    marginTop: 3,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
   },
   costValue: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FontFamily.extraBold,
     color: RewardAccent.gold,
+  },
+  availability: {
+    fontSize: 11,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.textSecondary,
   },
 });

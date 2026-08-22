@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, waitFor, within } from '@testing-library/react-native';
 
 import RewardsRoute from '@/app/(tabs)/rewards';
 import { ApiError } from '@/services/api/client';
@@ -496,47 +496,80 @@ describe('Rewards tab - daily check-in', () => {
 // G, H, I - ledger
 // ===========================================================================
 
+/**
+ * Opens the "Riwayat" sheet and waits for the ledger surface inside it.
+ *
+ * History moved out of the main scroll and behind the header affordance in
+ * the UI refinement, so every history case has to open it first. What the
+ * sheet renders is unchanged - the same `TransactionHistoryPanel` over the
+ * same `GET /rewards/ledger` page - which is why these assertions are
+ * otherwise untouched.
+ */
+type RenderedRoute = Awaited<ReturnType<typeof render>>;
+
+async function openHistory(screen: Pick<RenderedRoute, 'findByTestId'>): Promise<void> {
+  fireEvent.press(await screen.findByTestId('rewards-history-button'));
+}
+
 describe('Rewards tab - transaction history comes from the ledger', () => {
   it('reads history from the backend', async () => {
-    const { findByTestId } = await render(<RewardsRoute />);
+    const screen = await render(<RewardsRoute />);
 
-    await findByTestId('rewards-history');
+    await openHistory(screen);
+    await screen.findByTestId('rewards-history');
 
     expect(mockFetchLedger).toHaveBeenCalled();
   });
 
   it('renders one row per server entry, and none of its own', async () => {
-    const { findByTestId, getAllByTestId } = await render(<RewardsRoute />);
+    const screen = await render(<RewardsRoute />);
 
-    await findByTestId('rewards-history');
+    await openHistory(screen);
+    await screen.findByTestId('rewards-history');
 
-    expect(getAllByTestId('rewards-transaction-item')).toHaveLength(LEDGER_PAGE.entries.length);
+    expect(screen.getAllByTestId('rewards-transaction-item')).toHaveLength(
+      LEDGER_PAGE.entries.length
+    );
   });
 
   it('renders an EARN entry with its sign and its reason', async () => {
-    const { findByTestId, findByText } = await render(<RewardsRoute />);
+    const screen = await render(<RewardsRoute />);
 
-    const earn = await findByTestId('rewards-transaction-delta-led_checkin_1');
+    await openHistory(screen);
+    const earn = await screen.findByTestId('rewards-transaction-delta-led_checkin_1');
 
     expect(earn.props.children).toBe(`+${formatId(SERVER_AWARDED_POINTS)}`);
-    expect(await findByText(idCopy['rewards.reasonCheckIn'])).toBeTruthy();
+    // Scoped to the ledger: "Check-in harian" is legitimately both a reason
+    // on a row and the title of the check-in section behind the sheet, and
+    // this case is about the ROW.
+    expect(
+      within(await screen.findByTestId('rewards-history')).getByText(
+        idCopy['rewards.reasonCheckIn']
+      )
+    ).toBeTruthy();
   });
 
   it('renders a REDEEM entry as a negative, understandable at a glance', async () => {
-    const { findByTestId, findByText } = await render(<RewardsRoute />);
+    const screen = await render(<RewardsRoute />);
 
-    const redeem = await findByTestId('rewards-transaction-delta-led_redeem_1');
+    await openHistory(screen);
+    const redeem = await screen.findByTestId('rewards-transaction-delta-led_redeem_1');
 
     // The sign is carried by TEXT, so direction survives greyscale, colour
     // blindness and a screen reader.
     expect(redeem.props.children).toBe(`-${formatId(SERVER_VIP_1D_COST)}`);
-    expect(await findByText(idCopy['rewards.reasonRedemption'])).toBeTruthy();
+    expect(
+      within(await screen.findByTestId('rewards-history')).getByText(
+        idCopy['rewards.reasonRedemption']
+      )
+    ).toBeTruthy();
   });
 
   it('re-reads the ledger after a check-in instead of composing the new row', async () => {
-    const { findByTestId } = await render(<RewardsRoute />);
+    const screen = await render(<RewardsRoute />);
+    const { findByTestId } = screen;
 
-    await findByTestId('rewards-history');
+    await findByTestId('rewards-balance-value');
     const readsBefore = mockFetchLedger.mock.calls.length;
 
     fireEvent.press(await findByTestId('rewards-check-in'));
@@ -545,20 +578,22 @@ describe('Rewards tab - transaction history comes from the ledger', () => {
   });
 
   it('offers no "load more" control when the server says the history is exhausted', async () => {
-    const { findByTestId, queryByTestId } = await render(<RewardsRoute />);
+    const screen = await render(<RewardsRoute />);
 
-    await findByTestId('rewards-history');
+    await openHistory(screen);
+    await screen.findByTestId('rewards-history');
 
     // `nextCursor: null`. A control that paged past the end would invent one.
-    expect(queryByTestId('rewards-history-load-more')).toBeNull();
+    expect(screen.queryByTestId('rewards-history-load-more')).toBeNull();
   });
 
   it('pages with the server’s opaque cursor when there is more', async () => {
     mockFetchLedger.mockResolvedValueOnce({ ...LEDGER_PAGE, nextCursor: 'CURSOR_ABC' });
 
-    const { findByTestId } = await render(<RewardsRoute />);
+    const screen = await render(<RewardsRoute />);
 
-    fireEvent.press(await findByTestId('rewards-history-load-more'));
+    await openHistory(screen);
+    fireEvent.press(await screen.findByTestId('rewards-history-load-more'));
 
     await waitFor(() =>
       expect(mockFetchLedger).toHaveBeenLastCalledWith(
@@ -572,10 +607,12 @@ describe('Rewards tab - transaction history comes from the ledger', () => {
     // their points, and only one of them means "you have no transactions".
     mockFetchLedger.mockRejectedValue(new ApiError(0, 'NETWORK_ERROR', 'offline'));
 
-    const { findByTestId, queryByTestId } = await render(<RewardsRoute />);
+    const screen = await render(<RewardsRoute />);
 
-    expect(await findByTestId('rewards-history-error')).toBeTruthy();
-    expect(queryByTestId('rewards-history-empty')).toBeNull();
+    await openHistory(screen);
+
+    expect(await screen.findByTestId('rewards-history-error')).toBeTruthy();
+    expect(screen.queryByTestId('rewards-history-empty')).toBeNull();
   });
 });
 
@@ -587,7 +624,7 @@ describe('Rewards tab - redemption', () => {
   it('sends intent only to the canonical redemption call', async () => {
     const { findByTestId } = await render(<RewardsRoute />);
 
-    fireEvent.press(await findByTestId('redeem-cta-redeem_vip_1d'));
+    fireEvent.press(await findByTestId('rewards-redeem-button-redeem_vip_1d'));
 
     await waitFor(() => expect(mockRedeem).toHaveBeenCalledTimes(1));
 
@@ -610,7 +647,7 @@ describe('Rewards tab - redemption', () => {
     const { findByTestId } = await render(<RewardsRoute />);
 
     await findByTestId('rewards-balance-value');
-    fireEvent.press(await findByTestId('redeem-cta-redeem_vip_1d'));
+    fireEvent.press(await findByTestId('rewards-redeem-button-redeem_vip_1d'));
 
     await waitFor(async () =>
       expect((await findByTestId('rewards-balance-value')).props.children).toBe(
@@ -622,7 +659,7 @@ describe('Rewards tab - redemption', () => {
   it('refreshes the EXISTING entitlement after a successful redemption', async () => {
     const { findByTestId } = await render(<RewardsRoute />);
 
-    fireEvent.press(await findByTestId('redeem-cta-redeem_vip_1d'));
+    fireEvent.press(await findByTestId('rewards-redeem-button-redeem_vip_1d'));
 
     // Not a premium flag of its own: the one entitlement authority is
     // re-read, so series gating, profile and ads all see the same answer.
@@ -635,7 +672,7 @@ describe('Rewards tab - redemption', () => {
     await findByTestId('rewards-balance-value');
     expect(mockFetchSnapshot).toHaveBeenCalledTimes(1);
 
-    fireEvent.press(await findByTestId('redeem-cta-redeem_vip_1d'));
+    fireEvent.press(await findByTestId('rewards-redeem-button-redeem_vip_1d'));
 
     await waitFor(() => expect(mockFetchSnapshot).toHaveBeenCalledTimes(2));
   });
@@ -644,7 +681,7 @@ describe('Rewards tab - redemption', () => {
     const { findByTestId, findByText } = await render(<RewardsRoute />);
 
     await findByTestId('rewards-balance-value');
-    fireEvent.press(await findByTestId('redeem-cta-redeem_vip_3d'));
+    fireEvent.press(await findByTestId('rewards-redeem-button-redeem_vip_3d'));
 
     expect(
       await findByText(
@@ -670,7 +707,7 @@ describe('Rewards tab - redemption', () => {
     const { findByTestId, findByText } = await render(<RewardsRoute />);
 
     await findByTestId('rewards-balance-value');
-    fireEvent.press(await findByTestId('redeem-cta-redeem_vip_1d'));
+    fireEvent.press(await findByTestId('rewards-redeem-button-redeem_vip_1d'));
 
     expect(
       await findByText(
@@ -702,7 +739,7 @@ describe('Rewards tab - redemption', () => {
     const { findByTestId, findByText } = await render(<RewardsRoute />);
 
     await findByTestId('rewards-balance-value');
-    fireEvent.press(await findByTestId('redeem-cta-redeem_vip_1d'));
+    fireEvent.press(await findByTestId('rewards-redeem-button-redeem_vip_1d'));
 
     expect(
       await findByText(
@@ -721,7 +758,7 @@ describe('Rewards tab - redemption', () => {
   it('never redeems an offer the server has not enabled', async () => {
     const { findByTestId } = await render(<RewardsRoute />);
 
-    fireEvent.press(await findByTestId('redeem-cta-redeem_vip_7d'));
+    fireEvent.press(await findByTestId('rewards-redeem-button-redeem_vip_7d'));
 
     await waitFor(async () => expect(await findByTestId('rewards-action-banner')).toBeTruthy());
     expect(mockRedeem).not.toHaveBeenCalled();
@@ -732,7 +769,7 @@ describe('Rewards tab - redemption', () => {
 
     const { findByTestId, findByText } = await render(<RewardsRoute />);
 
-    fireEvent.press(await findByTestId('redeem-cta-redeem_vip_1d'));
+    fireEvent.press(await findByTestId('rewards-redeem-button-redeem_vip_1d'));
 
     expect(await findByText(idCopy['rewards.errorNetwork'])).toBeTruthy();
     expect(mockRefreshEntitlement).not.toHaveBeenCalled();
@@ -752,7 +789,7 @@ describe('Rewards tab - unverifiable earn paths stay unavailable', () => {
     const hint = idCopy['rewards.unavailableCtaHint'];
 
     for (const taskId of ['task_social_facebook', 'task_rewarded_ad', 'task_campaign_placeholder']) {
-      expect(getByTestId(`reward-task-cta-${taskId}`).props.accessibilityHint).toBe(hint);
+      expect(getByTestId(`rewards-task-cta-${taskId}`).props.accessibilityHint).toBe(hint);
     }
   });
 
@@ -773,8 +810,8 @@ describe('Rewards tab - unverifiable earn paths stay unavailable', () => {
 
     const balanceBefore = (await findByTestId('rewards-balance-value')).props.children;
 
-    fireEvent.press(await findByTestId('reward-task-cta-task_social_facebook'));
-    fireEvent.press(await findByTestId('reward-task-cta-task_rewarded_ad'));
+    fireEvent.press(await findByTestId('rewards-task-cta-task_social_facebook'));
+    fireEvent.press(await findByTestId('rewards-task-cta-task_rewarded_ad'));
 
     expect(await findByTestId('rewards-action-banner')).toBeTruthy();
     expect((await findByTestId('rewards-balance-value')).props.children).toBe(balanceBefore);
@@ -858,7 +895,7 @@ describe('Rewards tab - feature disabled and failure states are truthful', () =>
 
     const { queryByTestId, findByTestId } = await render(<RewardsRoute />);
 
-    await findByTestId('rewards-center-screen');
+    await findByTestId('rewards-screen');
     await waitFor(() => expect(queryByTestId('rewards-loading')).toBeNull());
 
     expect(queryByTestId('rewards-balance-value')).toBeNull();

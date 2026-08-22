@@ -1,9 +1,22 @@
 import type { ReactNode } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+} from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 
-import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
 import { useFormatPoints } from '@/features/rewards/format-points';
-import { RewardAccent, RewardUnavailable, scaledLineHeight } from '@/features/rewards/rewards-theme';
+import {
+  RewardAccent,
+  RewardSurface,
+  RewardUnavailable,
+  scaledLineHeight,
+} from '@/features/rewards/rewards-theme';
 import { useTranslation } from '@/stores/language';
 
 /**
@@ -56,19 +69,46 @@ export function PreviewBanner() {
 type RewardsSectionProps = {
   readonly title: string;
   readonly children: ReactNode;
+  /**
+   * Rendered on the heading's right edge - the streak pill, the "2/5 done"
+   * counter. It is a SLOT rather than a string so a caller can supply a
+   * styled pill without this module knowing what a streak is.
+   */
+  readonly trailing?: ReactNode;
+  /**
+   * Reported so the screen can learn where this block starts inside the
+   * scroll, which is how the hero's "redeem" button knows where to jump.
+   * Measured rather than estimated: the offsets above a section change with
+   * the OS text size and with how many tasks the server sent.
+   */
+  readonly onLayout?: (event: LayoutChangeEvent) => void;
   readonly testID?: string;
 };
 
 /**
- * A titled block. The four section headings are what let a first-time user
- * answer "what can I do here?" by scanning rather than reading.
+ * A titled block, with an optional status on the same line.
+ *
+ * The heading is sentence-case white rather than the previous uppercase
+ * grey: at 13px with 0.8 letter-spacing it read as a form label above a
+ * form, which flattened the page into one long list. A heading that looks
+ * like a heading is what lets a first-time user find "Tukar koin" by
+ * scanning instead of reading.
  */
-export function RewardsSection({ title, children, testID }: RewardsSectionProps) {
+export function RewardsSection({
+  title,
+  children,
+  trailing,
+  onLayout,
+  testID,
+}: RewardsSectionProps) {
   return (
-    <View style={styles.section} testID={testID}>
-      <Text accessibilityRole="header" style={styles.sectionHeading}>
-        {title}
-      </Text>
+    <View onLayout={onLayout} style={styles.section} testID={testID}>
+      <View style={styles.sectionHeader}>
+        <Text accessibilityRole="header" style={styles.sectionHeading}>
+          {title}
+        </Text>
+        {trailing ?? null}
+      </View>
       {children}
     </View>
   );
@@ -87,6 +127,65 @@ type RewardsCardProps = {
 export function RewardsCard({ children, testID }: RewardsCardProps) {
   return (
     <View style={styles.card} testID={testID}>
+      {children}
+    </View>
+  );
+}
+
+type CoinMarkProps = {
+  /** Diameter in points. Defaults to the inline-with-text size. */
+  readonly size?: number;
+  /** Muted rendering for an upcoming/locked position. */
+  readonly isMuted?: boolean;
+};
+
+/**
+ * The coin glyph that marks a value as spendable currency.
+ *
+ * Two concentric rings drawn with border radius - no image asset, no icon
+ * font, nothing to download. It is DECORATIVE everywhere it is used: each
+ * site pairs it with the number and the unit word, so a reader that skips
+ * it loses nothing.
+ */
+export function CoinMark({ size = 14, isMuted = false }: CoinMarkProps) {
+  return (
+    <View
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={[
+        styles.coin,
+        isMuted && styles.coinMuted,
+        { width: size, height: size, borderRadius: size / 2 },
+      ]}>
+      <View
+        style={[
+          styles.coinCore,
+          isMuted && styles.coinCoreMuted,
+          { width: size * 0.44, height: size * 0.44, borderRadius: size * 0.22 },
+        ]}
+      />
+    </View>
+  );
+}
+
+type InfoPillProps = {
+  readonly children: ReactNode;
+  readonly accessibilityLabel?: string;
+  readonly testID?: string;
+};
+
+/**
+ * A read-only status chip: the streak, the earn counter, the hero's value
+ * hint. Deliberately NOT pressable and deliberately not the CTA shape, so
+ * nothing on this page looks tappable unless it is.
+ */
+export function InfoPill({ children, accessibilityLabel, testID }: InfoPillProps) {
+  return (
+    <View
+      accessible={accessibilityLabel !== undefined}
+      accessibilityLabel={accessibilityLabel}
+      style={styles.infoPill}
+      testID={testID}>
       {children}
     </View>
   );
@@ -130,6 +229,12 @@ export function PreviewBadge() {
 type RewardEmptyStateProps = {
   readonly message: string;
   readonly testID: string;
+  /**
+   * Optional short status word rendered as a muted chip - "Segera" beside a
+   * block this deployment cannot fill yet. The enclosing section heading
+   * already names the block, so there is deliberately no title slot here.
+   */
+  readonly statusLabel?: string;
 };
 
 /**
@@ -137,11 +242,22 @@ type RewardEmptyStateProps = {
  * section entirely - a silently missing section is indistinguishable from a
  * bug, and the user cannot tell that a check-in or a reward list is even
  * meant to be there.
+ *
+ * It is a CARD, not a dashed placeholder box: the sections it stands in for
+ * are real parts of the product that this deployment cannot fill yet, and a
+ * dashed outline reads as a rendering failure rather than as "not yet".
  */
-export function RewardEmptyState({ message, testID }: RewardEmptyStateProps) {
+export function RewardEmptyState({ message, testID, statusLabel }: RewardEmptyStateProps) {
   return (
     <View style={styles.emptyState} testID={testID}>
-      <Text style={styles.emptyStateText}>{message}</Text>
+      <View style={styles.emptyStateBody}>
+        <Text style={styles.emptyStateText}>{message}</Text>
+      </View>
+      {statusLabel ? (
+        <View style={styles.emptyStateChip}>
+          <Text style={styles.emptyStateChipText}>{statusLabel}</Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -182,6 +298,21 @@ export function RewardProgressBar({ current, target, label, testID }: RewardProg
   );
 }
 
+/**
+ * How much visual weight a SUPPORTED control carries.
+ *
+ * `primary` is the warm gradient the rest of the app already uses for its
+ * one main action per screen (auth, profile) - here that is "check in" and
+ * "redeem", the two controls that actually reach the backend. `neutral` is
+ * the light pill used by row-level actions, so five task rows do not each
+ * shout as loudly as the page's main CTA.
+ *
+ * The tone is IGNORED when `isSupported` is false: an unavailable control
+ * always renders in the muted treatment, so no caller can dress a dead
+ * button as a live one.
+ */
+export type RewardCtaTone = 'primary' | 'neutral';
+
 type RewardCtaProps = {
   readonly label: string;
   /**
@@ -195,6 +326,9 @@ type RewardCtaProps = {
   readonly testID: string;
   /** Narrower variant for scannable rows. Height stays at the 44pt floor. */
   readonly compact?: boolean;
+  /** Fills the width of its parent - the check-in and hero actions. */
+  readonly fullWidth?: boolean;
+  readonly tone?: RewardCtaTone;
   /**
    * Announced name, when the visible label is not unique on its own.
    * Adjacent rows legitimately share CTA words - two "Follow" buttons, two
@@ -219,10 +353,35 @@ export function RewardCta({
   onPress,
   testID,
   compact = false,
+  fullWidth = false,
+  tone = 'neutral',
   accessibilityLabel,
   isPending = false,
 }: RewardCtaProps) {
   const { t } = useTranslation();
+  const isPrimary = isSupported && tone === 'primary';
+  const content = isPending ? (
+    <ActivityIndicator
+      color={isPrimary ? Palette.text : isSupported ? Palette.background : RewardUnavailable.text}
+      size="small"
+    />
+  ) : (
+    <Text
+      // Bounded scaling, but NOT clamped to one line: a clipped CTA word
+      // ("Belum Tersedi...") is a worse outcome at large text sizes than a
+      // button that grows a second line, and the 44pt floor is a minimum.
+      maxFontSizeMultiplier={1.4}
+      style={[
+        styles.ctaText,
+        isPrimary
+          ? styles.ctaTextPrimary
+          : isSupported
+            ? styles.ctaTextNeutral
+            : styles.ctaTextUnavailable,
+      ]}>
+      {label}
+    </Text>
+  );
 
   return (
     <Pressable
@@ -235,24 +394,23 @@ export function RewardCta({
       style={({ pressed }) => [
         styles.cta,
         compact ? styles.ctaCompact : styles.ctaFull,
-        isSupported ? styles.ctaSupported : styles.ctaUnavailable,
+        fullWidth && styles.ctaFullWidth,
+        // The gradient variant paints its own fill, so the shell keeps the
+        // solid primary underneath it - a gradient that fails to composite
+        // still leaves a coloured, legible button rather than a hole.
+        isPrimary ? styles.ctaPrimaryShell : isSupported ? styles.ctaNeutral : styles.ctaUnavailable,
         pressed && styles.pressed,
       ]}
       testID={testID}>
-      {isPending ? (
-        <ActivityIndicator
-          color={isSupported ? Palette.background : RewardUnavailable.text}
-          size="small"
+      {isPrimary ? (
+        <LinearGradient
+          colors={Gradients.primary}
+          end={{ x: 1, y: 1 }}
+          start={{ x: 0, y: 0 }}
+          style={styles.ctaGradient}
         />
-      ) : (
-        <Text
-          style={[
-            styles.ctaText,
-            isSupported ? styles.ctaTextSupported : styles.ctaTextUnavailable,
-          ]}>
-          {label}
-        </Text>
-      )}
+      ) : null}
+      {content}
     </Pressable>
   );
 }
@@ -287,31 +445,65 @@ const styles = StyleSheet.create({
   section: {
     gap: 10,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
   sectionHeading: {
-    fontSize: 13,
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
+    flexShrink: 1,
+    fontSize: 15.5,
     fontFamily: FontFamily.extraBold,
-    color: Palette.textSecondary,
+    color: Palette.text,
   },
   card: {
     padding: 14,
     gap: 12,
     borderWidth: 1,
-    borderColor: Palette.border,
+    borderColor: RewardSurface.cardBorder,
     borderRadius: Radius.xl,
-    backgroundColor: Palette.surface,
+    backgroundColor: RewardSurface.card,
+  },
+  coin: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 214, 140, 0.55)',
+    backgroundColor: RewardAccent.gold,
+  },
+  coinMuted: {
+    borderColor: Palette.border,
+    backgroundColor: Palette.textDisabled,
+  },
+  coinCore: {
+    backgroundColor: 'rgba(120, 74, 8, 0.55)',
+  },
+  coinCoreMuted: {
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+  },
+  infoPill: {
+    flexShrink: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: RewardSurface.chipBorder,
+    backgroundColor: RewardSurface.chip,
   },
   pointsPill: {
-    paddingHorizontal: 9,
-    paddingVertical: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: Radius.pill,
     borderWidth: 1,
     borderColor: RewardAccent.goldBorder,
     backgroundColor: RewardAccent.goldSoft,
   },
   pointsPillText: {
-    fontSize: 12.5,
+    fontSize: 11.5,
     fontFamily: FontFamily.extraBold,
     color: RewardAccent.gold,
   },
@@ -332,20 +524,39 @@ const styles = StyleSheet.create({
     color: Palette.primaryHover,
   },
   emptyState: {
-    padding: 20,
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
     borderRadius: Radius.xl,
     borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: Palette.border,
-    backgroundColor: Palette.surfaceMuted,
+    borderColor: RewardSurface.cardBorder,
+    backgroundColor: RewardSurface.card,
+  },
+  emptyStateBody: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
   },
   emptyStateText: {
-    fontSize: 12.5,
-    lineHeight: scaledLineHeight(12.5),
-    fontFamily: FontFamily.semiBold,
+    fontSize: 12,
+    lineHeight: scaledLineHeight(12),
+    fontFamily: FontFamily.regular,
     color: Palette.textSecondary,
-    textAlign: 'center',
+  },
+  emptyStateChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: RewardUnavailable.border,
+    backgroundColor: RewardUnavailable.background,
+  },
+  emptyStateChipText: {
+    fontSize: 11.5,
+    fontFamily: FontFamily.bold,
+    color: RewardUnavailable.text,
   },
   progressTrack: {
     height: 8,
@@ -365,6 +576,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: Radius.lg,
     borderWidth: 1,
+    overflow: 'hidden',
   },
   ctaFull: {
     minWidth: 96,
@@ -372,13 +584,29 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   ctaCompact: {
-    minWidth: 88,
+    minWidth: 84,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  ctaSupported: {
-    borderColor: RewardAccent.gold,
-    backgroundColor: RewardAccent.gold,
+  ctaFullWidth: {
+    alignSelf: 'stretch',
+  },
+  ctaGradient: {
+    // Painted behind the label rather than around it, so the button's own
+    // padding still decides its size and the 44pt floor is unaffected.
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
+  ctaPrimaryShell: {
+    borderColor: 'transparent',
+    backgroundColor: Palette.primary,
+  },
+  ctaNeutral: {
+    borderColor: '#E8E8EC',
+    backgroundColor: '#F2F2F5',
   },
   ctaUnavailable: {
     borderColor: RewardUnavailable.border,
@@ -389,8 +617,11 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.bold,
     textAlign: 'center',
   },
-  ctaTextSupported: {
-    // Dark ink on the gold fill: 10.5:1, versus 1.9:1 for white.
+  ctaTextPrimary: {
+    color: Palette.text,
+  },
+  ctaTextNeutral: {
+    // Dark ink on the light pill: 15.6:1.
     color: Palette.background,
   },
   ctaTextUnavailable: {

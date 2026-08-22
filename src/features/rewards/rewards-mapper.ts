@@ -236,7 +236,15 @@ export function mapRedemption(dto: RewardRedemptionOfferDto, t: Translate): Rewa
     costPoints: dto.costPoints,
     grantsDays: dto.grantsDays,
     availability: dto.availability,
-    ctaLabel: dto.availability === 'COMING_SOON' ? t('rewards.ctaSoon') : t('rewards.ctaRedeem'),
+    // The CTA word states the SERVER's verdict, so the button is never a
+    // bare "Redeem" that the press handler then refuses. Each branch is a
+    // value the backend sent: not open yet, cannot afford it yet, or go.
+    ctaLabel:
+      dto.availability === 'COMING_SOON'
+        ? t('rewards.ctaSoon')
+        : dto.availability === 'INSUFFICIENT_POINTS'
+          ? t('rewards.ctaInsufficient')
+          : t('rewards.ctaRedeem'),
     isRedeemSupported: dto.isRedeemSupported,
   };
 }

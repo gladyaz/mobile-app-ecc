@@ -7,7 +7,7 @@ import {
   RewardsCard,
 } from '@/features/rewards/components/rewards-primitives';
 import { useFormatPoints } from '@/features/rewards/format-points';
-import { RewardAccent } from '@/features/rewards/rewards-theme';
+import { RewardAccent, RewardSurface } from '@/features/rewards/rewards-theme';
 import type { TranslationKey } from '@/services/i18n/translations';
 import { useTranslation } from '@/stores/language';
 import type {
@@ -27,10 +27,13 @@ import type {
  * `LOCAL_TIMER` member for exactly this reason, and a test asserts this
  * feature schedules no timer at all.
  *
- * The UX pass removed the paragraph that explained all of the above to the
- * user. It was true, but it was engineering rationale sitting in a consumer
- * screen; it now lives here, in the tests, and in the domain contract, while
- * the page-level preview banner tells the user the one thing they need.
+ * THIS CARD IS CURRENTLY UNREACHABLE AGAINST THE REAL BACKEND, and that is
+ * deliberate rather than dead code: the snapshot ships `watchTime: null`,
+ * because the only watch signal the backend holds is a per-series RESUME
+ * POSITION that DECREASES on a rewatch. The section renders
+ * `WatchTimeComingSoon` instead. This component is what renders the moment a
+ * trusted analytics feed exists - with the server's minutes, the server's
+ * milestones and the server's claim flag, and none of its own.
  */
 
 const MILESTONE_STATE_LABEL_KEY: Record<WatchTimeMilestoneStatus, TranslationKey> = {
@@ -59,11 +62,11 @@ function MilestoneChip({ milestone }: MilestoneChipProps) {
       })}
       style={[styles.chip, isClaimed && styles.chipClaimed, isReached && styles.chipReached]}
       testID={`watch-time-milestone-${milestone.id}`}>
-      <Text style={styles.chipMinutes}>
+      <Text style={[styles.chipMinutes, (isClaimed || isReached) && styles.chipMinutesActive]}>
         {t('rewards.minutesShort', { minutes: milestone.minutes })}
       </Text>
       <Text style={styles.chipPoints}>+{formatPoints(milestone.rewardPoints)}</Text>
-      {/* Status is never carried by color alone - every chip has a word. */}
+      {/* Status is never carried by colour alone - every chip has a word. */}
       <Text style={styles.chipState}>{t(MILESTONE_STATE_LABEL_KEY[milestone.status])}</Text>
     </View>
   );
@@ -87,26 +90,17 @@ export function WatchTimeCard({ watchTime, onPressCta }: WatchTimeCardProps) {
   return (
     <RewardsCard testID="rewards-watch-time">
       <View style={styles.summaryRow}>
-        {/* An empty milestone list is type-legal, and "7 of 0 minutes" is
-            self-contradictory - so the target half is dropped entirely
-            rather than rendered as a zero. */}
         <Text style={styles.summaryValue} testID="watch-time-watched-minutes">
-          {finalMinutes > 0
-            ? t('rewards.watchSummary', {
-                current: formatPoints(watchTime.watchedMinutes),
-                target: formatPoints(finalMinutes),
-              })
-            : t('rewards.watchSummaryNoTarget', {
-                current: formatPoints(watchTime.watchedMinutes),
-              })}
+          {t('rewards.watchSummaryNoTarget', { current: formatPoints(watchTime.watchedMinutes) })}
         </Text>
-        <RewardCta
-          compact
-          isSupported={watchTime.isClaimSupported}
-          label={t('rewards.watchTimeCta')}
-          onPress={onPressCta}
-          testID="watch-time-cta"
-        />
+        {/* An empty milestone list is type-legal, and "target 0 minutes" is
+            self-contradictory - so the target is dropped entirely rather
+            than rendered as a zero. */}
+        {finalMinutes > 0 ? (
+          <Text style={styles.summaryTarget} testID="watch-time-target">
+            {t('rewards.watchTarget', { target: formatPoints(finalMinutes) })}
+          </Text>
+        ) : null}
       </View>
 
       <RewardProgressBar
@@ -124,6 +118,15 @@ export function WatchTimeCard({ watchTime, onPressCta }: WatchTimeCardProps) {
           <MilestoneChip key={milestone.id} milestone={milestone} />
         ))}
       </ScrollView>
+
+      <RewardCta
+        fullWidth
+        isSupported={watchTime.isClaimSupported}
+        label={t('rewards.watchTimeCta')}
+        onPress={onPressCta}
+        testID="watch-time-cta"
+        tone="primary"
+      />
     </RewardsCard>
   );
 }
@@ -138,25 +141,29 @@ const styles = StyleSheet.create({
   summaryValue: {
     flex: 1,
     minWidth: 0,
-    fontSize: 17,
+    fontSize: 14,
     fontFamily: FontFamily.extraBold,
     color: Palette.text,
+  },
+  summaryTarget: {
+    fontSize: 11.5,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.textSecondary,
   },
   chipStrip: {
     gap: 8,
     paddingVertical: 2,
   },
   chip: {
-    minWidth: 70,
-    flexShrink: 0,
+    minWidth: 64,
+    paddingHorizontal: 8,
+    paddingVertical: 9,
     alignItems: 'center',
     gap: 2,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
     borderRadius: Radius.lg,
     borderWidth: 1,
-    borderColor: Palette.border,
-    backgroundColor: Palette.surfaceMuted,
+    borderColor: RewardSurface.chipBorder,
+    backgroundColor: RewardSurface.chip,
   },
   chipClaimed: {
     borderColor: RewardAccent.goldBorder,
@@ -168,6 +175,9 @@ const styles = StyleSheet.create({
   chipMinutes: {
     fontSize: 12.5,
     fontFamily: FontFamily.extraBold,
+    color: Palette.textSecondary,
+  },
+  chipMinutesActive: {
     color: Palette.text,
   },
   chipPoints: {
@@ -177,7 +187,6 @@ const styles = StyleSheet.create({
   },
   chipState: {
     fontSize: 9.5,
-    letterSpacing: 0.2,
     fontFamily: FontFamily.bold,
     color: Palette.textSecondary,
   },

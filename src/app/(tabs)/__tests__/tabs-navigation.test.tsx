@@ -13,12 +13,18 @@ import { DEFAULT_LANGUAGE, translations } from '@/services/i18n/translations';
  * against the order the product specified.
  */
 
-const capturedScreens: { name: string; title: string }[] = [];
+const capturedScreens: { name: string; title: string; testID?: string }[] = [];
 
 jest.mock('expo-router', () => ({
   Tabs: Object.assign(({ children }: { children: React.ReactNode }) => <>{children}</>, {
-    Screen: ({ name, options }: { name: string; options: { title: string } }) => {
-      capturedScreens.push({ name, title: options.title });
+    Screen: ({
+      name,
+      options,
+    }: {
+      name: string;
+      options: { title: string; tabBarButtonTestID?: string };
+    }) => {
+      capturedScreens.push({ name, title: options.title, testID: options.tabBarButtonTestID });
       return null;
     },
   }),
@@ -40,9 +46,37 @@ describe('root bottom navigation', () => {
     expect(capturedScreens.map((screen) => screen.name)).toEqual([
       'index',
       'discover',
-      'saved',
       'rewards',
+      'saved',
       'profile',
+    ]);
+  });
+
+  it('puts Rewards in the centre slot, with Saved to its right', () => {
+    // The product decision this file exists to pin. Asserted by INDEX rather
+    // than by any coordinate: five tabs means the middle one is index 2, and
+    // that is what "centre" means to the navigator regardless of screen
+    // width, density or how wide a translated label happens to render.
+    const names = capturedScreens.map((screen) => screen.name);
+    const centreIndex = Math.floor(names.length / 2);
+
+    expect(names).toHaveLength(5);
+    expect(names[centreIndex]).toBe('rewards');
+    expect(names[centreIndex + 1]).toBe('saved');
+    // Saved moved right by one; it did not disappear or get renamed.
+    expect(names).toContain('saved');
+  });
+
+  it('addresses every tab by a stable testID rather than by position', () => {
+    // Automation targets these. Without them a suite has to reach for "the
+    // third button", which silently retargets the wrong screen the next time
+    // the product reorders the bar - exactly what just happened here.
+    expect(capturedScreens.map((screen) => screen.testID)).toEqual([
+      'tab-home',
+      'tab-discover',
+      'tab-rewards',
+      'tab-saved',
+      'tab-profile',
     ]);
   });
 
@@ -64,8 +98,8 @@ describe('root bottom navigation', () => {
     const expectedTitles = [
       idCopy['home.title'],
       idCopy['discover.title'],
-      idCopy['saved.title'],
       idCopy['rewards.title'],
+      idCopy['saved.title'],
       idCopy['profile.title'],
     ];
 

@@ -1,48 +1,70 @@
 import { StyleSheet, Text, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { CoinMark, InfoPill, RewardCta } from '@/features/rewards/components/rewards-primitives';
 import { useFormatPoints } from '@/features/rewards/format-points';
-import { RewardAccent } from '@/features/rewards/rewards-theme';
+import { RewardHero } from '@/features/rewards/rewards-theme';
 import { useTranslation } from '@/stores/language';
 import type { RewardWallet } from '@/types/rewards';
 
 /**
  * The balance hero - the strongest element on the page, and the answer to
- * the first question a user arrives with ("how many points do I have?").
+ * the first question a user arrives with ("how many coins do I have?").
  *
  * Reads every number off `wallet`: no default, no fallback figure, and no
- * notion of what a point is worth. Points only - no rupiah equivalent,
- * because points have no approved cash value and rendering one would be a
+ * notion of what a coin is worth. Coins only - no rupiah equivalent,
+ * because they have no approved cash value and rendering one would be a
  * misleading cash-value visual.
  *
- * Two things were deliberately REMOVED from this card in the UX pass:
- *   - the "total earned" / "last updated" metadata row, which competed with
- *     the number that actually matters;
- *   - the paragraph-length "this balance is not authoritative" notice. The
- *     preview status is now a compact tag here plus the page-level banner
- *     above, so it is stated without shouting.
- * The honesty itself is unchanged: `isServerAuthoritative` is still what
- * decides whether the preview tag shows, and the fixture ships it `false`.
+ * THE VALUE HINT IS A STRING THIS CARD DOES NOT COMPOSE. The reference puts
+ * "~4 premium episodes" beside the balance; the backend sells VIP by DAYS
+ * and publishes no episodes-per-coin rate, so that particular sentence
+ * cannot be told truthfully. What arrives in `valueHint` is derived from the
+ * server's own offer list by `selectRedeemHint` and localised by the screen
+ * - and when there is nothing truthful to say, it arrives as `null` and the
+ * pill simply does not render.
+ *
+ * The preview tag still renders only while `isServerAuthoritative` is false,
+ * so a figure that did not come from the server is never shown unqualified.
  */
 
 type PointsBalanceCardProps = {
   readonly wallet: RewardWallet;
   /**
-   * Current check-in streak, surfaced here rather than inside the check-in
-   * card so the hero answers "how am I doing?" in one glance. `null` when
-   * there is no streak data to show.
+   * Server-derived, already-localised statement of what this balance buys.
+   * `null` renders no pill rather than a placeholder.
    */
-  readonly streakDays?: number | null;
+  readonly valueHint?: string | null;
+  /**
+   * Jumps to the redemption section further down this same scroll. Omitted
+   * when there is no catalog to jump to, in which case no button renders -
+   * a CTA that scrolls to an empty section is worse than no CTA.
+   */
+  readonly onPressRedeem?: () => void;
 };
 
-export function PointsBalanceCard({ wallet, streakDays = null }: PointsBalanceCardProps) {
+export function PointsBalanceCard({
+  wallet,
+  valueHint = null,
+  onPressRedeem,
+}: PointsBalanceCardProps) {
   const { t } = useTranslation();
   const formatPoints = useFormatPoints();
   const balanceLabel = formatPoints(wallet.balancePoints);
-  const hasStreak = typeof streakDays === 'number' && streakDays > 0;
 
   return (
-    <View style={styles.card} testID="rewards-balance">
+    <LinearGradient
+      colors={RewardHero.gradient}
+      end={{ x: 1, y: 1 }}
+      start={{ x: 0.1, y: 0 }}
+      style={styles.card}
+      testID="rewards-balance">
+      {/* One translucent disc, not a blur stack: the warm light at the upper
+          right is the whole effect, and it costs a single composited layer
+          on the low-end Android this demo targets. */}
+      <View pointerEvents="none" style={styles.glow} />
+
       {/* The announced sentence carries the SAME qualifier the visible tag
           does. A screen-reader user must not be the only one who hears an
           unqualified figure when the balance did not come from the server. */}
@@ -52,105 +74,122 @@ export function PointsBalanceCard({ wallet, streakDays = null }: PointsBalanceCa
           wallet.isServerAuthoritative ? 'rewards.balanceA11y' : 'rewards.balancePreviewA11y',
           { points: balanceLabel }
         )}>
-        <Text style={styles.label}>{t('rewards.yourPoints')}</Text>
+        <View style={styles.labelRow}>
+          <CoinMark size={15} />
+          <Text style={styles.label}>{t('rewards.yourPoints')}</Text>
+        </View>
         <View style={styles.balanceRow}>
-          <Text style={styles.balanceValue} testID="rewards-balance-value">
+          <Text
+            maxFontSizeMultiplier={1.5}
+            style={styles.balanceValue}
+            testID="rewards-balance-value">
             {balanceLabel}
           </Text>
           <Text style={styles.balanceUnit}>{t('rewards.pointsUnit')}</Text>
         </View>
       </View>
 
-      <View style={styles.chipRow}>
-        {/* Preview status travels with the number itself, so the figure is
-            never seen without its qualifier - even mid-scroll. */}
-        {wallet.isServerAuthoritative ? null : (
-          <View style={styles.previewTag} testID="rewards-balance-preview-tag">
-            <Text style={styles.previewTagText}>{t('rewards.balancePreviewTag')}</Text>
-          </View>
-        )}
+      <View style={styles.actionRow}>
+        {onPressRedeem ? (
+          <RewardCta
+            isSupported
+            label={t('rewards.goToRedeem')}
+            onPress={onPressRedeem}
+            testID="rewards-balance-redeem"
+            tone="primary"
+          />
+        ) : null}
 
-        {hasStreak ? (
-          <View
-            accessible
-            accessibilityLabel={t('rewards.streakChipA11y', { days: streakDays })}
-            style={styles.streakChip}
-            testID="rewards-streak-chip">
-            <Text style={styles.streakChipText}>
-              {t('rewards.streakChip', { days: streakDays })}
-            </Text>
-          </View>
+        {valueHint ? (
+          <InfoPill testID="rewards-balance-hint">
+            <Text style={styles.hintText}>{valueHint}</Text>
+          </InfoPill>
         ) : null}
       </View>
-    </View>
+
+      {/* Preview status travels with the number itself, so the figure is
+          never seen without its qualifier - even mid-scroll. */}
+      {wallet.isServerAuthoritative ? null : (
+        <View style={styles.previewTag} testID="rewards-balance-preview-tag">
+          <Text style={styles.previewTagText}>{t('rewards.balancePreviewTag')}</Text>
+        </View>
+      )}
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    padding: 18,
-    gap: 12,
+    overflow: 'hidden',
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    gap: 14,
     borderWidth: 1,
-    borderColor: RewardAccent.goldBorder,
+    borderColor: RewardHero.border,
     borderRadius: Radius.xxl,
-    backgroundColor: Palette.surface,
+  },
+  glow: {
+    position: 'absolute',
+    top: -74,
+    right: -46,
+    width: 176,
+    height: 176,
+    borderRadius: 88,
+    backgroundColor: RewardHero.glow,
+  },
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
   },
   label: {
-    fontSize: 12,
-    letterSpacing: 0.4,
+    fontSize: 12.5,
     fontFamily: FontFamily.bold,
-    color: Palette.textSecondary,
+    color: '#F0D5CC',
   },
   balanceRow: {
-    marginTop: 4,
+    marginTop: 6,
     flexDirection: 'row',
     alignItems: 'flex-end',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 7,
   },
   balanceValue: {
-    fontSize: 44,
+    fontSize: 40,
     // No literal lineHeight: at this size a fixed line box leaves no
     // headroom, and it would not grow with the OS text-size setting.
     fontFamily: FontFamily.extraBold,
-    color: RewardAccent.gold,
+    color: Palette.text,
   },
   balanceUnit: {
-    paddingBottom: 8,
-    fontSize: 14,
+    paddingBottom: 7,
+    fontSize: 13.5,
     fontFamily: FontFamily.bold,
-    color: Palette.textSecondary,
+    color: '#E4C3B8',
   },
-  chipRow: {
+  actionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 10,
+  },
+  hintText: {
+    fontSize: 12,
+    fontFamily: FontFamily.semiBold,
+    color: Palette.text,
   },
   previewTag: {
+    alignSelf: 'flex-start',
     paddingHorizontal: 9,
     paddingVertical: 4,
     borderRadius: Radius.pill,
     borderWidth: 1,
     borderColor: 'rgba(255, 122, 26, 0.4)',
-    backgroundColor: 'rgba(255, 122, 26, 0.09)',
+    backgroundColor: 'rgba(255, 122, 26, 0.14)',
   },
   previewTagText: {
     fontSize: 11.5,
     fontFamily: FontFamily.bold,
     color: Palette.primaryHover,
-  },
-  streakChip: {
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: Radius.pill,
-    borderWidth: 1,
-    borderColor: Palette.border,
-    backgroundColor: Palette.surfaceMuted,
-  },
-  streakChipText: {
-    fontSize: 11.5,
-    fontFamily: FontFamily.bold,
-    color: Palette.text,
   },
 });

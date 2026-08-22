@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { RewardEmptyState } from '@/features/rewards/components/rewards-primitives';
 import { useFormatPoints } from '@/features/rewards/format-points';
-import { RewardAccent, scaledLineHeight } from '@/features/rewards/rewards-theme';
+import { RewardAccent, RewardSurface, scaledLineHeight } from '@/features/rewards/rewards-theme';
 import type { TranslationKey } from '@/services/i18n/translations';
 import { useTranslation } from '@/stores/language';
 import type { RewardLedgerEntry, RewardLedgerReason, RewardsLedgerState } from '@/types/rewards';
@@ -181,9 +181,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: Palette.border,
+    borderColor: RewardSurface.cardBorder,
     borderRadius: Radius.xl,
-    backgroundColor: Palette.surface,
+    backgroundColor: RewardSurface.card,
   },
   rowBody: {
     flex: 1,

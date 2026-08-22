@@ -16,35 +16,51 @@ const TAB_SCREENS: readonly {
   readonly name: string;
   readonly titleKey: TranslationKey;
   readonly icon: SymbolViewProps['name'];
+  /**
+   * Stable automation handle. Appium/Playwright address a tab by THIS, never
+   * by its x-position: the order below is a product decision that has already
+   * changed once, and a suite pinned to "the third button" silently retargets
+   * the wrong screen the next time it changes.
+   */
+  readonly testID: string;
 }[] = [
   {
     name: 'index',
     titleKey: 'home.title',
     icon: { ios: 'house.fill', android: 'home', web: 'home' },
+    testID: 'tab-home',
   },
   {
     name: 'discover',
     titleKey: 'discover.title',
     icon: { ios: 'safari.fill', android: 'explore', web: 'explore' },
+    testID: 'tab-discover',
+  },
+  {
+    // CENTRE, by product decision: Rewards is the surface the product wants
+    // a first-time user to find without hunting, and the middle slot is the
+    // one a thumb reaches without moving the hand. It sits here rather than
+    // fourth as before - Saved moved right by one to make room.
+    //
+    // Reordering this array is presentation ONLY. The route names are
+    // untouched, so `/rewards` and `/saved` keep resolving to the same files
+    // and every existing deep link still lands where it did.
+    name: 'rewards',
+    titleKey: 'rewards.title',
+    icon: { ios: 'gift.fill', android: 'redeem', web: 'redeem' },
+    testID: 'tab-rewards',
   },
   {
     name: 'saved',
     titleKey: 'saved.title',
     icon: { ios: 'bookmark.fill', android: 'bookmark', web: 'bookmark' },
-  },
-  {
-    // Preview surface - no reward engine behind it yet. It earns a root tab
-    // anyway because the screen states its own PRATINJAU/PREVIEW status on
-    // every card; a tab that is honest about being a preview is discoverable
-    // without being misleading.
-    name: 'rewards',
-    titleKey: 'rewards.title',
-    icon: { ios: 'gift.fill', android: 'redeem', web: 'redeem' },
+    testID: 'tab-saved',
   },
   {
     name: 'profile',
     titleKey: 'profile.title',
     icon: { ios: 'person.crop.circle.fill', android: 'account_circle', web: 'account_circle' },
+    testID: 'tab-profile',
   },
 ];
 
@@ -62,12 +78,14 @@ export default function TabsLayout() {
           borderTopColor: Palette.border,
         },
       }}>
-      {TAB_SCREENS.map(({ name, titleKey, icon }) => (
+      {TAB_SCREENS.map(({ name, titleKey, icon, testID }) => (
         <Tabs.Screen
           key={name}
           name={name}
           options={{
             title: t(titleKey),
+            tabBarButtonTestID: testID,
+            tabBarAccessibilityLabel: t(titleKey),
             // Five tabs share a 320pt phone at roughly 64pt each, so a large
             // OS text size truncates labels ("Discove…"). `maxFontSizeMultiplier`
             // is a Text prop rather than a style, so capping it means

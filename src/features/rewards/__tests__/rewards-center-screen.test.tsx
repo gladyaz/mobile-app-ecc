@@ -158,11 +158,24 @@ const MIN_TOUCH_TARGET = 44;
  */
 const BANNED_FRAGMENTS = ['backend', 'ledger', 'SDK', 'server', 'timer', 'entitlement'] as const;
 
+/**
+ * Which block each section title belongs to. Heading assertions are scoped
+ * through this rather than searching the whole page, because a title can
+ * legitimately appear twice - the hero's jump button reads "Tukar koin"
+ * precisely because it scrolls to the "Tukar koin" section.
+ */
+const SECTION_TEST_ID = {
+  'rewards.sectionDaily': 'rewards-section-daily',
+  'rewards.sectionEarn': 'rewards-section-earn',
+  'rewards.sectionWatch': 'rewards-section-watch',
+  'rewards.sectionRedeem': 'rewards-section-redeem',
+} as const;
+
 describe('RewardsCenterScreen - information architecture', () => {
   it('renders the screen shell with its preview marker', async () => {
     const { getByTestId, getByText } = await renderReady();
 
-    expect(getByTestId('rewards-center-screen')).toBeTruthy();
+    expect(getByTestId('rewards-screen')).toBeTruthy();
     expect(getByText(idCopy['rewards.title'])).toBeTruthy();
     expect(getByText(idCopy['rewards.previewBadge'])).toBeTruthy();
   });
@@ -197,16 +210,21 @@ describe('RewardsCenterScreen - information architecture', () => {
   });
 
   it('titles every section from the translation table, not a hardcoded string', async () => {
-    const { getByText } = await renderReady();
+    const { getByText, getByTestId } = await renderReady();
 
     expect(getByText(idCopy['rewards.sectionDaily'])).toBeTruthy();
     expect(getByText(idCopy['rewards.sectionEarn'])).toBeTruthy();
     expect(getByText(idCopy['rewards.sectionWatch'])).toBeTruthy();
-    expect(getByText(idCopy['rewards.sectionRedeem'])).toBeTruthy();
+    // Scoped: the hero's jump button deliberately reads "Tukar koin" too,
+    // because it points AT this section - so the heading is asserted inside
+    // the section rather than anywhere on the page.
+    expect(
+      within(getByTestId('rewards-section-redeem')).getByText(idCopy['rewards.sectionRedeem'])
+    ).toBeTruthy();
   });
 
   it('marks each section heading as a header for screen-reader navigation', async () => {
-    const { getByText } = await renderReady();
+    const { getByTestId } = await renderReady();
 
     for (const key of [
       'rewards.sectionDaily',
@@ -214,7 +232,9 @@ describe('RewardsCenterScreen - information architecture', () => {
       'rewards.sectionWatch',
       'rewards.sectionRedeem',
     ] as const) {
-      expect(getByText(idCopy[key]).props.accessibilityRole).toBe('header');
+      expect(
+        within(getByTestId(SECTION_TEST_ID[key])).getByText(idCopy[key]).props.accessibilityRole
+      ).toBe('header');
     }
   });
 });
@@ -275,9 +295,9 @@ describe('RewardsCenterScreen - daily reward', () => {
   it('renders every configured day, the today reward and the CTA', async () => {
     const { getByTestId } = await renderReady();
 
-    expect(getByTestId('check-in-day-1')).toBeTruthy();
-    expect(getByTestId('check-in-day-2')).toBeTruthy();
-    expect(getByTestId('check-in-day-3')).toBeTruthy();
+    expect(getByTestId('rewards-check-in-day-1')).toBeTruthy();
+    expect(getByTestId('rewards-check-in-day-2')).toBeTruthy();
+    expect(getByTestId('rewards-check-in-day-3')).toBeTruthy();
     expect(getByTestId('check-in-today-reward')).toBeTruthy();
     expect(getByTestId('rewards-check-in')).toBeTruthy();
   });
@@ -296,7 +316,7 @@ describe('RewardsCenterScreen - daily reward', () => {
     const { getByTestId } = await renderReady({ dailyCheckIn: longCurve });
 
     // 7 is a fixture choice, not a structural limit of the component.
-    expect(getByTestId('check-in-day-14')).toBeTruthy();
+    expect(getByTestId('rewards-check-in-day-14')).toBeTruthy();
   });
 
   it('labels each day chip state in words, never by colour alone', async () => {
@@ -314,19 +334,43 @@ describe('RewardsCenterScreen - daily reward', () => {
       },
     });
 
-    expect(within(getByTestId('check-in-day-1')).getByText(idCopy['rewards.dayDone'])).toBeTruthy();
-    expect(within(getByTestId('check-in-day-2')).getByText(idCopy['rewards.dayBonus'])).toBeTruthy();
-    expect(within(getByTestId('check-in-day-3')).getByText(idCopy['rewards.dayLater'])).toBeTruthy();
-    expect(within(getByTestId('check-in-day-4')).getByText(idCopy['rewards.dayToday'])).toBeTruthy();
+    expect(within(getByTestId('rewards-check-in-day-1')).getByText(idCopy['rewards.dayDone'])).toBeTruthy();
+    expect(within(getByTestId('rewards-check-in-day-2')).getByText(idCopy['rewards.dayBonus'])).toBeTruthy();
+    expect(within(getByTestId('rewards-check-in-day-3')).getByText(idCopy['rewards.dayLater'])).toBeTruthy();
+    expect(within(getByTestId('rewards-check-in-day-4')).getByText(idCopy['rewards.dayToday'])).toBeTruthy();
   });
 
   it('reports an already-claimed check-in', async () => {
     const baseline = buildSnapshot();
-    const { getByText } = await renderReady({
-      dailyCheckIn: { ...baseline.dailyCheckIn!, isTodayClaimed: true },
+    const { getByTestId, queryByTestId } = await renderReady({
+      dailyCheckIn: {
+        ...baseline.dailyCheckIn!,
+        isTodayClaimed: true,
+        // Claiming IS supported here, so the only thing standing the control
+        // down is the already-claimed fact - which is the point of the case.
+        isClaimSupported: true,
+      },
     });
 
-    expect(getByText(idCopy['rewards.checkedInToday'])).toBeTruthy();
+    // The claimed state is stated in words by the CTA (whose label the MAPPER
+    // swaps to "sudah check-in hari ini"), and the control stands down. The
+    // "today pays" row is gone rather than restating a past event.
+    const cta = getByTestId('rewards-check-in');
+
+    expect(cta.props.accessibilityHint).toBe(idCopy['rewards.unavailableCtaHint']);
+    expect(queryByTestId('check-in-today-reward')).toBeNull();
+  });
+
+  it('offers the check-in control while today is still unclaimed', async () => {
+    const baseline = buildSnapshot();
+    const { getByTestId } = await renderReady({
+      dailyCheckIn: { ...baseline.dailyCheckIn!, isTodayClaimed: false, isClaimSupported: true },
+    });
+
+    // No unavailable hint, and today's payout is on screen so the user can
+    // see what the button is worth before pressing it.
+    expect(getByTestId('rewards-check-in').props.accessibilityHint).toBeUndefined();
+    expect(getByTestId('check-in-today-reward')).toBeTruthy();
   });
 });
 
@@ -334,25 +378,25 @@ describe('RewardsCenterScreen - earn points', () => {
   it('renders one scannable row per task: mark, title, task, reward and CTA', async () => {
     const { getByTestId, getByText } = await renderReady();
 
-    expect(getByTestId('reward-task-uji_fb')).toBeTruthy();
+    expect(getByTestId('rewards-task-uji_fb')).toBeTruthy();
     expect(getByText('Facebook Uji')).toBeTruthy();
     expect(getByText('Ikuti halaman uji')).toBeTruthy();
-    expect(getByTestId('reward-task-points-uji_fb')).toBeTruthy();
-    expect(getByTestId('reward-task-cta-uji_fb')).toBeTruthy();
+    expect(getByTestId('rewards-task-points-uji_fb')).toBeTruthy();
+    expect(getByTestId('rewards-task-cta-uji_fb')).toBeTruthy();
   });
 
   it('renders the reward amount from the model', async () => {
     const { getByTestId } = await renderReady();
 
-    expect(getByTestId('reward-task-points-uji_fb').props.children).toContain('66');
-    expect(getByTestId('reward-task-points-uji_ad').props.children).toContain('88');
+    expect(getByTestId('rewards-task-points-uji_fb').props.children).toContain('66');
+    expect(getByTestId('rewards-task-points-uji_ad').props.children).toContain('88');
   });
 
   it('renders rewarded-ad progress as "current/target" plus an accessible bar', async () => {
     const { getByTestId } = await renderReady();
 
-    expect(getByTestId('reward-task-progress-uji_ad').props.children).toContain('2');
-    expect(getByTestId('reward-task-progress-bar-uji_ad').props.accessibilityValue).toEqual({
+    expect(getByTestId('rewards-task-progress-uji_ad').props.children).toContain('2');
+    expect(getByTestId('rewards-task-progress-bar-uji_ad').props.accessibilityValue).toEqual({
       min: 0,
       max: 9,
       now: 2,
@@ -365,7 +409,7 @@ describe('RewardsCenterScreen - earn points', () => {
       tasks: [{ ...baseline.tasks[1], progress: { current: 150, target: 100 } }],
     });
 
-    expect(getByTestId('reward-task-progress-bar-uji_ad').props.accessibilityValue).toEqual({
+    expect(getByTestId('rewards-task-progress-bar-uji_ad').props.accessibilityValue).toEqual({
       min: 0,
       max: 100,
       now: 100,
@@ -375,7 +419,7 @@ describe('RewardsCenterScreen - earn points', () => {
   it('shows no progress block for a task that has no progress', async () => {
     const { queryByTestId } = await renderReady();
 
-    expect(queryByTestId('reward-task-progress-uji_fb')).toBeNull();
+    expect(queryByTestId('rewards-task-progress-uji_fb')).toBeNull();
   });
 });
 
@@ -439,10 +483,10 @@ describe('RewardsCenterScreen - redeem', () => {
   it('renders each offer with a comparable cost and a CTA', async () => {
     const { getByTestId, getByText } = await renderReady();
 
-    expect(getByTestId('redeem-card-uji_vip')).toBeTruthy();
+    expect(getByTestId('rewards-redemption-uji_vip')).toBeTruthy();
     expect(getByText('VIP Uji')).toBeTruthy();
-    expect(getByTestId('redeem-cost-uji_vip').props.children).toContain('3.333');
-    expect(getByTestId('redeem-cta-uji_vip')).toBeTruthy();
+    expect(getByTestId('rewards-redemption-cost-uji_vip').props.children).toContain('3.333');
+    expect(getByTestId('rewards-redeem-button-uji_vip')).toBeTruthy();
   });
 
   it('never calls an offer redeemable while redemption is unsupported', async () => {
@@ -452,10 +496,10 @@ describe('RewardsCenterScreen - redeem', () => {
     // an affirmative word.
     const { getByTestId } = await renderReady();
 
-    expect(getByTestId('redeem-availability-uji_vip').props.children).toBe(
+    expect(getByTestId('rewards-redemption-availability-uji_vip').props.children).toBe(
       idCopy['rewards.availComingSoon']
     );
-    expect(getByTestId('redeem-availability-uji_vip').props.children).not.toBe(
+    expect(getByTestId('rewards-redemption-availability-uji_vip').props.children).not.toBe(
       idCopy['rewards.availAvailable']
     );
   });
@@ -466,7 +510,7 @@ describe('RewardsCenterScreen - redeem', () => {
       redemptions: [{ ...baseline.redemptions[0], isRedeemSupported: true }],
     });
 
-    expect(getByTestId('redeem-availability-uji_vip').props.children).toBe(
+    expect(getByTestId('rewards-redemption-availability-uji_vip').props.children).toBe(
       idCopy['rewards.availAvailable']
     );
   });
@@ -480,10 +524,10 @@ describe('RewardsCenterScreen - redeem', () => {
       ],
     });
 
-    expect(getByTestId('redeem-availability-av_poor').props.children).toBe(
+    expect(getByTestId('rewards-redemption-availability-av_poor').props.children).toBe(
       idCopy['rewards.availInsufficient']
     );
-    expect(getByTestId('redeem-availability-av_soon').props.children).toBe(
+    expect(getByTestId('rewards-redemption-availability-av_soon').props.children).toBe(
       idCopy['rewards.availComingSoon']
     );
   });
@@ -511,8 +555,8 @@ describe('RewardsCenterScreen - preview safety is stated once, not everywhere', 
     expect(queryByTestId('rewards-balance-notice')).toBeNull();
     expect(queryByTestId('check-in-notice')).toBeNull();
     expect(queryByTestId('watch-time-notice')).toBeNull();
-    expect(queryByTestId('reward-task-notice-uji_fb')).toBeNull();
-    expect(queryByTestId('reward-task-notice-uji_ad')).toBeNull();
+    expect(queryByTestId('rewards-task-notice-uji_fb')).toBeNull();
+    expect(queryByTestId('rewards-task-notice-uji_ad')).toBeNull();
     expect(queryByTestId('redeem-notice-uji_vip')).toBeNull();
   });
 
@@ -566,10 +610,10 @@ describe('RewardsCenterScreen - preview safety is stated once, not everywhere', 
 
     for (const testID of [
       'rewards-check-in',
-      'reward-task-cta-uji_fb',
-      'reward-task-cta-uji_ad',
+      'rewards-task-cta-uji_fb',
+      'rewards-task-cta-uji_ad',
       'watch-time-cta',
-      'redeem-cta-uji_vip',
+      'rewards-redeem-button-uji_vip',
     ]) {
       expect(getByTestId(testID).props.accessibilityHint).toBe(UNAVAILABLE_CTA_HINT);
     }
@@ -581,7 +625,7 @@ describe('RewardsCenterScreen - preview safety is stated once, not everywhere', 
       tasks: [{ ...baseline.tasks[0], isClaimSupported: true }],
     });
 
-    expect(getByTestId('reward-task-cta-uji_fb').props.accessibilityHint).toBeUndefined();
+    expect(getByTestId('rewards-task-cta-uji_fb').props.accessibilityHint).toBeUndefined();
   });
 });
 
@@ -592,7 +636,7 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
 
     const balanceBefore = getByTestId('rewards-balance-value').props.children;
 
-    await fireEvent.press(getByTestId('reward-task-cta-uji_fb'));
+    await fireEvent.press(getByTestId('rewards-task-cta-uji_fb'));
 
     expect(getByTestId('rewards-balance-value').props.children).toBe(balanceBefore);
     expect(getByText('4.242')).toBeTruthy();
@@ -608,12 +652,12 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
     const onUnavailableAction = jest.fn();
     const { getByTestId, getByText, queryByText } = await renderReady(undefined, onUnavailableAction);
 
-    const progressBefore = getByTestId('reward-task-progress-uji_ad').props.children;
+    const progressBefore = getByTestId('rewards-task-progress-uji_ad').props.children;
 
-    await fireEvent.press(getByTestId('reward-task-cta-uji_ad'));
+    await fireEvent.press(getByTestId('rewards-task-cta-uji_ad'));
 
     expect(getByText('4.242')).toBeTruthy();
-    expect(getByTestId('reward-task-progress-uji_ad').props.children).toEqual(progressBefore);
+    expect(getByTestId('rewards-task-progress-uji_ad').props.children).toEqual(progressBefore);
     expect(queryByText('4.330')).toBeNull(); // 4242 + 88
     expect(onUnavailableAction).toHaveBeenCalledWith({
       kind: 'TASK',
@@ -665,7 +709,7 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
     const onUnavailableAction = jest.fn();
     const { getByTestId, getByText } = await renderReady(undefined, onUnavailableAction);
 
-    await fireEvent.press(getByTestId('redeem-cta-uji_vip'));
+    await fireEvent.press(getByTestId('rewards-redeem-button-uji_vip'));
 
     expect(getByText('4.242')).toBeTruthy();
     expect(mockUseEntitlement).not.toHaveBeenCalled();
@@ -691,7 +735,7 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
     try {
       const { getByTestId } = await renderReady();
 
-      await fireEvent.press(getByTestId('reward-task-cta-uji_fb'));
+      await fireEvent.press(getByTestId('rewards-task-cta-uji_fb'));
 
       expect(announce).toHaveBeenCalledTimes(1);
       expect(announce.mock.calls[0][0]).toContain('Facebook Uji');
@@ -706,7 +750,7 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
 
     expect(queryByTestId('rewards-action-banner')).toBeNull();
 
-    await fireEvent.press(getByTestId('reward-task-cta-uji_fb'));
+    await fireEvent.press(getByTestId('rewards-task-cta-uji_fb'));
     expect(getByTestId('rewards-action-banner')).toBeTruthy();
 
     await fireEvent.press(getByTestId('rewards-action-banner-dismiss'));
@@ -725,10 +769,10 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
 
     for (const testID of [
       'rewards-check-in',
-      'reward-task-cta-uji_fb',
-      'reward-task-cta-uji_ad',
+      'rewards-task-cta-uji_fb',
+      'rewards-task-cta-uji_ad',
       'watch-time-cta',
-      'redeem-cta-uji_vip',
+      'rewards-redeem-button-uji_vip',
     ]) {
       await fireEvent.press(getByTestId(testID));
     }
@@ -742,10 +786,10 @@ describe('RewardsCenterScreen - no CTA issues a reward', () => {
 
     for (const testID of [
       'rewards-check-in',
-      'reward-task-cta-uji_fb',
-      'reward-task-cta-uji_ad',
+      'rewards-task-cta-uji_fb',
+      'rewards-task-cta-uji_ad',
       'watch-time-cta',
-      'redeem-cta-uji_vip',
+      'rewards-redeem-button-uji_vip',
     ]) {
       await fireEvent.press(getByTestId(testID));
     }
@@ -813,10 +857,10 @@ describe('RewardsCenterScreen - accessibility', () => {
 
     for (const testID of [
       'rewards-check-in',
-      'reward-task-cta-uji_fb',
-      'reward-task-cta-uji_ad',
+      'rewards-task-cta-uji_fb',
+      'rewards-task-cta-uji_ad',
       'watch-time-cta',
-      'redeem-cta-uji_vip',
+      'rewards-redeem-button-uji_vip',
     ]) {
       const style = StyleSheet.flatten(getByTestId(testID).props.style);
 
@@ -836,7 +880,7 @@ describe('RewardsCenterScreen - accessibility', () => {
 
   it('groups each day chip into one accessible node with a full description', async () => {
     const { getByTestId } = await renderReady();
-    const chip = getByTestId('check-in-day-1');
+    const chip = getByTestId('rewards-check-in-day-1');
 
     expect(chip.props.accessible).toBe(true);
     expect(chip.props.accessibilityLabel).toContain('1');
@@ -859,9 +903,9 @@ describe('RewardsCenterScreen - accessibility', () => {
 
     // The default queries respect the accessibility tree, so a mark that is
     // properly hidden is simply not there to be found.
-    expect(queryByTestId('reward-task-mark-uji_fb')).toBeNull();
+    expect(queryByTestId('rewards-task-mark-uji_fb')).toBeNull();
 
-    const markContainer = getByTestId('reward-task-mark-uji_fb', { includeHiddenElements: true });
+    const markContainer = getByTestId('rewards-task-mark-uji_fb', { includeHiddenElements: true });
 
     expect(markContainer.props.accessibilityElementsHidden).toBe(true);
     expect(markContainer.props.importantForAccessibility).toBe('no-hide-descendants');
@@ -890,8 +934,8 @@ describe('RewardsCenterScreen - accessibility', () => {
       ],
     });
 
-    const first = getByTestId('reward-task-cta-dup_a').props.accessibilityLabel;
-    const second = getByTestId('reward-task-cta-dup_b').props.accessibilityLabel;
+    const first = getByTestId('rewards-task-cta-dup_a').props.accessibilityLabel;
+    const second = getByTestId('rewards-task-cta-dup_b').props.accessibilityLabel;
 
     expect(first).not.toBe(second);
     expect(first).toContain('Facebook Uji');
@@ -901,7 +945,7 @@ describe('RewardsCenterScreen - accessibility', () => {
   it('names the redeem CTA with the tier it belongs to', async () => {
     const { getByTestId } = await renderReady();
 
-    expect(getByTestId('redeem-cta-uji_vip').props.accessibilityLabel).toContain('VIP Uji');
+    expect(getByTestId('rewards-redeem-button-uji_vip').props.accessibilityLabel).toContain('VIP Uji');
   });
 
   it('announces the reward amount with its unit, not a bare "+50"', async () => {

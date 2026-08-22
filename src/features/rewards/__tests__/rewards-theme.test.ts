@@ -1,5 +1,9 @@
 import { Palette } from '@/constants/theme';
-import { RewardAccent, scaledLineHeight } from '@/features/rewards/rewards-theme';
+import {
+  RewardAccent,
+  RewardSurface,
+  scaledLineHeight,
+} from '@/features/rewards/rewards-theme';
 
 /**
  * `rewards-theme.ts` documents contrast ratios in a comment and warns not to
@@ -88,6 +92,46 @@ describe('rewards accent colours - WCAG 1.4.3 text contrast', () => {
     expect(contrastRatio(Palette.background, RewardAccent.gold)).toBeGreaterThanOrEqual(
       BODY_TEXT_MINIMUM
     );
+  });
+});
+
+describe('rewards card surfaces - WCAG 1.4.3 / 1.4.11', () => {
+  it('keeps every value rendered on a reward card readable', () => {
+    // The redesign darkens cards from Palette.surface (#18181B) so they read
+    // as a distinct plane against the warm wash behind the top of the page.
+    // Darkening a card only ever helps light text, but the ratios are pinned
+    // rather than reasoned about, because the next edit to these hexes will
+    // not come with the reasoning attached.
+    expect(contrastRatio(Palette.text, RewardSurface.card)).toBeGreaterThanOrEqual(
+      BODY_TEXT_MINIMUM
+    );
+    expect(contrastRatio(Palette.textSecondary, RewardSurface.card)).toBeGreaterThanOrEqual(
+      BODY_TEXT_MINIMUM
+    );
+    expect(contrastRatio(RewardAccent.gold, RewardSurface.card)).toBeGreaterThanOrEqual(
+      BODY_TEXT_MINIMUM
+    );
+  });
+
+  it('keeps the inner chips readable too', () => {
+    // Day chips and milestone chips sit ON a card, so their own fill is the
+    // backdrop their labels are measured against - not the card's.
+    expect(contrastRatio(Palette.text, RewardSurface.chip)).toBeGreaterThanOrEqual(
+      BODY_TEXT_MINIMUM
+    );
+    expect(contrastRatio(Palette.textSecondary, RewardSurface.chip)).toBeGreaterThanOrEqual(
+      BODY_TEXT_MINIMUM
+    );
+  });
+
+  it('keeps a card distinguishable from the page and a chip from its card', () => {
+    // WCAG 1.4.11: the boundary between a card and the page, and between a
+    // chip and the card it sits on, is a meaningful UI edge. Both are drawn
+    // with a border as well, so neither depends on the fill alone - but a
+    // fill that vanishes entirely makes the border do all the work.
+    expect(contrastRatio(RewardSurface.cardBorder, RewardSurface.card)).toBeGreaterThan(1);
+    expect(contrastRatio(RewardSurface.chipBorder, RewardSurface.chip)).toBeGreaterThan(1);
+    expect(contrastRatio(RewardSurface.card, Palette.background)).toBeGreaterThan(1);
   });
 });
 

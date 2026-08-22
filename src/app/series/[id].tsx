@@ -173,6 +173,10 @@ export default function SeriesDetailScreen() {
               isCurrentlyPlaying={episode.videoId === progress?.lastWatchedVideoId}
               key={episode.videoId}
               onPress={() => handleSelectEpisode(episode)}
+              // The SAME cover the header renders, and only while it is still
+              // believed good: once `onError` above latches it, every row stops
+              // retrying that dead URL and falls through to its own placeholder.
+              seriesCoverUrl={failedCoverUrl === coverUrl ? null : coverUrl}
             />
           ))
         )}

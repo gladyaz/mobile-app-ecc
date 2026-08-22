@@ -7,6 +7,7 @@ import { PremiumPreviewModal } from '@/components/premium-preview-modal';
 import { SeriesEpisodeRow } from '@/components/series-episode-row';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useSeriesDetail } from '@/features/series/use-series-catalog';
+import { nextVideoRequestId } from '@/features/videos/video-request-id';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { toEpisode } from '@/services/videos/series-service';
 import { useEntitlement } from '@/stores/entitlement';
@@ -51,7 +52,14 @@ export default function SeriesDetailScreen() {
       episodeNumber: episode.episodeNumber,
       source: 'series-detail',
     });
-    router.push({ pathname: '/', params: { videoId: episode.videoId } });
+    // The video id is what the feed aligns to; the request id is what tells
+    // the feed this is a NEW selection rather than the param of an earlier one
+    // still sitting on the route - which is what makes picking the same
+    // episode twice work.
+    router.push({
+      pathname: '/',
+      params: { videoId: episode.videoId, videoRequestId: nextVideoRequestId() },
+    });
   };
 
   const handleBack = () => {

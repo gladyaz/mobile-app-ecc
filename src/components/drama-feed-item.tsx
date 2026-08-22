@@ -17,6 +17,7 @@ import { useAppForeground } from '@/hooks/use-app-foreground';
 import { useAssistiveTechEnabled } from '@/hooks/use-assistive-tech-enabled';
 import { useAutoClearDisplayIdle } from '@/hooks/use-auto-clear-display-idle';
 import { useFeedBottomAnchor } from '@/hooks/use-feed-bottom-anchor';
+import { nextVideoRequestId } from '@/features/videos/video-request-id';
 import {
   playbackPlayerLabel,
   reportPlaybackDecision,
@@ -1686,7 +1687,15 @@ export function DramaFeedItem({
     setIsPremiumModalVisible(false);
 
     if (firstFreeEpisodeInSeries) {
-      router.push({ pathname: '/', params: { videoId: firstFreeEpisodeInSeries.videoId } });
+      // Same feed-route contract as a Series Detail episode row: the id is the
+      // target, the request id marks this as its own selection.
+      router.push({
+        pathname: '/',
+        params: {
+          videoId: firstFreeEpisodeInSeries.videoId,
+          videoRequestId: nextVideoRequestId(),
+        },
+      });
     }
   }, [firstFreeEpisodeInSeries]);
 

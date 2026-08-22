@@ -1,5 +1,5 @@
 import { useIsFocused, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -23,6 +23,7 @@ import { FontFamily, Palette, Radius, Typography } from '@/constants/theme';
 import { useVideoCatalog } from '@/features/videos/video-catalog-provider';
 import { useClearDisplayState } from '@/hooks/use-clear-display-state';
 import { useFeedPagingGuard } from '@/hooks/use-feed-paging-guard';
+import { useRequestedVideoAlignment } from '@/hooks/use-requested-video-alignment';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { onVideoTransition } from '@/services/ads/ad-controller';
 import { getNextEpisode, getSeriesById } from '@/services/videos/series-service';
@@ -70,12 +71,28 @@ export default function HomeScreen() {
       trackEvent('feed_view');
     }
   }, [isScreenFocused]);
-  const { videoId: requestedVideoId } = useLocalSearchParams<{ videoId?: string }>();
+  // `videoId` is the canonical target - the id of the exact episode that was
+  // selected, never an episode number or a position. `videoRequestId`
+  // identifies the SELECTION, so re-picking the same episode is a new request
+  // while the same params merely surviving on the route is not (see
+  // `video-request-id.ts`); a deep link that carries only `videoId` still
+  // works, keyed on the id itself.
+  const { videoId: requestedVideoId, videoRequestId } = useLocalSearchParams<{
+    videoId?: string;
+    videoRequestId?: string;
+  }>();
   const { videos, isLoading, error, refresh } = useVideoCatalog();
   const { getInteraction, getLikeCount, toggleLike, toggleSave } = useVideoInteractions();
   const { getProgress, recordProgress } = useSeriesProgress();
   const { showToast } = useToast();
-  const [feedHeight, setFeedHeight] = useState(height);
+  // The feed's REAL page: the height of this screen's own box, which the tabs
+  // navigator has already shortened by the in-flow tab bar below it. `null`
+  // until `onLayout` reports it, because the window height is NOT a usable
+  // stand-in - it is exactly the wrong number that misaligned every
+  // programmatic episode jump (see `utils/feed-alignment.ts`). The window is
+  // used only as the first-frame render size, never to compute a scroll.
+  const [measuredPageExtent, setMeasuredPageExtent] = useState<number | null>(null);
+  const pageExtent = measuredPageExtent ?? height;
   const [activeVideoId, setActiveVideoId] = useState<string | undefined>(undefined);
   // Web browsers block audible autoplay without a prior user gesture, so
   // the feed has to start muted there and let the sound toggle be the
@@ -96,26 +113,24 @@ export default function HomeScreen() {
   // own fresh countdown.
   const { isClearDisplay, setClearDisplay } = useClearDisplayState(resolvedActiveVideoId);
   const flatListRef = useRef<FlatList<Video>>(null);
-  const handledRequestedVideoIdRef = useRef<string | undefined>(undefined);
+  const videoIds = useMemo(() => videos.map((video) => video.id), [videos]);
 
   // A Series Detail episode selection returns here with ?videoId=... so the
   // selected episode plays in the existing feed player instead of a second,
-  // duplicate player screen. resolvedActiveVideoId already reflects the
-  // requested episode above; this effect only performs the imperative scroll.
-  useEffect(() => {
-    if (
-      !requestedVideoId ||
-      !requestedVideoIsInCatalog ||
-      handledRequestedVideoIdRef.current === requestedVideoId
-    ) {
-      return;
-    }
-
-    const targetIndex = videos.findIndex((video) => video.id === requestedVideoId);
-
-    handledRequestedVideoIdRef.current = requestedVideoId;
-    flatListRef.current?.scrollToIndex({ index: targetIndex, animated: true });
-  }, [requestedVideoId, requestedVideoIsInCatalog, videos]);
+  // duplicate player screen. The hook waits until the feed actually holds that
+  // video AND the viewport has been measured, then performs exactly one
+  // deterministic, non-animated alignment - and reports it, so the requested
+  // episode becomes the active item at that instant rather than a viewability
+  // callback later.
+  const requestKey = videoRequestId ?? requestedVideoId;
+  const { pendingVideoId } = useRequestedVideoAlignment({
+    flatListRef,
+    requestKey,
+    requestedVideoId,
+    videoIds,
+    pageExtent: measuredPageExtent,
+    onAligned: setActiveVideoId,
+  });
 
   // FlatList throws if onViewableItemsChanged's identity ever changes after
   // mount ("Changing onViewableItemsChanged on the fly is not supported"),
@@ -203,21 +218,51 @@ export default function HomeScreen() {
     []
   );
 
-  // Re-snap after the item height changes - which is what a rotation does,
+  // Re-snap after the page extent changes - which is what a rotation does,
   // most visibly when returning from native fullscreen. `snapToInterval` and
-  // `getItemLayout` are both derived from `feedHeight`, so once it changes the
-  // list's current scroll offset was computed against the OLD height and the
-  // feed comes to rest between two items, showing a slice of each. Scrolling
-  // back to the active index restores the one-item-per-screen invariant the
-  // pager depends on.
-  const previousFeedHeightRef = useRef(feedHeight);
+  // `getItemLayout` are both derived from it, so once it changes the list's
+  // current scroll offset was computed against the OLD extent and the feed
+  // comes to rest between two items, showing a slice of each. Scrolling back
+  // to the active index restores the one-item-per-screen invariant the pager
+  // depends on.
+  const previousPageExtentRef = useRef<number | null>(null);
+  // Which episode selection the alignment above is answering, as of the last
+  // time this effect ran. Both refs are only ever read and written HERE, in
+  // the effect - never during render.
+  const previousRequestKeyRef = useRef(requestKey);
 
   useEffect(() => {
-    if (previousFeedHeightRef.current === feedHeight) {
+    const isNewRequest = previousRequestKeyRef.current !== requestKey;
+
+    previousRequestKeyRef.current = requestKey;
+
+    if (measuredPageExtent === null) {
       return;
     }
 
-    previousFeedHeightRef.current = feedHeight;
+    const previousPageExtent = previousPageExtentRef.current;
+
+    // The FIRST measurement is not a change to re-snap for: the list is still
+    // at offset 0, which is the right offset for any extent.
+    if (previousPageExtent === null) {
+      previousPageExtentRef.current = measuredPageExtent;
+      return;
+    }
+
+    if (previousPageExtent === measuredPageExtent) {
+      return;
+    }
+
+    // The alignment owns the scroll in any commit where it still owes one, or
+    // where a new selection just arrived: it targets the REQUESTED episode,
+    // while this effect can only see the previously active one - `onAligned`'s
+    // state update does not land until the next render. Both firing in one
+    // commit would let this one win with the stale target. The extent change
+    // is deliberately NOT recorded below in that case, so the correction stays
+    // owed and is made on the next run instead of being silently dropped.
+    if (pendingVideoId !== undefined || isNewRequest) {
+      return;
+    }
 
     const activeIndex = videos.findIndex((video) => video.id === resolvedActiveVideoId);
 
@@ -225,16 +270,26 @@ export default function HomeScreen() {
       return;
     }
 
+    previousPageExtentRef.current = measuredPageExtent;
+
     flatListRef.current?.scrollToOffset({
-      offset: feedHeight * activeIndex,
+      offset: measuredPageExtent * activeIndex,
       animated: false,
     });
-  }, [feedHeight, videos, resolvedActiveVideoId]);
+  }, [measuredPageExtent, videos, resolvedActiveVideoId, pendingVideoId, requestKey]);
 
   const handleLayout = useCallback((event: LayoutChangeEvent) => {
     const nextHeight = event.nativeEvent.layout.height;
 
-    setFeedHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
+    // A zero/degenerate height is a transient layout state, not a page size.
+    // Accepting one would hand every consumer below a meaningless extent.
+    if (!Number.isFinite(nextHeight) || nextHeight <= 0) {
+      return;
+    }
+
+    setMeasuredPageExtent((currentExtent) =>
+      currentExtent === nextHeight ? currentExtent : nextHeight
+    );
   }, []);
 
   // Issue 2 (11R physical-QA remediation): a single continuous swipe/flick,
@@ -245,7 +300,7 @@ export default function HomeScreen() {
   // is still needed.
   const { onScrollBeginDrag, onMomentumScrollEnd } = useFeedPagingGuard({
     flatListRef,
-    itemHeight: feedHeight,
+    itemHeight: pageExtent,
     itemCount: videos.length,
   });
 
@@ -305,7 +360,7 @@ export default function HomeScreen() {
       return (
         <DramaFeedItem
           video={item}
-          height={feedHeight}
+          height={pageExtent}
           isActive={item.id === resolvedActiveVideoId}
           isScreenFocused={isScreenFocused}
           isLiked={interaction.isLiked}
@@ -348,7 +403,7 @@ export default function HomeScreen() {
       videos,
       resolvedActiveVideoId,
       isScreenFocused,
-      feedHeight,
+      pageExtent,
       isClearDisplay,
       setClearDisplay,
       t,
@@ -396,9 +451,10 @@ export default function HomeScreen() {
   }
 
   return (
-    <View style={styles.container} onLayout={handleLayout}>
+    <View onLayout={handleLayout} style={styles.container} testID="feed-viewport">
       <FlatList
         ref={flatListRef}
+        testID="feed-list"
         data={videos}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
@@ -408,7 +464,7 @@ export default function HomeScreen() {
         extraData={`${resolvedActiveVideoId}:${isClearDisplay}`}
         pagingEnabled
         snapToAlignment="start"
-        snapToInterval={feedHeight}
+        snapToInterval={pageExtent}
         decelerationRate="fast"
         // Issue 2: the platform-level guard against a fast fling's momentum
         // carrying the scroll view past the next snap interval. Necessary,
@@ -421,12 +477,9 @@ export default function HomeScreen() {
         onViewableItemsChanged={handleViewableItemsChanged}
         onScrollBeginDrag={onScrollBeginDrag}
         onMomentumScrollEnd={onMomentumScrollEnd}
-        onScrollToIndexFailed={({ index }) => {
-          flatListRef.current?.scrollToOffset({ offset: feedHeight * index, animated: false });
-        }}
         getItemLayout={(_data, index) => ({
-          length: feedHeight,
-          offset: feedHeight * index,
+          length: pageExtent,
+          offset: pageExtent * index,
           index,
         })}
       />

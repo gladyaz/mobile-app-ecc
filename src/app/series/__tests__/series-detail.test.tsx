@@ -107,7 +107,7 @@ describe('SeriesDetailScreen', () => {
 
     expect(router.push).toHaveBeenCalledWith({
       pathname: '/',
-      params: { videoId: 'series-x-ep-1' },
+      params: { videoId: 'series-x-ep-1', videoRequestId: expect.any(String) },
     });
   });
 
@@ -158,7 +158,7 @@ describe('SeriesDetailScreen', () => {
     expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
     expect(router.push).toHaveBeenCalledWith({
       pathname: '/',
-      params: { videoId: 'series-x-ep-6' },
+      params: { videoId: 'series-x-ep-6', videoRequestId: expect.any(String) },
     });
   });
 
@@ -245,7 +245,7 @@ describe('SeriesDetailScreen - authoritative access tier (Admin override)', () =
     expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
     expect(router.push).toHaveBeenCalledWith({
       pathname: '/',
-      params: { videoId: 'series-x-ep-8' },
+      params: { videoId: 'series-x-ep-8', videoRequestId: expect.any(String) },
     });
   });
 
@@ -292,7 +292,29 @@ describe('SeriesDetailScreen - authoritative access tier (Admin override)', () =
     // have to skip it. Either way the choice comes from accessTier.
     expect(router.push).toHaveBeenCalledWith({
       pathname: '/',
-      params: { videoId: 'series-x-ep-1' },
+      params: { videoId: 'series-x-ep-1', videoRequestId: expect.any(String) },
     });
+  });
+
+  it('gives every episode selection its own request id, re-picks included', async () => {
+    // The feed uses `videoId` to decide WHICH episode to align to and
+    // `videoRequestId` to decide WHETHER this is a new selection at all - a
+    // param that merely survived on the route from an earlier pick must not
+    // move the feed again. Picking the same episode twice therefore has to
+    // produce two distinguishable requests.
+    const { getByText } = await render(<SeriesDetailScreen />);
+
+    await fireEvent.press(getByText('Episode 1'));
+    await fireEvent.press(getByText('Episode 3'));
+    await fireEvent.press(getByText('Episode 1'));
+
+    const requests = (router.push as jest.Mock).mock.calls.map(([target]) => target.params);
+
+    expect(requests.map((params) => params.videoId)).toEqual([
+      'series-x-ep-1',
+      'series-x-ep-3',
+      'series-x-ep-1',
+    ]);
+    expect(new Set(requests.map((params) => params.videoRequestId)).size).toBe(3);
   });
 });

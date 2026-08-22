@@ -1,12 +1,45 @@
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
+import { StyleSheet } from 'react-native';
 
 import LoginScreen from '@/app/login';
 import { ApiError } from '@/services/api/client';
 import { isGoogleSignInConfigured, isGoogleSignInSupported } from '@/services/auth/google-sign-in';
+import { LANGUAGES, translations, type Language } from '@/services/i18n/translations';
 
 jest.mock('expo-router', () => ({
-  router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), canGoBack: () => false },
+  router: {
+    push: jest.fn(),
+    back: jest.fn(),
+    replace: jest.fn(),
+    canGoBack: jest.fn(() => false),
+  },
+}));
+
+const mockedCanGoBack = router.canGoBack as jest.MockedFunction<typeof router.canGoBack>;
+
+/**
+ * The screen resolves copy through the real `translations` record, driven by
+ * a language this suite can move. Without this the whole file would only ever
+ * exercise the Indonesian fallback `useTranslation()` returns when no provider
+ * is mounted - which is how a screen ends up with a key wired only in the
+ * default locale. `id` stays the default so every existing case below, which
+ * asserts Indonesian literals, keeps asserting exactly what it did.
+ */
+let mockLanguage: Language = 'id';
+// `mock`-prefixed so the jest factory may close over it.
+const mockCopy = translations;
+
+jest.mock('@/stores/language', () => ({
+  useTranslation: () => ({
+    language: mockLanguage,
+    setLanguage: jest.fn(),
+    t: (key: string, params?: Record<string, string | number>) =>
+      Object.entries(params ?? {}).reduce(
+        (text, [name, value]) => text.split(`{${name}}`).join(String(value)),
+        mockCopy[mockLanguage][key as keyof (typeof mockCopy)['id']]
+      ),
+  }),
 }));
 
 const mockLogin = jest.fn();
@@ -43,8 +76,41 @@ const mockedIsConfigured = isGoogleSignInConfigured as jest.MockedFunction<
   typeof isGoogleSignInConfigured
 >;
 
+/**
+ * The reference this screen's layout was taken from carries MVP placeholder
+ * copy ("Login dummy untuk MVP - isi email valid & password apa pun"). This
+ * app has real authentication: login only logs in, and a wrong password does
+ * not create an account. Any wording implying otherwise is a lie about a
+ * security boundary, so it is banned outright rather than reviewed.
+ */
+const DUMMY_CREDENTIAL_COPY = [/dummy/i, /isi email valid/i, /password apa pun/i];
+
+/** Every string the screen actually rendered, flattened out of the tree, so
+ * the scan below cannot miss copy that sits in a node no query targets. */
+function renderedStrings(node: unknown, found: string[] = []): string[] {
+  if (typeof node === 'string') {
+    found.push(node);
+
+    return found;
+  }
+
+  if (Array.isArray(node)) {
+    node.forEach((child) => renderedStrings(child, found));
+
+    return found;
+  }
+
+  if (node && typeof node === 'object' && 'children' in node) {
+    renderedStrings((node as { readonly children: unknown }).children, found);
+  }
+
+  return found;
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
+  mockLanguage = 'id';
+  mockedCanGoBack.mockReturnValue(false);
   mockAuthState.isAuthenticated = false;
   mockAuthState.isHydrated = true;
   mockedIsSupported.mockReturnValue(true);
@@ -358,5 +424,196 @@ describe('WhatsApp entry point', () => {
     await fireEvent.press(getByTestId('login-whatsapp'));
 
     expect(router.push).toHaveBeenCalledWith('/login-whatsapp');
+  });
+});
+
+describe('truthful auth copy', () => {
+  it('renders no dummy-credential copy anywhere on the screen', async () => {
+    // The layout is modelled on a reference screen that told people to type
+    // "any valid email & any password". Behind THIS screen a wrong password
+    // is a failed sign-in, not a new account - so the copy may never suggest
+    // credentials do not matter.
+    const { toJSON } = await render(<LoginScreen />);
+
+    const onScreen = renderedStrings(toJSON()).join(' ');
+
+    DUMMY_CREDENTIAL_COPY.forEach((banned) => expect(onScreen).not.toMatch(banned));
+  });
+
+  it('ships no dummy-credential copy in any locale', async () => {
+    // Belt and braces to the render scan above: that one only sees the locale
+    // it rendered, and a placeholder pasted into the English or Chinese entry
+    // would still reach the people reading those.
+    LANGUAGES.forEach((language) => {
+      Object.entries(translations[language])
+        .filter(([key]) => key.startsWith('login.'))
+        .forEach(([, copy]) => {
+          DUMMY_CREDENTIAL_COPY.forEach((banned) => expect(copy).not.toMatch(banned));
+        });
+    });
+  });
+
+  it('keeps the truthful helper line under the Login button', async () => {
+    // The reference put its dummy-credential disclaimer in this slot. The
+    // slot stays; what fills it is the app's own accurate sentence.
+    const { getByText } = await render(<LoginScreen />);
+
+    expect(getByText(translations.id['login.hint'])).toBeTruthy();
+  });
+});
+
+describe('provider buttons remain accessible', () => {
+  it('exposes both providers as named buttons, not bare pressables', async () => {
+    const { getByRole } = await render(<LoginScreen />);
+
+    expect(getByRole('button', { name: 'Lanjutkan dengan Google' })).toBeTruthy();
+    expect(getByRole('button', { name: 'Lanjutkan dengan WhatsApp' })).toBeTruthy();
+  });
+
+  it('announces the Google row as busy while the provider sheet is open', async () => {
+    // The chevron is swapped for a spinner mid-flight; a viewer who cannot
+    // see either still needs to be told the row is working.
+    let releaseGoogle: (value: { status: string }) => void = () => {};
+    mockLoginWithGoogle.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseGoogle = resolve;
+      })
+    );
+
+    const { getByTestId } = await render(<LoginScreen />);
+
+    await fireEvent.press(getByTestId('login-google'));
+
+    await waitFor(() =>
+      expect(getByTestId('login-google').props.accessibilityState).toMatchObject({ busy: true })
+    );
+
+    await releaseGoogle({ status: 'cancelled' });
+  });
+
+  it('keeps every control at or above the 48dp touch-target floor', async () => {
+    // A floor, deliberately not an exact height: the refresh may restyle these
+    // rows freely, but not below what a thumb can reliably hit.
+    const { getByTestId } = await render(<LoginScreen />);
+
+    ['login-submit', 'login-google', 'login-whatsapp', 'login-back'].forEach((testID) => {
+      const { height, minHeight } = StyleSheet.flatten(getByTestId(testID).props.style) as {
+        readonly height?: number;
+        readonly minHeight?: number;
+      };
+
+      expect(height ?? minHeight).toBeGreaterThanOrEqual(44);
+    });
+  });
+});
+
+describe('back navigation', () => {
+  it('goes back to wherever the viewer came from', async () => {
+    mockedCanGoBack.mockReturnValue(true);
+
+    const { getByTestId } = await render(<LoginScreen />);
+
+    await fireEvent.press(getByTestId('login-back'));
+
+    expect(router.back).toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the app root when login was the entry point', async () => {
+    // Reachable for real: a deep link or a cold start straight onto /login
+    // leaves nothing on the stack to go back to.
+    mockedCanGoBack.mockReturnValue(false);
+
+    const { getByTestId } = await render(<LoginScreen />);
+
+    await fireEvent.press(getByTestId('login-back'));
+
+    expect(router.replace).toHaveBeenCalledWith('/');
+    expect(router.back).not.toHaveBeenCalled();
+  });
+});
+
+describe('localization', () => {
+  it('renders the Indonesian copy by default', async () => {
+    const { getByText } = await render(<LoginScreen />);
+
+    expect(getByText('Masuk')).toBeTruthy();
+    expect(getByText('Login')).toBeTruthy();
+    expect(getByText('atau', { includeHiddenElements: true })).toBeTruthy();
+    expect(getByText('Belum punya akun?')).toBeTruthy();
+    expect(getByText('Daftar dengan email')).toBeTruthy();
+  });
+
+  it('renders the English copy end to end when the app is in English', async () => {
+    // Every refreshed element carries copy: title, CTA, separator, both
+    // provider rows and the register prompt. A key wired only in Indonesian
+    // fails here rather than on an English device.
+    mockLanguage = 'en';
+
+    const { getByText } = await render(<LoginScreen />);
+
+    expect(getByText('Sign in')).toBeTruthy();
+    expect(getByText('Log in')).toBeTruthy();
+    expect(getByText('or', { includeHiddenElements: true })).toBeTruthy();
+    expect(getByText('Continue with Google')).toBeTruthy();
+    expect(getByText('Continue with WhatsApp')).toBeTruthy();
+    expect(getByText("Don't have an account?")).toBeTruthy();
+    expect(getByText('Sign up with email')).toBeTruthy();
+  });
+
+  it('keeps the automation identifiers stable across locales', async () => {
+    // The ids are a contract with automation and must not be localized along
+    // with the labels.
+    mockLanguage = 'en';
+
+    const { getByTestId } = await render(<LoginScreen />);
+
+    expect(getByTestId('login-email-input')).toBeTruthy();
+    expect(getByTestId('login-password-input')).toBeTruthy();
+    expect(getByTestId('login-submit')).toBeTruthy();
+    expect(getByTestId('login-google')).toBeTruthy();
+    expect(getByTestId('login-whatsapp')).toBeTruthy();
+    expect(getByTestId('login-register-email')).toBeTruthy();
+    expect(getByTestId('login-back')).toBeTruthy();
+  });
+
+  it('still signs in and still refuses to auto-register in English', async () => {
+    mockLanguage = 'en';
+    mockLogin.mockRejectedValueOnce(new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid.'));
+
+    const { getByTestId } = await render(<LoginScreen />);
+
+    await fireEvent.changeText(getByTestId('login-email-input'), 'jane@example.com');
+    await fireEvent.changeText(getByTestId('login-password-input'), 'wrong-password');
+    await fireEvent.press(getByTestId('login-submit'));
+
+    const banner = await waitFor(() => getByTestId('login-error'));
+    expect(banner).toHaveTextContent(/Wrong email or password/);
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+});
+
+describe('form input behaviour survives the focus treatment', () => {
+  it('keeps accepting text after a field is focused and blurred', async () => {
+    // The refreshed field tracks focus to draw its accent border. That state
+    // lives beside the value; it must not disturb it.
+    const { getByTestId } = await render(<LoginScreen />);
+
+    const emailInput = getByTestId('login-email-input');
+
+    await fireEvent(emailInput, 'focus');
+    await fireEvent.changeText(emailInput, 'jane@example.com');
+    await fireEvent(emailInput, 'blur');
+    await fireEvent.changeText(getByTestId('login-password-input'), 'password123');
+    await fireEvent.press(getByTestId('login-submit'));
+
+    await waitFor(() => expect(mockLogin).toHaveBeenCalledWith('jane@example.com', 'password123'));
+  });
+
+  it('keeps the password field in secure entry', async () => {
+    const { getByTestId } = await render(<LoginScreen />);
+
+    expect(getByTestId('login-password-input').props.secureTextEntry).toBe(true);
   });
 });

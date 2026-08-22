@@ -280,7 +280,8 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 20,
-    paddingTop: 64,
+    // No `paddingTop`: `AuthScreenHeader` now owns the status-bar inset for
+    // every auth screen, so adding one here would double it.
     paddingBottom: 48,
   },
   form: {

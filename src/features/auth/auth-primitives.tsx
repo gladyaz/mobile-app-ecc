@@ -1,6 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { SymbolView } from 'expo-symbols';
-import type { ComponentProps } from 'react';
+import { useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -11,6 +11,7 @@ import {
   type KeyboardTypeOptions,
   type TextInputProps,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
 
@@ -28,7 +29,21 @@ import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
  * lives.
  */
 
+/** Inputs and provider rows. One height so the stack reads as one column. */
 const CONTROL_HEIGHT = 52;
+
+/** The primary CTA is deliberately taller than a field, so "the thing to
+ * press" is obvious before any of the labels are read. */
+const PRIMARY_HEIGHT = 54;
+
+/** Breathing room between the status bar and the back button. Added to the
+ * measured top inset rather than replacing it, so the control clears a
+ * notch, a punch-hole and a plain status bar alike. */
+const HEADER_TOP_GAP = 8;
+
+/** The register/sign-in switch is plain accent text, so its tappable area has
+ * to come from hit slop rather than from padding that would show as chrome. */
+const FOOTER_HIT_SLOP = { top: 12, bottom: 12, left: 12, right: 12 } as const;
 
 type AuthScreenHeaderProps = {
   readonly title: string;
@@ -45,14 +60,20 @@ export function AuthScreenHeader({
   backAccessibilityLabel,
   backTestID,
 }: AuthScreenHeaderProps) {
+  // The auth routes are all `headerShown: false` (see `app/_layout.tsx`), so
+  // nothing above this component reserves the status bar for it. Owning the
+  // top inset here - rather than in each screen - is what keeps login,
+  // register and the WhatsApp steps from drifting apart again.
+  const insets = useSafeAreaInsets();
+
   return (
-    <View>
+    <View style={{ paddingTop: insets.top + HEADER_TOP_GAP }}>
       <Pressable
         accessibilityLabel={backAccessibilityLabel}
         accessibilityRole="button"
         hitSlop={8}
         onPress={onBack}
-        style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
+        style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
         testID={backTestID}>
         <SymbolView
           name={{ ios: 'chevron.left', android: 'chevron_left', web: 'chevron_left' }}
@@ -114,10 +135,22 @@ export function AuthTextField({
   returnKeyType,
   onSubmitEditing,
 }: AuthTextFieldProps) {
+  // Purely presentational: which field currently has the caret. A dark form
+  // on a dark background gives almost no natural focus cue, and "which box
+  // am I typing in" is the first thing a first-time viewer loses track of.
+  // Error still wins over focus in the style array below - being wrong is
+  // more urgent to communicate than being active.
+  const [isFocused, setIsFocused] = useState(false);
+
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
-      <View style={[styles.inputShell, Boolean(error) && styles.inputShellError]}>
+      <View
+        style={[
+          styles.inputShell,
+          isFocused && styles.inputShellFocused,
+          Boolean(error) && styles.inputShellError,
+        ]}>
         {prefix ? <Text style={styles.inputPrefix}>{prefix}</Text> : null}
         <TextInput
           accessibilityLabel={accessibilityLabel}
@@ -126,7 +159,9 @@ export function AuthTextField({
           editable={isEditable}
           keyboardType={keyboardType}
           maxLength={maxLength}
+          onBlur={() => setIsFocused(false)}
           onChangeText={onChangeText}
+          onFocus={() => setIsFocused(true)}
           onSubmitEditing={onSubmitEditing}
           placeholder={placeholder}
           placeholderTextColor={Palette.textMuted}
@@ -180,7 +215,10 @@ export function AuthPrimaryButton({
       onPress={onPress}
       style={({ pressed }) => [
         styles.primaryButton,
-        pressed && styles.pressed,
+        // The generic 0.75 `pressed` wash reads as "broken" on a control this
+        // large and this saturated, so the CTA dims by its own smaller step.
+        pressed && styles.primaryButtonPressed,
+        isInactive && styles.primaryButtonFlat,
         isDisabled && styles.primaryButtonDisabled,
       ]}
       testID={testID}>
@@ -241,7 +279,7 @@ export function AuthProviderButton({
       onPress={onPress}
       style={({ pressed }) => [
         styles.providerButton,
-        pressed && styles.pressed,
+        pressed && styles.providerButtonPressed,
         isDisabled && styles.providerButtonDisabled,
       ]}
       testID={testID}>
@@ -253,7 +291,19 @@ export function AuthProviderButton({
         )}
       </View>
       <Text style={styles.providerButtonText}>{label}</Text>
-      {isBusy ? <ActivityIndicator color={Palette.textSecondary} size="small" /> : null}
+      {isBusy ? (
+        <ActivityIndicator color={Palette.textSecondary} size="small" />
+      ) : (
+        // Decorative: it says "this leads somewhere" - the provider sheet, or
+        // the WhatsApp step - rather than submitting the form in place. The
+        // Pressable above is the accessibility element, so this adds nothing
+        // for a screen reader to read out.
+        <SymbolView
+          name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+          size={14}
+          tintColor={Palette.textMuted}
+        />
+      )}
     </Pressable>
   );
 }
@@ -314,7 +364,7 @@ export function AuthFooterLink({ prompt, actionLabel, onPress, testID }: AuthFoo
       <Pressable
         accessibilityLabel={actionLabel}
         accessibilityRole="button"
-        hitSlop={8}
+        hitSlop={FOOTER_HIT_SLOP}
         onPress={onPress}
         style={({ pressed }) => [styles.footerButton, pressed && styles.pressed]}
         testID={testID}>
@@ -336,16 +386,25 @@ const styles = StyleSheet.create({
     borderColor: Palette.border,
     backgroundColor: Palette.surface,
   },
+  backButtonPressed: {
+    opacity: 0.75,
+    backgroundColor: Palette.surfaceMuted,
+  },
   title: {
-    marginTop: 28,
+    marginTop: 22,
     fontSize: 26,
+    lineHeight: 33,
+    letterSpacing: -0.4,
     fontFamily: FontFamily.extraBold,
     color: Palette.text,
   },
   subtitle: {
     marginTop: 6,
-    fontSize: 13,
-    lineHeight: 19,
+    // Held back from the full column width so the title keeps the emphasis
+    // and the sentence does not run edge to edge.
+    maxWidth: 300,
+    fontSize: 13.5,
+    lineHeight: 20,
     fontFamily: FontFamily.regular,
     color: Palette.textSecondary,
   },
@@ -364,13 +423,18 @@ const styles = StyleSheet.create({
     height: CONTROL_HEIGHT,
     paddingHorizontal: 16,
     gap: 8,
-    borderRadius: Radius.lg,
+    borderRadius: Radius.xl,
     borderWidth: 1,
     borderColor: Palette.border,
     backgroundColor: Palette.surface,
   },
+  inputShellFocused: {
+    borderColor: Palette.primary,
+    backgroundColor: Palette.surfaceMuted,
+  },
   inputShellError: {
     borderColor: Palette.error,
+    backgroundColor: 'rgba(239, 68, 68, 0.07)',
   },
   inputPrefix: {
     fontSize: 14.5,
@@ -396,19 +460,40 @@ const styles = StyleSheet.create({
     color: Palette.textMuted,
   },
   primaryButton: {
-    borderRadius: Radius.lg,
+    // Stated here as well as on the gradient child: the pressable IS the
+    // touch target, and it must not be able to collapse under it.
+    minHeight: PRIMARY_HEIGHT,
+    borderRadius: Radius.xl,
     overflow: 'hidden',
+    // Also the Android elevation surface: an elevated view with no background
+    // of its own casts no shadow. The gradient covers it completely.
+    backgroundColor: Palette.brandRed,
+    shadowColor: Palette.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 14,
+    elevation: 6,
+  },
+  primaryButtonPressed: {
+    opacity: 0.88,
+  },
+  /** No glow while the button cannot be pressed - a lit-up dead control is
+   * exactly the thing a first-time viewer keeps tapping. */
+  primaryButtonFlat: {
+    shadowOpacity: 0,
+    elevation: 0,
   },
   primaryButtonDisabled: {
     opacity: 0.5,
   },
   primaryButtonGradient: {
-    height: CONTROL_HEIGHT,
+    height: PRIMARY_HEIGHT,
     alignItems: 'center',
     justifyContent: 'center',
   },
   primaryButtonText: {
-    fontSize: 15,
+    fontSize: 15.5,
+    letterSpacing: 0.2,
     fontFamily: FontFamily.extraBold,
     color: Palette.text,
   },
@@ -422,18 +507,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     height: CONTROL_HEIGHT,
-    paddingHorizontal: 16,
-    borderRadius: Radius.lg,
+    paddingHorizontal: 14,
+    borderRadius: Radius.xl,
     borderWidth: 1,
     borderColor: Palette.border,
     backgroundColor: Palette.surface,
+  },
+  providerButtonPressed: {
+    opacity: 0.85,
+    borderColor: Palette.textDisabled,
+    backgroundColor: Palette.surfaceMuted,
   },
   providerButtonDisabled: {
     opacity: 0.5,
   },
   providerBadge: {
-    width: 26,
-    height: 26,
+    width: 28,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Radius.pill,
@@ -462,6 +552,7 @@ const styles = StyleSheet.create({
   },
   dividerLabel: {
     fontSize: 12,
+    letterSpacing: 0.4,
     fontFamily: FontFamily.semiBold,
     color: Palette.textMuted,
   },
@@ -483,25 +574,25 @@ const styles = StyleSheet.create({
     color: Palette.text,
   },
   footer: {
+    flexDirection: 'row',
+    // Wraps rather than truncating: the prompt and the action are both longer
+    // in English and German-length locales than in Indonesian.
+    flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
+    gap: 6,
   },
   footerPrompt: {
-    fontSize: 13,
+    fontSize: 13.5,
     fontFamily: FontFamily.regular,
     color: Palette.textSecondary,
   },
   footerButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    borderRadius: Radius.pill,
-    borderWidth: 1,
-    borderColor: Palette.border,
-    backgroundColor: Palette.surfaceMuted,
+    paddingVertical: 4,
   },
   footerButtonText: {
     fontSize: 13.5,
-    fontFamily: FontFamily.bold,
+    fontFamily: FontFamily.extraBold,
     color: Palette.primary,
   },
   pressed: {

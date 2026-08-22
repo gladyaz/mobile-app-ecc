@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Palette, FontFamily } from '@/constants/theme';
 import {
@@ -23,6 +24,11 @@ import { useToast } from '@/stores/toast';
 
 const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
 
+/** How far the register prompt may drift from the provider rows above it: it
+ * follows them down a tall screen, but never far enough to read as a gap. */
+const FOOTER_GAP_MIN = 20;
+const FOOTER_GAP_MAX = 44;
+
 /**
  * The app's single entry point for signing in, offering all three methods
  * side by side: email + password, Google, and WhatsApp OTP.
@@ -40,6 +46,7 @@ const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
  */
 export default function LoginScreen() {
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
   const { login, loginWithGoogle, isAuthenticated, isHydrated } = useAuth();
   const { showToast } = useToast();
 
@@ -178,7 +185,14 @@ export default function LoginScreen() {
   return (
     <View style={styles.container}>
       <ScrollView
-        contentContainerStyle={styles.content}
+        // iOS insets the scroll content by the keyboard height, so the CTA and
+        // the provider rows stay reachable without a KeyboardAvoidingView -
+        // which this app does not use anywhere. Android needs no equivalent:
+        // Expo's default `resize` soft-input mode shrinks the window, and this
+        // ScrollView simply scrolls inside what is left.
+        automaticallyAdjustKeyboardInsets
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}>
         <AuthScreenHeader
@@ -275,18 +289,36 @@ export default function LoginScreen() {
                 }}
                 testID="login-whatsapp"
               />
-
-              <AuthFooterLink
-                actionLabel={t('login.registerWithEmail')}
-                onPress={() => {
-                  router.push('/register');
-                }}
-                prompt={t('login.noAccount')}
-                testID="login-register-email"
-              />
             </>
           ) : null}
         </View>
+
+        {/* Outside `styles.form` on purpose, so the bounded spacer below can
+            sit between the provider rows and the register prompt as a direct
+            child of the flex-grown content container.
+
+            The spacer takes the leftover height, but only up to
+            FOOTER_GAP_MAX. Letting it take ALL of it - the obvious
+            `marginTop: 'auto'` - pinned the prompt to the bottom edge and
+            opened a 234pt hole under the WhatsApp row on a 360x800 screen,
+            because the column is much shorter than the viewport once the
+            provider rows are the last thing in it. Capping keeps the stack
+            reading as one block; whatever is left over falls below it as
+            ordinary bottom whitespace. On a screen too short for the column
+            the spacer holds at FOOTER_GAP_MIN and the ScrollView scrolls. */}
+        {isBackendAvailable ? (
+          <>
+            <View style={styles.footerSpacer} />
+            <AuthFooterLink
+              actionLabel={t('login.registerWithEmail')}
+              onPress={() => {
+                router.push('/register');
+              }}
+              prompt={t('login.noAccount')}
+              testID="login-register-email"
+            />
+          </>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -298,23 +330,33 @@ const styles = StyleSheet.create({
     backgroundColor: Palette.background,
   },
   content: {
+    // Grows to at least the viewport so the register prompt can bottom-anchor;
+    // beyond that the ScrollView scrolls as usual. The top inset belongs to
+    // `AuthScreenHeader`, which owns it for all three auth screens.
+    flexGrow: 1,
     paddingHorizontal: 20,
-    paddingTop: 64,
-    paddingBottom: 48,
   },
   form: {
-    marginTop: 28,
+    marginTop: 24,
     gap: 16,
   },
   providerBlock: {
     gap: 6,
   },
   hint: {
+    // Pulled up against the button it explains, so it reads as part of the
+    // same block rather than as another item in the stack.
+    marginTop: -6,
     fontSize: 11.5,
     lineHeight: 17,
     fontFamily: FontFamily.regular,
     color: Palette.textMuted,
     textAlign: 'center',
+  },
+  footerSpacer: {
+    flexGrow: 1,
+    minHeight: FOOTER_GAP_MIN,
+    maxHeight: FOOTER_GAP_MAX,
   },
   devHint: {
     fontSize: 11,

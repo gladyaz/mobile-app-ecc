@@ -204,7 +204,19 @@ transform, the fallback, prebuild idempotence, and the throw on template drift.
 - `keystore.properties` existing while `.gitignore` no longer ignores it;
 - `android.allowBackup` not `false`;
 - any of the three unused permissions missing from `android.blockedPermissions`;
-- `android.versionCode` not being a positive integer (was a warning).
+- `android.versionCode` not being a positive integer (was a warning);
+- `EXPO_PUBLIC_PRIVACY_POLICY_URL` unset or not absolute HTTPS — Play requires a
+  privacy policy for an app that collects account data and serves ads, and the
+  Profile row that carries it is not rendered without one;
+- `EXPO_PUBLIC_ACCOUNT_DELETION_URL` unset or not absolute HTTPS — the *binary*
+  depends on it, not just the Data safety form: an account with no password
+  cannot use the in-app deletion path, so this is the only route the app can
+  offer it (was a warning);
+- `EXPO_PUBLIC_ADMOB_INTERSTITIAL_AD_UNIT_ANDROID` unset — a store build would
+  otherwise serve Google's TEST interstitial, a watermarked sample ad presented
+  as the app's own monetization (was a warning);
+- `EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=true` — the backend cannot serve that
+  method in production, so offering it is a guaranteed dead end.
 
 alongside what it already blocked: a missing / non-HTTPS / localhost / LAN API
 base URL, the three release-unsafe flags, bundled demo media on disk, a
@@ -221,7 +233,7 @@ enters the process and none can appear in any message it prints.
 | Area | Evidence |
 |---|---|
 | **Standalone artifact needs no Metro** | `expo.modules.updates.ENABLED=false` in the generated manifest; `assembleRelease` / `bundleRelease` embed the JS. No dev-server dependency. |
-| **Production JS bundle builds** | `NODE_ENV=production npx expo export --platform android` exits 0 and emits a ~4.3 MB Hermes bundle, with **zero** `pewaris` / `nona-shen` / `qa-16x9` assets. |
+| **Production JS bundle builds** | `NODE_ENV=production npx expo export --platform android` exits 0 and emits a ~4.3 MB Hermes bundle. On a machine that has *not* built the demo, `metro.config.js` stubs the bundled-media requires and the export carries none of them; on a machine that HAS (this one), the same export carries ~61 MB of demo assets — which is exactly why "bundled demo media is present on disk" is a preflight BLOCKER rather than a note. Verified on this machine: export exits 0, and the shipped bundle contains neither the dev-era "local media server" copy nor the removed "Segera Hadir" purchase CTA. |
 | **One HTTP client, no local shortcuts** | Every backend call in `src/services/**` goes through `request()` in `src/services/api/client.ts`. There is no second fetch path and no per-feature base URL. |
 | **No localhost / LAN / emulator address in app code** | Repo-wide search for `localhost`, `127.0.0.1`, `10.0.2.2`, RFC-1918 ranges, `exp://`, `:8081`: the only hits are a dev operator script (never bundled), one test fixture string, and prose. |
 | **Missing API base URL fails truthfully** | `getBaseUrl()` returns `''`; `request()` throws `ApiError(0, 'MISSING_BASE_URL')`. It never falls back to a local address and never substitutes mock data. |
@@ -229,7 +241,7 @@ enters the process and none can appear in any message it prints.
 | **QA fixtures are opt-in** | `shouldIncludeQaFixtures()` requires `'true'`, and `selectUserFacingCatalog()` additionally drops `contentKind: 'qa_fixture'` rows from the backend feed. |
 | **Premium gate fails closed** | `stores/entitlement.tsx` reports `isPremium: false` while logged out, while hydrating, and for any user it has never had an answer for. `GET /videos/:id/playback` is the only real authority. A malformed `accessTier` degrades to `premium`, never `free`. |
 | **Rewards never fabricates numbers** | `src/services/rewards/rewards-service.ts` sends intent only, has no dev-tools route, and throws rather than falling back to fixtures. |
-| **Session survives restart; expiry handled** | Tokens persist to AsyncStorage and rehydrate on mount; one refresh-and-retry on `401 INVALID_ACCESS_TOKEN`; a failed refresh clears tokens and forces logout. Provider credentials (Google ID token, OTP) are consumed once and never persisted. |
+| **Session survives restart; expiry handled; concurrent 401s are safe** | Tokens persist to AsyncStorage and rehydrate on mount. A `401 INVALID_ACCESS_TOKEN` refreshes once and retries once. The refresh is **single-flight**, so the three providers `_layout.tsx` mounts together cannot each spend the same (rotating) refresh token and force-log-out a valid session at launch. The retry is gated on an identity *generation*, not on the token string, so a sibling request's rotation is retried under the new token while a genuine account change is refused — a request issued by user A can never be committed to user B. Provider credentials (Google ID token, OTP) are consumed once and never persisted. |
 | **Debug diagnostics are stripped from the release bundle** | Confirmed by `strings` on the exported Hermes bundle: `[PlaybackDecision]`, `[api-client]`, `[media-url]` and the dev "Reset Local Data" button are all absent. `__DEV__` dead-code elimination works as the code assumes. |
 | **No cleartext exemption in a default build** | `plugins/with-lan-cleartext-demo.js` keys off the scheme of `EXPO_PUBLIC_API_BASE_URL`, so an `https://` backend makes it a no-op with nothing to remember to switch off. `usesCleartextTraffic="true"` exists only in the `debug` / `debugOptimized` manifests. |
 | **No certificate pinning bypass, no trust-manager override** | None present anywhere in the repo. |
@@ -240,6 +252,29 @@ enters the process and none can appear in any message it prints.
 ## 3. External blockers
 
 None of these can be resolved from this repository, and none was guessed at.
+
+### B0 — Privacy policy and account-deletion web pages. **BLOCKER.**
+
+Google Play requires a privacy policy URL in the store listing for any app that
+collects account data or serves ads — this app does both — and a web
+account-deletion page reachable **without installing the app**, declared in the
+Data safety form.
+
+Neither page exists, and neither may be guessed: a URL that 404s in a store
+listing is a policy problem, not a cosmetic one. `src/constants/legal.ts` reads
+them from `EXPO_PUBLIC_PRIVACY_POLICY_URL`, `EXPO_PUBLIC_TERMS_URL` and
+`EXPO_PUBLIC_ACCOUNT_DELETION_URL`, accepts only absolute HTTPS, and Profile
+renders a row **only** for a URL the build actually has. So publishing the pages
+is a configuration step, not a code change.
+
+The deletion URL is load-bearing in the binary, not only in the console:
+`POST /users/me/deletion` requires the current password and fails closed for an
+account that has none, so a Google-only account's only route is that web page
+(`src/app/account-data.tsx`).
+
+**To close:** publish both pages, set the two variables, rebuild.
+
+---
 
 ### B1 — A release keystore does not exist yet. **BLOCKER.**
 
@@ -293,7 +328,7 @@ it so it cannot be reached by drift.
 The iOS bundle identifier (`com.anonymous.mobile-app-ecc`) is not even
 consistent with it. Settle both in the same decision.
 
-### B3 — AdMob app id is Google's public sample. **BLOCKER.**
+### B3 — AdMob app id AND interstitial unit id are Google's samples/unset. **BLOCKER.**
 
 `app.json` carries `androidAppId: "ca-app-pub-3940256099942544~3347511713"`,
 baked into the manifest as `com.google.android.gms.ads.APPLICATION_ID`. A real
@@ -485,6 +520,26 @@ processing modules outright.
 ### 5.4 npm advisories
 
 20 reported by `npm ci` (13 moderate, 7 high). Not triaged.
+
+---
+
+## 5.5 What was NOT verified, and cannot be from this machine
+
+Stated plainly so this document is not mistaken for a sign-off:
+
+- **No physical Android device was available.** `adb devices` reports none, so
+  nothing below §6 has been executed. Every playback, orientation, ad-pacing,
+  consent-form, deep-link and install-size claim in this document is derived
+  from source and from Jest, not from a handset.
+- **No `expo prebuild` was run.** The signing plugin is covered by unit tests
+  and its generated Groovy was parsed with the Groovy compiler shipped in the
+  Gradle wrapper, but the plugin has not been exercised by a real prebuild, and
+  no AAB has ever been produced from this repository.
+- **No release-signed artifact exists.** The only artifact ever built here is a
+  debug-signed APK predating this work.
+- **The UMP consent flow has never shown a form**, because no consent message is
+  published in the AdMob console (see B3). The client sequence is unit-tested;
+  its real behaviour is unobserved.
 
 ---
 

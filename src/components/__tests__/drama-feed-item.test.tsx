@@ -9,6 +9,7 @@ import { FeedBottomGap, Typography } from '@/constants/theme';
 import { useClearDisplayState } from '@/hooks/use-clear-display-state';
 import { ApiError } from '@/services/api/client';
 import { resetPlaybackInvariantForTests } from '@/services/debug/playback-invariant';
+import { resetPlaybackOwnershipForTests } from '@/services/playback/playback-ownership';
 import type { Episode } from '@/types/series';
 import type {
   HlsPlaybackAuthorization,
@@ -246,7 +247,7 @@ jest.mock('@/components/premium-preview-modal', () => {
         ReactModule.Fragment,
         null,
         ReactModule.createElement(RNText, null, 'Episode ini termasuk konten premium.'),
-        ReactModule.createElement(RNText, { onPress: onDismiss }, 'Segera Hadir'),
+        ReactModule.createElement(RNText, { onPress: onDismiss }, 'Tutup'),
         onGoToFreeEpisode
           ? ReactModule.createElement(RNText, { onPress: onGoToFreeEpisode }, 'Kembali ke Episode Gratis')
           : null
@@ -461,6 +462,7 @@ describe('DramaFeedItem', () => {
     // The invariant registry is module-level state; without this a test that
     // ever drives a player to playing=true would leak into the next one.
     resetPlaybackInvariantForTests();
+    resetPlaybackOwnershipForTests();
     // No speed reset is needed here: the playback rate is per-item useState,
     // so it dies with the unmount at the end of each test. There is no
     // module-level speed left to leak into the next one.
@@ -1147,7 +1149,7 @@ describe('DramaFeedItem', () => {
       // never asked to sign in, and never shown a failure either.
       expect(queryByTestId('feed-item-signin-gate')).toBeNull();
       expect(queryByTestId('feed-item-signin-button')).toBeNull();
-      expect(queryByText('Video unavailable')).toBeNull();
+      expect(queryByText('Video tidak tersedia')).toBeNull();
     });
 
     it('I: attaches no Authorization header when the contract says requiresAuthHeader is false', async () => {
@@ -1193,7 +1195,7 @@ describe('DramaFeedItem', () => {
 
       expect(getByTestId('feed-item-signin-gate')).toBeTruthy();
       // Not the generic media-server error, which blamed the wrong thing.
-      expect(queryByText('Check the local media server connection.')).toBeNull();
+      expect(queryByText('Periksa koneksi internetmu, lalu coba lagi.')).toBeNull();
     });
 
     it('E: never plays a premium episode it was refused', async () => {
@@ -1350,8 +1352,8 @@ describe('DramaFeedItem', () => {
 
       // THE regression this work unit exists for: the media server is
       // healthy and reachable; the entitlement is what is missing.
-      expect(queryByText('Video unavailable')).toBeNull();
-      expect(queryByText('Check the local media server connection.')).toBeNull();
+      expect(queryByText('Video tidak tersedia')).toBeNull();
+      expect(queryByText('Periksa koneksi internetmu, lalu coba lagi.')).toBeNull();
     });
 
     it('F/K: routes the premium CTA to the Rewards route by identity, never by tab position', async () => {
@@ -1437,7 +1439,7 @@ describe('DramaFeedItem', () => {
 
       expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
       expect(queryByTestId('feed-item-signin-gate')).toBeNull();
-      expect(getByText('Video unavailable')).toBeTruthy();
+      expect(getByText('Video tidak tersedia')).toBeTruthy();
     });
 
     it('H: keeps a real network failure on the generic unavailable state', async () => {
@@ -1454,8 +1456,8 @@ describe('DramaFeedItem', () => {
       );
 
       expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
-      expect(getByText('Video unavailable')).toBeTruthy();
-      expect(getByText('Check the local media server connection.')).toBeTruthy();
+      expect(getByText('Video tidak tersedia')).toBeTruthy();
+      expect(getByText('Periksa koneksi internetmu, lalu coba lagi.')).toBeTruthy();
     });
 
     it('keeps a 409 with no usable media on the generic unavailable state', async () => {
@@ -1469,7 +1471,7 @@ describe('DramaFeedItem', () => {
       );
 
       expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
-      expect(getByText('Video unavailable')).toBeTruthy();
+      expect(getByText('Video tidak tersedia')).toBeTruthy();
     });
 
     it('I: keeps a dead session on the sign-in gate, never the premium gate', async () => {
@@ -1569,7 +1571,7 @@ describe('DramaFeedItem', () => {
 
       expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
       expect(queryByTestId('feed-item-signin-gate')).toBeNull();
-      expect(queryByText('Video unavailable')).toBeNull();
+      expect(queryByText('Video tidak tersedia')).toBeNull();
 
       await act(async () => {
         deferred.resolve(
@@ -1651,7 +1653,7 @@ describe('DramaFeedItem', () => {
       headers: { Authorization: 'Bearer test-access-token' },
     });
     expect(queryByTestId('feed-item-signin-gate')).toBeNull();
-    expect(queryByText('Video unavailable')).toBeNull();
+    expect(queryByText('Video tidak tersedia')).toBeNull();
   });
 
   it('H: does not downgrade a supplied-but-invalid token to an anonymous request', async () => {
@@ -1710,7 +1712,7 @@ describe('DramaFeedItem', () => {
       headers?: Record<string, string>;
     };
 
-    expect(queryByText('Video unavailable')).toBeNull();
+    expect(queryByText('Video tidak tersedia')).toBeNull();
     expect(lastSource.uri).toBe(video.playbackUrl);
     expect(lastSource.headers).toBeUndefined();
   });
@@ -2729,7 +2731,7 @@ describe('DramaFeedItem', () => {
         <DramaFeedItem video={buildVideo()} {...baseProps} />
       );
 
-      expect(getByText('Video unavailable')).toBeTruthy();
+      expect(getByText('Video tidak tersedia')).toBeTruthy();
       expect(latestMockPlayer()?.play).not.toHaveBeenCalled();
     });
 
@@ -3071,7 +3073,7 @@ describe('DramaFeedItem', () => {
         <DramaFeedItem video={buildVideo()} {...baseProps} />
       );
 
-      expect(getByText('Video unavailable')).toBeTruthy();
+      expect(getByText('Video tidak tersedia')).toBeTruthy();
     });
 
     it('MEDIUM-6: automatically retries a transient authorization failure while the item stays continuously active', async () => {
@@ -4339,7 +4341,7 @@ describe('DramaFeedItem', () => {
         // There is no MP4 URL embedded inside an HLS response to fall back
         // to, so this - correctly - lands on the same failure UI a genuine
         // authorization failure does, rather than a stuck spinner.
-        expect(getByText('Video unavailable')).toBeTruthy();
+        expect(getByText('Video tidak tersedia')).toBeTruthy();
         expect(latestMockPlayer()?.play).not.toHaveBeenCalled();
       });
 
@@ -4508,7 +4510,7 @@ describe('DramaFeedItem', () => {
           <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
         );
 
-        expect(getByText('Video unavailable')).toBeTruthy();
+        expect(getByText('Video tidak tersedia')).toBeTruthy();
         expect(queryByTestId('feed-item-poster')).toBeNull();
       });
     });
@@ -5077,6 +5079,7 @@ describe('auto clear display on idle', () => {
     // `-t` filtered runs).
     jest.useFakeTimers();
     resetPlaybackInvariantForTests();
+    resetPlaybackOwnershipForTests();
     jest
       .spyOn(AppState, 'addEventListener')
       .mockImplementation((() => ({ remove: jest.fn() })) as never);

@@ -23,6 +23,10 @@ import {
   reportPlaybackDecision,
   reportPlayingState,
 } from '@/services/debug/playback-invariant';
+import {
+  acquirePlaybackOwnership,
+  releasePlaybackOwnership,
+} from '@/services/playback/playback-ownership';
 import { useTranslation } from '@/stores/language';
 import { DEFAULT_PLAYBACK_SPEED, type PlaybackSpeed } from '@/constants/playback-speed';
 import { trackEvent } from '@/services/analytics/analytics-queue';
@@ -989,6 +993,13 @@ export function DramaFeedItem({
   // it. Also runs on unmount, where it is harmless: release() follows.
   useEffect(() => {
     return () => {
+      // Ownership is given up FIRST, outside the try below: it is a plain
+      // bookkeeping call that cannot throw, whereas everything inside the try
+      // touches the native object (`player.status`, `player.pause()`) and can
+      // throw once it has been released. Releasing after those would mean a
+      // torn-down player could stay on record as the playback owner.
+      releasePlaybackOwnership(player);
+
       try {
         // `player.status` (the player's own synchronous property), not the
         // `status` returned by the `statusChange` useEvent hook below - that
@@ -1420,6 +1431,22 @@ export function DramaFeedItem({
     // needing a second effect that could otherwise race this one.
     if (shouldPlay) {
       if (!player.playing) {
+        // Ordered handoff, BEFORE play(): React commits passive effects in
+        // tree order, so on a BACKWARD swipe this item's effect runs before
+        // the outgoing item's own pause effect. Acquiring here pauses
+        // whoever currently owns playback first, so the two players are
+        // never both commanded to play - regardless of which one React
+        // happened to reach first. See services/playback/playback-ownership.
+        acquirePlaybackOwnership(player, () => {
+          try {
+            player.pause();
+          } catch {
+            // The shared native object can already be released by the time a
+            // superseded generation is asked to relinquish playback; there is
+            // nothing left to pause then. Never rethrow: this runs INSIDE the
+            // incoming player's acquire, and must not stop it from starting.
+          }
+        });
         reportPlaybackDecision(playerLabel, video.id, 'play', 'shouldPlay:true', {
           isActive,
           isScreenFocused,
@@ -1464,6 +1491,12 @@ export function DramaFeedItem({
     // until the item left the render window. pause() on an already-paused
     // player is a native no-op, and JS->native player calls apply in order,
     // so a pause issued after a pending play always wins.
+    //
+    // Released BEFORE the pause, and a no-op if an incoming player has
+    // already taken ownership - so an outgoing item settling late can never
+    // leave the feed ownerless while the incoming player is legitimately
+    // playing.
+    releasePlaybackOwnership(player);
     player.pause();
     // `status` is a dependency on purpose. play() issued while the source is
     // still resolving does not always take, and without re-evaluating when
@@ -1589,6 +1622,7 @@ export function DramaFeedItem({
         sourceKind: playbackAuth?.kind ?? 'none',
         playerStatus: status,
       });
+      releasePlaybackOwnership(player);
       player.pause();
       setIsManuallyPaused(true);
       flushProgress();
@@ -1602,6 +1636,13 @@ export function DramaFeedItem({
       isManuallyPaused: false,
       sourceKind: playbackAuth?.kind ?? 'none',
       playerStatus: status,
+    });
+    acquirePlaybackOwnership(player, () => {
+      try {
+        player.pause();
+      } catch {
+        // Same contract as the reconciler's own release handler above.
+      }
     });
     player.play();
     setIsManuallyPaused(false);

@@ -9,7 +9,7 @@ import {
   unlikeVideo,
   unsaveVideo,
 } from '@/services/interactions/interactions-service';
-import { setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
+import { getItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
 import { useVideoInteractions, VideoInteractionsProvider } from '@/stores/video-interactions';
 
@@ -71,6 +71,9 @@ function InteractionsProbe() {
       <Text testID="sync-failures">{String(hasSyncFailures)}</Text>
       <Text testID="toggle-like" onPress={() => toggleLike('video-1')}>
         toggle like
+      </Text>
+      <Text testID="toggle-like-2" onPress={() => toggleLike('video-2')}>
+        toggle like 2
       </Text>
     </>
   );
@@ -310,5 +313,123 @@ describe('video-interactions sync architecture', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('(g) a response that lands after an account change never writes the previous user\'s queue key', async () => {
+    // The drain loop checked the session epoch before SENDING a command but
+    // not after the response landed. In that window the queue ref has already
+    // been replaced by the new session's queue, while the loop still holds the
+    // PREVIOUS user's storage key - so it sliced the new user's command off
+    // and wrote their remaining queue under the old user's key, to be replayed
+    // under the old user's token at their next sign-in.
+    //
+    // The identity change removes the previous user's queue key
+    // (video-interactions.tsx's identity-change effect). Re-creating it is
+    // therefore the exact, observable signature of the defect.
+    const PREVIOUS_USER_QUEUE_KEY = '@mobile-app-ecc/video-interactions-sync-queue:user-1';
+
+    let resolveFirstUsersLike: ((value: unknown) => void) | undefined;
+
+    mockedLikeVideo.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirstUsersLike = resolve;
+        })
+    );
+
+    mockAuthenticated();
+
+    const { getByTestId, rerender } = await render(
+      <VideoInteractionsProvider>
+        <InteractionsProbe />
+      </VideoInteractionsProvider>
+    );
+
+    await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+
+    // user-1 likes something. The request is in flight and will not answer yet.
+    await act(async () => {
+      fireEvent.press(getByTestId('toggle-like'));
+    });
+
+    await waitFor(() => expect(mockedLikeVideo).toHaveBeenCalledTimes(1));
+
+    // Sign out, then sign in as somebody else.
+    mockedUseAuth.mockReturnValue({
+      isAuthenticated: false,
+      isHydrated: true,
+      user: null,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    await act(async () => {
+      rerender(
+        <VideoInteractionsProvider>
+          <InteractionsProbe />
+        </VideoInteractionsProvider>
+      );
+    });
+
+    mockedUseAuth.mockReturnValue({
+      isAuthenticated: true,
+      isHydrated: true,
+      user: { id: 'user-2', name: 'User Two', username: 'user2', email: 'user2@example.com' },
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    await act(async () => {
+      rerender(
+        <VideoInteractionsProvider>
+          <InteractionsProbe />
+        </VideoInteractionsProvider>
+      );
+    });
+
+    // user-2 queues an action of their own, held open the same way.
+    mockedLikeVideo.mockImplementationOnce(() => new Promise(() => {}));
+
+    await act(async () => {
+      fireEvent.press(getByTestId('toggle-like-2'));
+    });
+
+    expect(await getItem(PREVIOUS_USER_QUEUE_KEY, 1)).toBeUndefined();
+
+    // Now user-1's request finally answers, long after user-1 is gone.
+    await act(async () => {
+      resolveFirstUsersLike?.({ videoId: 'video-1', isLiked: true, likeCount: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await getItem(PREVIOUS_USER_QUEUE_KEY, 1)).toBeUndefined();
+  });
+
+  it('(h) a failed first-login pull aborts the merge instead of marking the account synced', async () => {
+    // Swallowing the pull failure made "the request failed" indistinguishable
+    // from "this account has liked and saved nothing". The merge then pushed
+    // every local entry as a convergence action and set the synced flag
+    // permanently, so the device would never pull the account's real likes and
+    // saves again - the Saved tab stays empty for good on that install.
+    const SYNCED_KEY = '@mobile-app-ecc/video-interactions-synced:user-1';
+
+    mockedGetInteractions.mockRejectedValue(new Error('network error'));
+    mockAuthenticated();
+
+    const { getByTestId } = await render(
+      <VideoInteractionsProvider>
+        <InteractionsProbe />
+      </VideoInteractionsProvider>
+    );
+
+    await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await getItem(SYNCED_KEY, 1)).toBeUndefined();
   });
 });

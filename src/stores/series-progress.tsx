@@ -197,9 +197,11 @@ type DrainLoopParams = {
  * Drains the queue strictly FIFO, one command at a time. `isDrainingRef`
  * stays true across a scheduled retry's backoff window too, so a concurrent
  * enqueue can't start a second, overlapping drain loop. `queueKey` is
- * captured once at drain-start time - the session-epoch check below already
- * guarantees the drain loop stops as soon as the identity changes, so the
- * key can never go stale mid-loop.
+ * captured once at drain-start time and is safe to keep only because the
+ * session-epoch is checked on BOTH sides of every network await - before the
+ * request is sent and again before anything is mutated or persisted with the
+ * result. Checking only before the send would leave the key stale for exactly
+ * as long as a request takes.
  */
 async function runProgressDrainLoop(params: DrainLoopParams, epochAtStart: number): Promise<void> {
   const { queueRef, queueKey, authRef, sessionEpochRef, isDrainingRef, onSyncFailure } = params;
@@ -219,9 +221,31 @@ async function runProgressDrainLoop(params: DrainLoopParams, epochAtStart: numbe
 
     try {
       await executeProgressSyncCommand(command);
+
+      // RE-CHECKED AFTER THE AWAIT, not just before it. The check at the top
+      // of the loop proves the identity was still ours when the request was
+      // SENT; it says nothing about the moment the response lands. A sign-out
+      // and sign-in during that window replaces `queueRef.current` with the
+      // new session's queue, while `queueKey` still names the previous user's
+      // storage slot - so slicing and persisting here would drop the NEW
+      // user's first command and write their remaining queue under the OLD
+      // user's key, to be replayed under the old user's token at their next
+      // sign-in. Abandoning the result is safe: the command was not removed
+      // from any queue, so it survives to be retried by whoever owns it.
+      if (sessionEpochRef.current !== epochAtStart) {
+        return;
+      }
+
       queueRef.current = queueRef.current.slice(1);
       await persistProgressQueue(queueKey, queueRef.current);
     } catch {
+      // Same window, same reason - see the success path above. The failure
+      // path is if anything worse: it re-heads the stale command into
+      // whatever queue is live now.
+      if (sessionEpochRef.current !== epochAtStart) {
+        return;
+      }
+
       const attempts = command.attempts + 1;
 
       if (attempts >= MAX_SYNC_ATTEMPTS) {
@@ -499,10 +523,27 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
       } catch (error) {
         if (__DEV__) {
           console.warn(
-            '[SeriesProgress] Failed to fetch remote progress for first-login merge.',
+            '[SeriesProgress] Failed to fetch remote progress for first-login merge; ' +
+              'aborting the merge so it can be retried.',
             error
           );
         }
+
+        // ABORT, rather than continue with an empty list. Continuing would
+        // make a failed pull indistinguishable from "this account has no
+        // remote progress", and the two lead to opposite outcomes: every
+        // local entry would look like it needs a convergence push, so this
+        // device's positions would be written over the server's NEWER ones -
+        // and then `hasSynced` would be set, permanently, so the real remote
+        // progress would never be pulled on this device again. One failed
+        // request at first login would silently cost the account its
+        // cross-device history.
+        //
+        // Releasing the started-flag is what makes this a retry rather than a
+        // give-up: the effect re-runs on the next relevant change.
+        hasMergeStartedRef.current = false;
+
+        return;
       }
 
       // A newer identity change superseded this one mid-flight - discard

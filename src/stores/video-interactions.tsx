@@ -222,9 +222,31 @@ async function runInteractionDrainLoop(params: DrainLoopParams, epochAtStart: nu
 
     try {
       await executeInteractionSyncCommand(command);
+
+      // RE-CHECKED AFTER THE AWAIT, not just before it. The check at the top
+      // of the loop proves the identity was still ours when the request was
+      // SENT; it says nothing about the moment the response lands. A sign-out
+      // and sign-in during that window replaces `queueRef.current` with the
+      // new session's queue, while `queueKey` still names the previous user's
+      // storage slot - so slicing and persisting here would drop the NEW
+      // user's first like/save and write their remaining queue under the OLD
+      // user's key, to be replayed under the old user's token at their next
+      // sign-in. Abandoning the result is safe: the command was not removed
+      // from any queue, so it survives to be retried by whoever owns it.
+      if (sessionEpochRef.current !== epochAtStart) {
+        return;
+      }
+
       queueRef.current = queueRef.current.slice(1);
       await persistInteractionQueue(queueKey, queueRef.current);
     } catch {
+      // Same window, same reason - see the success path above. The failure
+      // path is if anything worse: it re-heads the stale command into
+      // whatever queue is live now.
+      if (sessionEpochRef.current !== epochAtStart) {
+        return;
+      }
+
       const attempts = command.attempts + 1;
 
       if (attempts >= MAX_SYNC_ATTEMPTS) {
@@ -540,10 +562,26 @@ export function VideoInteractionsProvider({ children }: PropsWithChildren) {
       } catch (error) {
         if (__DEV__) {
           console.warn(
-            '[VideoInteractions] Failed to fetch remote interactions for first-login merge.',
+            '[VideoInteractions] Failed to fetch remote interactions for first-login merge; ' +
+              'aborting the merge so it can be retried.',
             error
           );
         }
+
+        // ABORT, rather than continue with an empty list. Continuing would
+        // make a failed pull indistinguishable from "this account has liked
+        // and saved nothing", and the two lead to opposite outcomes: every
+        // local entry would look like it needs a convergence push, and then
+        // `hasSynced` would be set - permanently - so this device would never
+        // pull the account's real likes and saves again. One failed request
+        // at first login would leave the Saved tab empty for good on that
+        // install.
+        //
+        // Releasing the started-flag is what makes this a retry rather than a
+        // give-up: the effect re-runs on the next relevant change.
+        hasMergeStartedRef.current = false;
+
+        return;
       }
 
       // A newer identity change superseded this one mid-flight - discard

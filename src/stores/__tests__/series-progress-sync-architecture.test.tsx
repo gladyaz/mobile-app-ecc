@@ -3,7 +3,7 @@ import { act, render, waitFor } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
 import { getProgress as fetchRemoteProgress, upsertProgress } from '@/services/progress/progress-service';
-import { setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
+import { getItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
 import { SeriesProgressProvider, useSeriesProgress } from '@/stores/series-progress';
 
@@ -287,5 +287,140 @@ describe('series-progress sync architecture', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('(g) a response that lands after an account change never writes the previous user\'s queue key', async () => {
+    // The drain loop checked the session epoch before SENDING a command but
+    // not after the response landed. In that window the queue ref has already
+    // been replaced by the new session's queue, while the loop still holds the
+    // PREVIOUS user's storage key - so it sliced the new user's command off
+    // and wrote their remaining queue under the old user's key, to be replayed
+    // under the old user's token at their next sign-in.
+    //
+    // The identity change removes the previous user's queue key, so
+    // re-creating it is the exact, observable signature of the defect.
+    const PREVIOUS_USER_QUEUE_KEY = '@mobile-app-ecc/series-progress-sync-queue:user-1';
+
+    let resolveFirstUsersPush: ((value: unknown) => void) | undefined;
+
+    mockedUpsertProgress.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirstUsersPush = resolve;
+        })
+    );
+
+    mockAuthenticated();
+
+    const { getByTestId, rerender } = await render(
+      <SeriesProgressProvider>
+        <ProgressProbe />
+      </SeriesProgressProvider>
+    );
+
+    await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+
+    await act(async () => {
+      getByTestId('record-30').props.onPress();
+    });
+
+    await waitFor(() => expect(mockedUpsertProgress).toHaveBeenCalledTimes(1));
+
+    mockedUseAuth.mockReturnValue({
+      isAuthenticated: false,
+      isHydrated: true,
+      user: null,
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    await act(async () => {
+      rerender(
+        <SeriesProgressProvider>
+          <ProgressProbe />
+        </SeriesProgressProvider>
+      );
+    });
+
+    mockedUseAuth.mockReturnValue({
+      isAuthenticated: true,
+      isHydrated: true,
+      user: { id: 'user-2', name: 'User Two', username: 'user2', email: 'user2@example.com' },
+      login: jest.fn(),
+      logout: jest.fn(),
+    });
+
+    await act(async () => {
+      rerender(
+        <SeriesProgressProvider>
+          <ProgressProbe />
+        </SeriesProgressProvider>
+      );
+    });
+
+    // user-2 records a position of their own, held open the same way.
+    mockedUpsertProgress.mockImplementationOnce(() => new Promise(() => {}));
+
+    await act(async () => {
+      getByTestId('record-45').props.onPress();
+    });
+
+    expect(await getItem(PREVIOUS_USER_QUEUE_KEY, 1)).toBeUndefined();
+
+    await act(async () => {
+      resolveFirstUsersPush?.({
+        seriesId: 'series-1',
+        videoId: 'video-2',
+        episodeNumber: 2,
+        positionSeconds: 30,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await getItem(PREVIOUS_USER_QUEUE_KEY, 1)).toBeUndefined();
+  });
+
+  it('(h) a failed first-login pull aborts the merge instead of overwriting the server and marking it synced', async () => {
+    // Swallowing the pull failure made "the request failed" indistinguishable
+    // from "this account has no remote progress". Every local entry then
+    // looked like it needed a convergence push, so this device's positions
+    // were written over the server's NEWER ones - and the synced flag was set
+    // permanently, so the real remote progress would never be pulled here
+    // again.
+    const SYNCED_KEY = '@mobile-app-ecc/series-progress-synced:user-1';
+
+    await setItem(`${STORAGE_KEYS.seriesProgress}:user-1`, 1, {
+      progress: {
+        'series-1': {
+          lastWatchedVideoId: 'video-2',
+          lastWatchedEpisodeNumber: 2,
+          positionSeconds: 30,
+          durationSeconds: 120,
+          updatedAt: new Date(0).toISOString(),
+        },
+      },
+    });
+
+    mockedFetchRemoteProgress.mockRejectedValue(new Error('network error'));
+    mockAuthenticated();
+
+    const { getByTestId } = await render(
+      <SeriesProgressProvider>
+        <ProgressProbe />
+      </SeriesProgressProvider>
+    );
+
+    await waitFor(() => expect(getByTestId('hydrated').props.children).toBe('true'));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Nothing was pushed over the server's data, and the account was not
+    // marked as having completed its first-login merge.
+    expect(mockedUpsertProgress).not.toHaveBeenCalled();
+    expect(await getItem(SYNCED_KEY, 1)).toBeUndefined();
   });
 });

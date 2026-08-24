@@ -476,6 +476,16 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 
 ### 4.2 The `.env` trap — read this before an incremental build
 
+> **There are TWO caches, not one.** Metro caches the transformed JS with the
+> `EXPO_PUBLIC_*` values already inlined, and Gradle does not track `.env` as an
+> input. Measured here: `expo export` after changing the variable kept the stale
+> LAN host, while the same command with `--clear` inlined the new origin. Clear
+> BOTH, then verify the artifact itself with `strings` - `npm run
+> release:preflight` reads the environment and cannot see what a cached bundle
+> actually contains. Full procedure:
+> docs/play-store-v1-owner-checklist.md §9.
+
+
 `EXPO_PUBLIC_*` values are inlined by Babel **at bundle time**, and **`.env` is
 not a Gradle input**. Gradle cannot see that it changed, so an incremental
 `assembleRelease` / `bundleRelease` happily reuses the previously bundled JS and

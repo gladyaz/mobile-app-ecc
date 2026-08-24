@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { dedupeLedgerEntries, mergeLedgerEntries } from '@/features/rewards/ledger-merge';
 import {
   applyCheckInResponse,
   mapLedgerPage,
@@ -128,6 +129,19 @@ type FetchedRewards = {
   readonly ledger: RewardsLedgerState;
 };
 
+/**
+ * A mutation in flight, tagged with who started it.
+ *
+ * The tag is what keeps a spinner off the check-in button of an account that
+ * never pressed it: `pendingActionId` is DERIVED from this against the
+ * current user, so the busy state belongs to the account that earned it
+ * rather than to the hook.
+ */
+type PendingMutation = {
+  readonly userId: string;
+  readonly actionId: string;
+};
+
 const INITIAL_FETCHED = (userId: string): FetchedRewards => ({
   userId,
   view: { status: 'loading' },
@@ -158,7 +172,7 @@ export function useRewardsCenter(): RewardsCenterController {
 
   const [fetched, setFetched] = useState<FetchedRewards | null>(null);
   const [notice, setNotice] = useState<RewardsNotice | null>(null);
-  const [pendingActionId, setPendingActionId] = useState<string | null>(null);
+  const [pendingMutation, setPendingMutation] = useState<PendingMutation | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
   /**
@@ -179,12 +193,43 @@ export function useRewardsCenter(): RewardsCenterController {
   /** Cursor for the next ledger page. `null` means the history is exhausted. */
   const ledgerCursorRef = useRef<string | null>(null);
   /**
+   * Which BUILD of the ledger the rows on screen belong to.
+   *
+   * Every path that rebuilds the history from the top - the first read, a
+   * post-mutation head refresh, a retry, an explicit reload, an account
+   * change - bumps this. A `loadMoreLedger` response carrying an older epoch
+   * is discarded, because it was computed against a head that no longer
+   * exists.
+   *
+   * Without it, a page in flight when a check-in lands would both splice its
+   * rows into a list built from a DIFFERENT cursor and overwrite
+   * `ledgerCursorRef` with its own stale `nextCursor` - mis-paging every
+   * subsequent page of the history, silently and permanently.
+   */
+  const ledgerEpochRef = useRef(0);
+  /**
    * The idempotency key of the last redemption ATTEMPT per offer, kept only
    * while that attempt's outcome is unknown. See `isIndeterminateFailure`.
    */
   const pendingRedemptionKeysRef = useRef<Record<string, string>>({});
-  /** Guards against overlapping mutations without relying on render timing. */
-  const isMutatingRef = useRef(false);
+  /**
+   * The mutation currently in flight, or `null`.
+   *
+   * A BARE BOOLEAN WAS NOT ENOUGH, for two reasons that only appear across an
+   * account switch:
+   *
+   *  - it was never released when the account changed, so B's first press was
+   *    silently swallowed until A's request happened to settle - the lock
+   *    exists to stop ONE user double-spending, and holding it across a
+   *    sign-out punishes the wrong person;
+   *  - releasing it on the account change instead would let A's late `finally`
+   *    clear a lock B was legitimately holding, which is the double-spend the
+   *    lock was for.
+   *
+   * Holding the OWNER, and releasing only on identity match, makes both safe
+   * at once: a dead request can tell that the slot is no longer its own.
+   */
+  const mutationRef = useRef<PendingMutation | null>(null);
   /**
    * The same guard for pagination, and for the same reason.
    *
@@ -198,6 +243,64 @@ export function useRewardsCenter(): RewardsCenterController {
 
   const isForActiveUser = useCallback((userId: string | null) => {
     return activeUserIdRef.current === userId;
+  }, []);
+
+  /**
+   * Takes the single mutation slot for `userId`, or returns `null` if a
+   * mutation is already in flight.
+   *
+   * Acquired SYNCHRONOUSLY, before any `await`, so a second press inside the
+   * same tick - a real double-tap, or a slow re-render on the low-end Android
+   * this build targets - finds the slot taken. `disabled={isPending}` alone
+   * would not: it only takes effect once the first press has rendered.
+   */
+  const acquireMutation = useCallback((userId: string, actionId: string) => {
+    if (mutationRef.current) {
+      return null;
+    }
+
+    const mutation: PendingMutation = { userId, actionId };
+
+    mutationRef.current = mutation;
+    setPendingMutation(mutation);
+
+    return mutation;
+  }, []);
+
+  /**
+   * Releases the slot, but ONLY if this mutation still holds it.
+   *
+   * The identity check is the whole point: an account change hands the slot
+   * back so the next user is not locked out, and the previous user's request
+   * then settles into a world where the slot may already belong to someone
+   * else. Clearing unconditionally there would re-open a window for exactly
+   * the double-spend this lock prevents.
+   */
+  const releaseMutation = useCallback((mutation: PendingMutation) => {
+    if (mutationRef.current === mutation) {
+      mutationRef.current = null;
+    }
+
+    setPendingMutation((current) => (current === mutation ? null : current));
+  }, []);
+
+  /**
+   * Starts a new BUILD of the history and returns its epoch.
+   *
+   * Every path that replaces the list from the top goes through here, and the
+   * two things it does are one decision, not two: bumping the epoch cancels
+   * whatever page was in flight, so the pagination slot that page was holding
+   * has to be released in the same breath. Splitting them would leave the
+   * "load more" control permanently disabled after any refresh that outran a
+   * page.
+   */
+  const beginLedgerBuild = useCallback(() => {
+    const epoch = ledgerEpochRef.current + 1;
+
+    ledgerEpochRef.current = epoch;
+    isLoadingMoreRef.current = false;
+
+    return epoch;
   }, []);
 
   /**
@@ -275,6 +378,10 @@ export function useRewardsCenter(): RewardsCenterController {
       walletVersionRef.current = -1;
       ledgerCursorRef.current = null;
       pendingRedemptionKeysRef.current = {};
+      // Hand the mutation slot back. Whatever was in flight belongs to an
+      // account that is no longer signed in, and `releaseMutation` will
+      // decline to clear the slot if someone has since taken it.
+      mutationRef.current = null;
 
       return;
     }
@@ -296,6 +403,10 @@ export function useRewardsCenter(): RewardsCenterController {
     if (isAccountChange) {
       walletVersionRef.current = -1;
       ledgerCursorRef.current = null;
+      // The lock stops ONE user from spending twice; it is not a queue across
+      // accounts. Holding it here would make the new account's first press
+      // silently do nothing until a stranger's request happened to settle.
+      mutationRef.current = null;
       // Keys belong to the account that created them. Carrying one across a
       // sign-out would make the next account's first redemption reuse it -
       // harmless, because the server scopes uniqueness to [userId, key], but
@@ -359,11 +470,16 @@ export function useRewardsCenter(): RewardsCenterController {
       }
     })();
 
+    // A fresh read of the head is a fresh BUILD of the history: any page
+    // still in flight from the previous build belongs to a list that is
+    // about to be replaced.
+    const ledgerEpoch = beginLedgerBuild();
+
     (async () => {
       try {
         const page = await fetchRewardsLedger({ limit: LEDGER_PAGE_SIZE });
 
-        if (!isForActiveUser(targetUserId)) {
+        if (!isForActiveUser(targetUserId) || ledgerEpochRef.current !== ledgerEpoch) {
           return;
         }
 
@@ -372,13 +488,16 @@ export function useRewardsCenter(): RewardsCenterController {
         ledgerCursorRef.current = mapped.nextCursor;
         setLedger(targetUserId, {
           status: 'ready',
-          entries: mapped.entries,
+          // Deduped on the way in, so `RewardsLedgerState.entries` upholds
+          // the same identity rule on EVERY path rather than only where two
+          // pages meet. See `ledger-merge.ts`.
+          entries: dedupeLedgerEntries(mapped.entries),
           hasMore: mapped.nextCursor !== null,
           isLoadingMore: false,
           loadMoreError: null,
         });
       } catch (error) {
-        if (!isForActiveUser(targetUserId)) {
+        if (!isForActiveUser(targetUserId) || ledgerEpochRef.current !== ledgerEpoch) {
           return;
         }
 
@@ -402,7 +521,17 @@ export function useRewardsCenter(): RewardsCenterController {
         setLedger(targetUserId, { status: 'error', message: t('rewards.historyError') });
       }
     })();
-  }, [isAuthHydrated, isAuthenticated, user, reloadToken, t, isForActiveUser, setLedger, setView]);
+  }, [
+    isAuthHydrated,
+    isAuthenticated,
+    user,
+    reloadToken,
+    t,
+    beginLedgerBuild,
+    isForActiveUser,
+    setLedger,
+    setView,
+  ]);
 
   const reload = useCallback(() => {
     setNotice(null);
@@ -434,10 +563,15 @@ export function useRewardsCenter(): RewardsCenterController {
    */
   const refreshLedgerHead = useCallback(
     async (targetUserId: string) => {
+      // Same reasoning as the first read: this REPLACES the list, so any
+      // `loadMoreLedger` still in flight is now paging a history that no
+      // longer exists and must not be allowed to write into this one.
+      const ledgerEpoch = beginLedgerBuild();
+
       try {
         const page = await fetchRewardsLedger({ limit: LEDGER_PAGE_SIZE });
 
-        if (!isForActiveUser(targetUserId)) {
+        if (!isForActiveUser(targetUserId) || ledgerEpochRef.current !== ledgerEpoch) {
           return;
         }
 
@@ -446,20 +580,20 @@ export function useRewardsCenter(): RewardsCenterController {
         ledgerCursorRef.current = mapped.nextCursor;
         setLedger(targetUserId, {
           status: 'ready',
-          entries: mapped.entries,
+          entries: dedupeLedgerEntries(mapped.entries),
           hasMore: mapped.nextCursor !== null,
           isLoadingMore: false,
           loadMoreError: null,
         });
       } catch {
-        if (!isForActiveUser(targetUserId)) {
+        if (!isForActiveUser(targetUserId) || ledgerEpochRef.current !== ledgerEpoch) {
           return;
         }
 
         setLedger(targetUserId, { status: 'error', message: t('rewards.historyError') });
       }
     },
-    [isForActiveUser, setLedger, t]
+    [beginLedgerBuild, isForActiveUser, setLedger, t]
   );
 
   const retryLedger = useCallback(() => {
@@ -483,6 +617,11 @@ export function useRewardsCenter(): RewardsCenterController {
 
     isLoadingMoreRef.current = true;
 
+    // The build of the history this page is being fetched FOR. If anything
+    // rebuilds the list from the top before the response lands, this page
+    // describes a history that no longer exists.
+    const ledgerEpoch = ledgerEpochRef.current;
+
     updateLedger(targetUserId, (current) =>
       current.status === 'ready'
         ? { ...current, isLoadingMore: true, loadMoreError: null }
@@ -493,7 +632,11 @@ export function useRewardsCenter(): RewardsCenterController {
       try {
         const page = await fetchRewardsLedger({ limit: LEDGER_PAGE_SIZE, cursor });
 
-        if (!isForActiveUser(targetUserId)) {
+        if (!isForActiveUser(targetUserId) || ledgerEpochRef.current !== ledgerEpoch) {
+          // Dropped WITHOUT touching `ledgerCursorRef`: the refresh that
+          // superseded this page already set the cursor that belongs to the
+          // list now on screen, and overwriting it with this page's stale
+          // `nextCursor` would mis-page the rest of the history for good.
           return;
         }
 
@@ -504,9 +647,13 @@ export function useRewardsCenter(): RewardsCenterController {
           current.status === 'ready'
             ? {
                 status: 'ready',
-                // Appended, because the server returns pages newest-first and
-                // each page continues where the last one stopped.
-                entries: [...current.entries, ...mapped.entries],
+                // MERGED, not concatenated. The pages arrive newest-first and
+                // each continues where the last stopped, so appending is the
+                // right shape - but only rows this list does not already hold
+                // may join it, or the panel would render two children under
+                // one `key={entry.id}`. See `ledger-merge.ts` for why the
+                // server re-serving a row is an ordinary event.
+                entries: mergeLedgerEntries(current.entries, mapped.entries),
                 hasMore: mapped.nextCursor !== null,
                 isLoadingMore: false,
                 loadMoreError: null,
@@ -514,7 +661,7 @@ export function useRewardsCenter(): RewardsCenterController {
             : current
         );
       } catch {
-        if (!isForActiveUser(targetUserId)) {
+        if (!isForActiveUser(targetUserId) || ledgerEpochRef.current !== ledgerEpoch) {
           return;
         }
 
@@ -526,7 +673,13 @@ export function useRewardsCenter(): RewardsCenterController {
             : current
         );
       } finally {
-        isLoadingMoreRef.current = false;
+        // Only the request that still owns the slot releases it. A superseded
+        // page must not, because `beginLedgerBuild` already handed the slot to
+        // the build that replaced it - clearing it here would let this dead
+        // request re-open pagination that the live list has moved past.
+        if (ledgerEpochRef.current === ledgerEpoch) {
+          isLoadingMoreRef.current = false;
+        }
       }
     })();
   }, [isForActiveUser, t, updateLedger]);
@@ -536,13 +689,17 @@ export function useRewardsCenter(): RewardsCenterController {
   const checkIn = useCallback(() => {
     const targetUserId = activeUserIdRef.current;
 
-    if (!targetUserId || isMutatingRef.current) {
+    if (!targetUserId) {
       return;
     }
 
-    isMutatingRef.current = true;
+    const mutation = acquireMutation(targetUserId, 'check-in');
+
+    if (!mutation) {
+      return;
+    }
+
     setNotice(null);
-    setPendingActionId('check-in');
 
     (async () => {
       try {
@@ -593,16 +750,22 @@ export function useRewardsCenter(): RewardsCenterController {
 
         setNotice({ tone: 'error', message: describeError(error, t) });
       } finally {
-        isMutatingRef.current = false;
-        // Cleared UNCONDITIONALLY, unlike the data above. `pendingActionId`
-        // is a local spinner, not account state: if this request outlived an
-        // account switch, the new account has no action in flight, and
-        // leaving it set would strand a spinner on a button they never
-        // pressed.
-        setPendingActionId(null);
+        // Released even when the response belonged to a previous account -
+        // but only if this request still owns the slot. A spinner is local
+        // UI, so it must never outlive its request; the slot is shared, so it
+        // must never be taken from whoever holds it now.
+        releaseMutation(mutation);
       }
     })();
-  }, [isForActiveUser, refreshLedgerHead, setView, t, updateSnapshot]);
+  }, [
+    acquireMutation,
+    isForActiveUser,
+    refreshLedgerHead,
+    releaseMutation,
+    setView,
+    t,
+    updateSnapshot,
+  ]);
 
   // ---------------------------------------------------------- redeem
 
@@ -610,7 +773,7 @@ export function useRewardsCenter(): RewardsCenterController {
     (redemption: RewardRedemption) => {
       const targetUserId = activeUserIdRef.current;
 
-      if (!targetUserId || isMutatingRef.current) {
+      if (!targetUserId || mutationRef.current) {
         return;
       }
 
@@ -638,9 +801,15 @@ export function useRewardsCenter(): RewardsCenterController {
         return;
       }
 
-      isMutatingRef.current = true;
+      // Taken only AFTER the two server-flag refusals above, which reach no
+      // network and so have no slot to hold.
+      const mutation = acquireMutation(targetUserId, redemption.id);
+
+      if (!mutation) {
+        return;
+      }
+
       setNotice(null);
-      setPendingActionId(redemption.id);
 
       // Reuse the previous key ONLY when the previous attempt's outcome is
       // unknown, so a retry after a dropped connection replays rather than
@@ -779,14 +948,22 @@ export function useRewardsCenter(): RewardsCenterController {
 
           setNotice({ tone: 'error', message: describeError(error, t) });
         } finally {
-          isMutatingRef.current = false;
-          // See the note on the check-in path: a spinner is local UI, so it
-          // is cleared even when the response belongs to a previous account.
-          setPendingActionId(null);
+          // See the note on the check-in path: released unconditionally for
+          // this request, never taken from whoever holds the slot now.
+          releaseMutation(mutation);
         }
       })();
     },
-    [isForActiveUser, refreshEntitlement, refreshLedgerHead, setView, t, updateSnapshot]
+    [
+      acquireMutation,
+      isForActiveUser,
+      refreshEntitlement,
+      refreshLedgerHead,
+      releaseMutation,
+      setView,
+      t,
+      updateSnapshot,
+    ]
   );
 
   const dismissNotice = useCallback(() => setNotice(null), []);
@@ -830,6 +1007,18 @@ export function useRewardsCenter(): RewardsCenterController {
     : isAuthHydrated && isAuthenticated && user && fetched?.userId === user.id
       ? fetched.ledger
       : { status: 'loading' };
+
+  /**
+   * DERIVED, and gated on the tag, for the same reason `view` is.
+   *
+   * A busy button is a claim that THIS user has something in flight. Between
+   * an account switch and the previous account's response landing, that claim
+   * was false: the new account saw a spinner on a check-in they never pressed.
+   * Reading the tag makes the gap structurally impossible rather than a race
+   * that usually resolves fast enough not to be noticed.
+   */
+  const pendingActionId: string | null =
+    user && pendingMutation?.userId === user.id ? pendingMutation.actionId : null;
 
   return {
     view,

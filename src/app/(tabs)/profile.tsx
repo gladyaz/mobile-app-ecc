@@ -4,6 +4,7 @@ import { SymbolView } from 'expo-symbols';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
+import { isInternalScreenEnabled } from '@/services/debug/internal-screens';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { resetAllPersistedState } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
@@ -186,25 +187,36 @@ export default function ProfileScreen() {
               />
             </Pressable>
 
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                router.push('../processing');
-              }}
-              style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
-              <SymbolView
-                name={{ ios: 'clock', android: 'schedule', web: 'schedule' }}
-                size={20}
-                tintColor={Palette.textSecondary}
-              />
-              <Text style={styles.processingButtonText}>{t('profile.processingHistory')}</Text>
-              <Text style={styles.internalBadge}>INTERNAL</Text>
-              <SymbolView
-                name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-                size={16}
-                tintColor={Palette.textDisabled}
-              />
-            </Pressable>
+            {/* INTERNAL, and fabricated: /processing renders bundled fixture
+                rows including backend storage paths. `isInternalScreenEnabled`
+                keeps it out of every release artifact, not just demo ones -
+                see services/debug/internal-screens.ts. The screen itself
+                refuses too, so a `mobileappecc://processing` deep link cannot
+                reach past this. */}
+            {isInternalScreenEnabled() && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  router.push('../processing');
+                }}
+                style={({ pressed }) => [
+                  styles.processingButton,
+                  pressed && styles.buttonPressed,
+                ]}>
+                <SymbolView
+                  name={{ ios: 'clock', android: 'schedule', web: 'schedule' }}
+                  size={20}
+                  tintColor={Palette.textSecondary}
+                />
+                <Text style={styles.processingButtonText}>{t('profile.processingHistory')}</Text>
+                <Text style={styles.internalBadge}>INTERNAL</Text>
+                <SymbolView
+                  name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+                  size={16}
+                  tintColor={Palette.textDisabled}
+                />
+              </Pressable>
+            )}
           </>
         )}
 

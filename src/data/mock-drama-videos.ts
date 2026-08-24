@@ -70,8 +70,14 @@ type BundledSeries = {
   readonly category: VideoCategory;
   readonly baseLikeCount: number;
   readonly captions: readonly string[];
-  readonly clips: readonly number[];
-  readonly posters: readonly number[];
+  // `unknown`, not `number`: an asset module id is what `require` yields
+  // when the bundled media is on disk, but a production build is made from a
+  // checkout that does not have it (the media is gitignored) and
+  // `metro.config.js` then resolves these to Metro's empty module. See
+  // `resolveBundledMediaUri`, which is the one place that difference is
+  // handled.
+  readonly clips: readonly unknown[];
+  readonly posters: readonly unknown[];
 };
 
 const bundledSeries: readonly BundledSeries[] = [

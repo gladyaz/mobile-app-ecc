@@ -1,7 +1,17 @@
+const fs = require('fs');
+const path = require('path');
+
 const packageJson = require('./package.json');
 
 const ADMOB_MODULE = 'react-native-google-mobile-ads';
 const GOOGLE_SIGN_IN_MODULE = '@react-native-google-signin/google-signin';
+
+/**
+ * The gitignored directories holding the offline showcase's bundled clips and
+ * posters. Kept in step with the same list in `metro.config.js`, which is what
+ * makes a build WITHOUT them possible at all.
+ */
+const BUNDLED_DEMO_MEDIA_DIRECTORIES = ['assets/videos', 'assets/thumbnails'];
 
 /**
  * The reversed iOS OAuth client ID (`com.googleusercontent.apps.<id>`).
@@ -34,6 +44,61 @@ function isDemoBuild() {
 
 function isAdMobExcludedFromAutolinking() {
   return (packageJson.expo?.autolinking?.exclude ?? []).includes(ADMOB_MODULE);
+}
+
+/**
+ * True when this build intends to serve the BUNDLED catalog rather than the
+ * backend - the offline showcase, or a mock-data build for UI work.
+ */
+function usesBundledCatalog() {
+  return (
+    process.env.EXPO_PUBLIC_DEMO_MODE === 'true' ||
+    process.env.EXPO_PUBLIC_USE_MOCK_DATA === 'true'
+  );
+}
+
+/**
+ * Refuses a build that asked for the bundled catalog while the media it is
+ * made of is not on disk.
+ *
+ * `metro.config.js` resolves the bundled-media `require`s to an empty module
+ * when those gitignored directories are absent. That is what lets a PRODUCTION
+ * build compile at all (before it, `expo export --platform android` failed on
+ * a clean checkout with "Unable to resolve module
+ * ../../assets/videos/pewaris-ep-1.mp4") and what keeps ~62 MB of demo clips
+ * out of a release APK. But the same leniency, applied to a build that
+ * actually intends to PLAY those clips, would produce a demo APK whose every
+ * item resolves to an empty URI and renders "Video unavailable" - a build that
+ * installs fine and shows nothing.
+ *
+ * So the leniency is scoped here: absent media is fine for a build that reads
+ * its catalog from the backend, and a hard, explained stop for one that does
+ * not. Regenerate the clips (see the ffmpeg command in the demo commit
+ * message) or drop the flag.
+ */
+function assertBundledCatalogMediaPresent() {
+  if (!usesBundledCatalog()) {
+    return;
+  }
+
+  const missingDirectories = BUNDLED_DEMO_MEDIA_DIRECTORIES.filter(
+    (relativePath) => !fs.existsSync(path.join(__dirname, relativePath))
+  );
+
+  if (missingDirectories.length === 0) {
+    return;
+  }
+
+  throw new Error(
+    'This build sets EXPO_PUBLIC_DEMO_MODE=true or EXPO_PUBLIC_USE_MOCK_DATA=true, so it ' +
+      'serves the bundled catalog instead of the backend - but the media that catalog is ' +
+      `made of is missing: ${missingDirectories.join(', ')}. Those directories are ` +
+      'gitignored (~62 MB of binaries; regenerate them with the ffmpeg command in the demo ' +
+      'commit message). Building anyway would produce an app whose every bundled item ' +
+      'resolves to an empty URI and shows "Video unavailable". For a PRODUCTION build, ' +
+      'unset both flags instead: a production build reads its catalog from ' +
+      'EXPO_PUBLIC_API_BASE_URL and needs none of this media.'
+  );
 }
 
 /**
@@ -79,7 +144,26 @@ function withGoogleSignIn(config) {
 const EXPO_ROUTER_PLUGIN = 'expo-router';
 
 /**
- * Removes `/_sitemap` from a demo build.
+ * True only while the Expo development server is running.
+ *
+ * `expo start` is the ONLY command that sets this - it calls
+ * `setNodeEnv('development')` (see
+ * `@expo/cli/build/src/start/index.js`, `setNodeEnv(!args['--no-dev'] ?
+ * 'development' : 'production')`). Every command that produces a shippable
+ * artifact - `expo export`, `expo export:embed` (which is what
+ * `assembleRelease` runs), `expo prebuild`, an EAS build - leaves it unset or
+ * sets it to `production`.
+ *
+ * Written as "is this the dev server?" rather than "is this production?" so
+ * the UNKNOWN case fails safe: an unrecognised invocation is treated as
+ * shippable and loses the development-only surface, rather than keeping it.
+ */
+function isDevelopmentServer() {
+  return process.env.NODE_ENV === 'development';
+}
+
+/**
+ * Removes `/_sitemap` from every build that is not the development server.
  *
  * `expo-router` registers a generated `_sitemap` route that lists every
  * route in the app plus a "System Information" panel (NODE_ENV, Expo SDK
@@ -93,9 +177,13 @@ const EXPO_ROUTER_PLUGIN = 'expo-router';
  * comes from this plugin's own props - so setting it here removes the route
  * from the root stack AND from the linking config.
  *
- * Scoped to demo builds on purpose: `/_sitemap` is a genuinely useful
- * development affordance under `expo start`, and nothing here should take
- * it away from the team's normal workflow.
+ * This used to be scoped to DEMO builds only, which was exactly backwards for
+ * store distribution: the demo APK - handed to a known founder or partner -
+ * had the route removed, while a PRODUCTION release installed from Google Play
+ * by an ordinary user kept it. `/_sitemap` is a genuinely useful development
+ * affordance, so it is kept for `expo start` and taken away from everything
+ * else, which is the same gate `services/debug/internal-screens.ts` applies to
+ * `/processing` for the same reason.
  */
 function withoutSitemap(config) {
   return {
@@ -109,6 +197,8 @@ function withoutSitemap(config) {
 }
 
 module.exports = ({ config }) => {
+  assertBundledCatalogMediaPresent();
+
   const isAdMobUnlinked = isAdMobExcludedFromAutolinking();
 
   if (!isDemoBuild() && isAdMobUnlinked) {
@@ -155,7 +245,9 @@ module.exports = ({ config }) => {
       }
     : config;
 
-  return withGoogleSignIn(
-    isDemoBuild() ? withoutSitemap(withAdMobResolved) : withAdMobResolved
-  );
+  const withSitemapResolved = isDevelopmentServer()
+    ? withAdMobResolved
+    : withoutSitemap(withAdMobResolved);
+
+  return withGoogleSignIn(withSitemapResolved);
 };

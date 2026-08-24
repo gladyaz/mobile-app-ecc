@@ -1,9 +1,10 @@
-import { router } from 'expo-router';
+import { Redirect, router } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { isInternalScreenEnabled } from '@/services/debug/internal-screens';
 import {
   getProcessingJobs,
   getProcessingSummary,
@@ -52,6 +53,16 @@ export default function ProcessingHistoryScreen() {
         : processingJobs.filter((job) => job.status === statusFilter),
     [processingJobs, statusFilter]
   );
+
+  // Guarded HERE as well as at the Profile entry point, for the same reason
+  // `stores/auth.tsx` guards demo builds in the store rather than only on the
+  // login screen: `_layout.tsx` registers this as a real route and `app.json`
+  // declares a URL scheme, so `mobileappecc://processing` reaches this screen
+  // whatever Profile chose to render. Placed after every hook so the hook order
+  // is identical in both branches. See services/debug/internal-screens.ts.
+  if (!isInternalScreenEnabled()) {
+    return <Redirect href="/profile" />;
+  }
 
   return (
     <View style={styles.container}>

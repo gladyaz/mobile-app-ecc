@@ -13,10 +13,22 @@ expo-env.d.ts
 .kotlin/
 *.orig.*
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
 *.mobileprovision
+
+# Signing and service credentials. Listed BEFORE any of them exists on
+# purpose: an upload keystore and its password file are the two artifacts a
+# release adds to a working tree, and the moment to make them unstageable is
+# before someone is holding one. `android/` is already ignored wholesale, but
+# a keystore is routinely kept at the repository root or beside eas.json.
+keystore.properties
+upload-keystore.properties
+google-services.json
+GoogleService-Info.plist
+play-service-account*.json
 
 # Metro
 .metro-health-check*

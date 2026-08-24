@@ -33,16 +33,44 @@ export const DEFAULT_ADS_CONFIG: AdsConfig = {
   graceVideos: 5,
 };
 
+/**
+ * Hard ceiling on interstitials per app session (process lifetime), sitting
+ * ON TOP of the counter/cooldown pacing above - it does not replace it.
+ *
+ * The pacing model alone has no ceiling: with `minVideosBetweenAds: 3` and
+ * `minSecondsBetweenAds: 120`, a viewer who binges for three hours is
+ * eligible for ~90 interstitials, and every one of them is a full-screen
+ * interruption. Play Store policy calls that out directly ("ads that
+ * interfere with... normal use") and it is exactly the escalation a long
+ * session produces, so the ceiling is enforced client-side rather than
+ * hoped for.
+ *
+ * 8 is derived from the shipped pacing, not picked freely: 8 ads at the
+ * 120s floor is ~16 minutes of unavoidable spacing, so a normal session
+ * never reaches it and only an unusually long one does. It is deliberately
+ * NOT part of `AdsConfig` - `GET /config/ads` is a frozen five-field
+ * contract (see docs/api-contract.md), and a backend that could raise this
+ * remotely would defeat the point of a ceiling.
+ */
+export const MAX_INTERSTITIALS_PER_SESSION = 8;
+
 export type AdGateState = {
   readonly lifetimeWatched: number;
   readonly watchedSinceLastAd: number;
   readonly activeThreshold: number;
   readonly lastAdShownAt: number | null;
+  /**
+   * Interstitials committed since this app process started. Session-scoped
+   * on purpose and therefore never persisted - a cold start is a new
+   * session and legitimately gets a fresh budget.
+   */
+  readonly adsShownThisSession: number;
 };
 
 export type AdGateHoldReason =
   | 'disabled'
   | 'premium'
+  | 'session-cap'
   | 'not-due'
   | 'cooldown'
   | 'ad-not-ready'
@@ -118,6 +146,14 @@ export function evaluateTransition(
     return { show: false, holdReason: 'premium' };
   }
 
+  // Checked here, next to the other two "ads are off, full stop" reasons,
+  // because that is what reaching the ceiling means for the rest of this
+  // session. Placing it below `not-due`/`cooldown` would report a
+  // transient-looking hold reason for a permanent state.
+  if (state.adsShownThisSession >= MAX_INTERSTITIALS_PER_SESSION) {
+    return { show: false, holdReason: 'session-cap' };
+  }
+
   if (opts.adVisible) {
     return { show: false, holdReason: 'ad-visible' };
   }
@@ -145,7 +181,13 @@ export function evaluateTransition(
 
 /**
  * Commits an ad presentation to state: resets the since-last-ad counter,
- * stamps `now` as the cooldown anchor, and re-rolls the next threshold.
+ * stamps `now` as the cooldown anchor, re-rolls the next threshold, and
+ * spends one unit of the session budget.
+ *
+ * The session counter is incremented HERE rather than at the `show()` call
+ * site for the same reason the rest of this commit is: `markAdShown` only
+ * runs on the native OPENED event, so an ad the viewer never actually saw
+ * never costs them a slot.
  */
 export function markAdShown(
   state: AdGateState,
@@ -158,5 +200,6 @@ export function markAdShown(
     watchedSinceLastAd: 0,
     lastAdShownAt: now,
     activeThreshold: rollThreshold(cfg, rng),
+    adsShownThisSession: state.adsShownThisSession + 1,
   };
 }

@@ -1253,9 +1253,18 @@ minute) presigned GET URL straight to the storage provider:
   `src/services/ads/ads-config-service.ts` calls
   `request<unknown>('config/ads')` (no `requiresAuth`), validates all five
   fields are present with the correct type, and falls back to
-  `DEFAULT_ADS_CONFIG` (matching the response shape above) on ANY failure —
-  network error, non-2xx, or a malformed/incomplete payload — logging via
-  `console.warn` gated by `__DEV__`. Fetched once on mount by `AdsBridge`
+  `DEFAULT_ADS_CONFIG` (matching the response shape above) on a TRANSIENT
+  failure — `NETWORK_ERROR`, `TIMEOUT`, a non-2xx, or a malformed/incomplete
+  payload — logging via `console.warn` gated by `__DEV__`. **`MISSING_BASE_URL`
+  is the exception and fails CLOSED, resolving to ads disabled.** That error
+  means `EXPO_PUBLIC_API_BASE_URL` was not set at build time, and because Expo
+  inlines it into the bundle, the condition is permanent for the life of the
+  artifact: that build can never reach its backend on any screen. Falling back
+  to `enabled: true` there would run full-screen interstitials over a feed,
+  login and sync that are all broken. A transient failure says "not right now"
+  and may succeed on the next launch, so it keeps the old behavior. Note both
+  codes carry `status: 0`, so the distinction is made on `code`.
+  Fetched once on mount by `AdsBridge`
   (`src/components/ads-bridge.tsx`, mounted in `src/app/_layout.tsx`) and
   stored in `src/stores/ads-store.ts`.
 

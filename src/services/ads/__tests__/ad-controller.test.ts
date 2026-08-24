@@ -1,4 +1,4 @@
-import { DEFAULT_ADS_CONFIG } from '@/services/ads/ad-gate';
+import { DEFAULT_ADS_CONFIG, MAX_INTERSTITIALS_PER_SESSION } from '@/services/ads/ad-gate';
 import { clearShowInFlight, onVideoTransition, recordVideoWatched } from '@/services/ads/ad-controller';
 import {
   __resetPresenterRegistryForTests,
@@ -134,6 +134,63 @@ describe('onVideoTransition', () => {
   it('does not call show() for a premium user', () => {
     __resetAdsStoreForTests({ watchedSinceLastAd: 3, activeThreshold: 3, isPremium: true });
     const presenter = buildFakePresenter();
+    registerPresenter(presenter);
+
+    onVideoTransition();
+
+    expect(presenter.show).not.toHaveBeenCalled();
+  });
+});
+
+describe('onVideoTransition — the in-flight guard cannot wedge the session', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('still holds a second transition arriving well inside the in-flight window', () => {
+    jest.useFakeTimers();
+    __resetAdsStoreForTests({ watchedSinceLastAd: 3, activeThreshold: 3 });
+    const presenter = buildFakePresenter({ isReady: jest.fn(() => true) });
+    registerPresenter(presenter);
+
+    onVideoTransition();
+    jest.advanceTimersByTime(2_000);
+    onVideoTransition();
+
+    expect(presenter.show).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the guard on its own when NO ad event ever arrives', () => {
+    // The Android native module never overrides
+    // `onAdFailedToShowFullScreenContent` and resolves the show() promise
+    // before presenting, so a failed presentation can produce neither
+    // onOpened nor onError. Without a ceiling on this window, that one
+    // silent failure would hold every remaining interstitial of the
+    // session - V1's only revenue path, dead, with nothing in the logs.
+    jest.useFakeTimers();
+    __resetAdsStoreForTests({ watchedSinceLastAd: 3, activeThreshold: 3 });
+    const presenter = buildFakePresenter({ isReady: jest.fn(() => true) });
+    registerPresenter(presenter);
+
+    onVideoTransition();
+    expect(presenter.show).toHaveBeenCalledTimes(1);
+
+    // No clearShowInFlight() here, deliberately: nothing called back.
+    jest.advanceTimersByTime(30_000);
+    onVideoTransition();
+
+    expect(presenter.show).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('onVideoTransition — per-session ceiling', () => {
+  it('stops showing once the session budget is spent', () => {
+    __resetAdsStoreForTests({
+      watchedSinceLastAd: 3,
+      activeThreshold: 3,
+      adsShownThisSession: MAX_INTERSTITIALS_PER_SESSION,
+    });
+    const presenter = buildFakePresenter({ isReady: jest.fn(() => true) });
     registerPresenter(presenter);
 
     onVideoTransition();

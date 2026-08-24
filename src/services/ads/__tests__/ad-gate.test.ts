@@ -1,5 +1,6 @@
 import {
   DEFAULT_ADS_CONFIG,
+  MAX_INTERSTITIALS_PER_SESSION,
   evaluateTransition,
   markAdShown,
   recordWatch,
@@ -22,6 +23,7 @@ function buildState(overrides: Partial<AdGateState> = {}): AdGateState {
     watchedSinceLastAd: 0,
     activeThreshold: 1,
     lastAdShownAt: null,
+    adsShownThisSession: 0,
     ...overrides,
   };
 }
@@ -158,5 +160,64 @@ describe('markAdShown', () => {
     expect(next.activeThreshold).toBe(5);
     // lifetimeWatched is untouched by markAdShown - only recordWatch changes it.
     expect(next.lifetimeWatched).toBe(state.lifetimeWatched);
+  });
+});
+
+describe('evaluateTransition — per-session ceiling', () => {
+  const READY = { isPremium: false, adReady: true, adVisible: false, now: 0 };
+
+  it('shows the ad on the last slot of the session budget', () => {
+    const state = buildState({
+      watchedSinceLastAd: 3,
+      activeThreshold: 3,
+      adsShownThisSession: MAX_INTERSTITIALS_PER_SESSION - 1,
+    });
+
+    expect(evaluateTransition(state, BASE_CONFIG, READY)).toEqual({ show: true });
+  });
+
+  it('holds every transition once the session budget is spent, even when otherwise due', () => {
+    // Everything else says "show": past the threshold, ad loaded, no
+    // cooldown, not premium, not visible. The ceiling alone must hold it.
+    const state = buildState({
+      watchedSinceLastAd: 99,
+      activeThreshold: 3,
+      adsShownThisSession: MAX_INTERSTITIALS_PER_SESSION,
+    });
+
+    expect(evaluateTransition(state, BASE_CONFIG, READY)).toEqual({
+      show: false,
+      holdReason: 'session-cap',
+    });
+  });
+
+  it('stays held no matter how many further videos are watched', () => {
+    let state = buildState({
+      watchedSinceLastAd: 3,
+      activeThreshold: 3,
+      adsShownThisSession: MAX_INTERSTITIALS_PER_SESSION,
+    });
+
+    for (let i = 0; i < 50; i += 1) {
+      state = recordWatch(state, BASE_CONFIG);
+      expect(evaluateTransition(state, BASE_CONFIG, READY).show).toBe(false);
+    }
+  });
+
+  it('spends exactly one slot per committed ad, and reaches the ceiling in exactly that many', () => {
+    let state = buildState({ watchedSinceLastAd: 3, activeThreshold: 3 });
+
+    for (let shown = 1; shown <= MAX_INTERSTITIALS_PER_SESSION; shown += 1) {
+      expect(evaluateTransition(state, BASE_CONFIG, READY).show).toBe(true);
+      state = markAdShown(state, BASE_CONFIG, 0, () => 0);
+      expect(state.adsShownThisSession).toBe(shown);
+      // Re-arm the counter/cooldown so only the ceiling can hold the next one.
+      state = { ...state, watchedSinceLastAd: state.activeThreshold, lastAdShownAt: null };
+    }
+
+    expect(evaluateTransition(state, BASE_CONFIG, READY)).toEqual({
+      show: false,
+      holdReason: 'session-cap',
+    });
   });
 });

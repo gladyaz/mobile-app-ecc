@@ -40,6 +40,15 @@ describe('useAdsStore — markAdShown', () => {
     expect(state.lastAdShownAt).toBe(9_999);
     expect(state.activeThreshold).toBe(DEFAULT_ADS_CONFIG.minVideosBetweenAds);
   });
+
+  it('spends one slot of the per-session budget per committed ad', () => {
+    __resetAdsStoreForTests();
+
+    useAdsStore.getState().markAdShown(1_000, () => 0);
+    useAdsStore.getState().markAdShown(2_000, () => 0);
+
+    expect(useAdsStore.getState().adsShownThisSession).toBe(2);
+  });
 });
 
 describe('useAdsStore — config/isPremium/adVisible setters', () => {
@@ -65,6 +74,7 @@ describe('useAdsStore — persistence', () => {
     useAdsStore.getState().setConfig({ ...DEFAULT_ADS_CONFIG, enabled: false });
     useAdsStore.getState().setPremium(true);
     useAdsStore.getState().setAdVisible(true);
+    useAdsStore.getState().markAdShown(1_000, () => 0);
 
     const persistOptions = useAdsStore.persist.getOptions();
     const partialize = persistOptions.partialize;
@@ -79,5 +89,9 @@ describe('useAdsStore — persistence', () => {
     expect(persisted).not.toHaveProperty('config');
     expect(persisted).not.toHaveProperty('isPremium');
     expect(persisted).not.toHaveProperty('adVisible');
+    // Neither may the session counter: persisting it would make the
+    // ceiling permanent instead of per-sitting, and ads would go quiet
+    // forever a few sessions in.
+    expect(persisted).not.toHaveProperty('adsShownThisSession');
   });
 });

@@ -22,15 +22,39 @@ export function recordVideoWatched(_videoId: string): void {
 }
 
 /**
- * True from the moment `presenter.show()` is called until the hook's
- * `onOpened` (or `onError`) callback fires. `adVisible` alone cannot cover
- * that window: it only flips true on the native OPENED event, so two
- * transitions arriving in quick succession before OPENED would both see
- * `adVisible: false` with the counter still unreset, and call `show()`
- * twice (the MEDIUM found in this unit's review). Module-level by design,
- * same reasoning as `onVideoTransition` itself.
+ * When `presenter.show()` was last called, or `null` if nothing is in
+ * flight. Covers the window between that call and the hook's `onOpened`
+ * (or `onError`) callback: `adVisible` alone cannot, because it only flips
+ * true on the native OPENED event, so two transitions arriving in quick
+ * succession before OPENED would both see `adVisible: false` with the
+ * counter still unreset, and call `show()` twice (the MEDIUM found in this
+ * unit's review). Module-level by design, same reasoning as
+ * `onVideoTransition` itself.
  */
-let showInFlight = false;
+let showRequestedAt: number | null = null;
+
+/**
+ * How long that window may stay open before it is treated as abandoned.
+ *
+ * A timestamp rather than a boolean, because this guard has exactly one
+ * failure mode and it is fatal to V1's only revenue path: if the release
+ * never comes, EVERY later interstitial is held for the rest of the
+ * session. The native module has a path that produces no ad event at all -
+ * `ReactNativeGoogleMobileAdsFullScreenAdModule.kt` never overrides
+ * `onAdFailedToShowFullScreenContent`, and resolves the `show()` promise
+ * before presentation is even attempted - so neither `onOpened` nor
+ * `onError` is guaranteed to arrive. The adapter now reports every failure
+ * it CAN observe; this ceiling covers the ones it cannot.
+ *
+ * 10s is far beyond the sub-second real gap between `show()` and OPENED,
+ * so it never fires on a healthy presentation - it only bounds the damage
+ * of a silent native one.
+ */
+const SHOW_IN_FLIGHT_TIMEOUT_MS = 10_000;
+
+function isShowInFlight(now: number): boolean {
+  return showRequestedAt !== null && now - showRequestedAt < SHOW_IN_FLIGHT_TIMEOUT_MS;
+}
 
 /**
  * Cleared by `use-interstitial-ad.ts` on OPENED (the `adVisible` flag takes
@@ -39,7 +63,7 @@ let showInFlight = false;
  * for isolation.
  */
 export function clearShowInFlight(): void {
-  showInFlight = false;
+  showRequestedAt = null;
 }
 
 /**
@@ -51,6 +75,9 @@ export function clearShowInFlight(): void {
 export function onVideoTransition(): void {
   const state = useAdsStore.getState();
   const presenter = getPresenter();
+  // One `now` for the whole evaluation, so the cooldown check and the
+  // in-flight window can never disagree about what "now" is.
+  const now = Date.now();
 
   const result = evaluateTransition(
     {
@@ -58,18 +85,19 @@ export function onVideoTransition(): void {
       watchedSinceLastAd: state.watchedSinceLastAd,
       activeThreshold: state.activeThreshold,
       lastAdShownAt: state.lastAdShownAt,
+      adsShownThisSession: state.adsShownThisSession,
     },
     state.config,
     {
       isPremium: state.isPremium,
       adReady: presenter?.isReady() ?? false,
-      adVisible: state.adVisible || showInFlight,
-      now: Date.now(),
+      adVisible: state.adVisible || isShowInFlight(now),
+      now,
     }
   );
 
   if (result.show && presenter) {
     presenter.show();
-    showInFlight = true;
+    showRequestedAt = now;
   }
 }

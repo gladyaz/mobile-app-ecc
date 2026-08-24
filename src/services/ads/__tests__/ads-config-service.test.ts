@@ -1,8 +1,15 @@
 import { DEFAULT_ADS_CONFIG } from '@/services/ads/ad-gate';
 import { fetchAdsConfig } from '@/services/ads/ads-config-service';
-import { request } from '@/services/api/client';
+import { ApiError, request } from '@/services/api/client';
 
+/**
+ * Only `request` is faked. `ApiError` comes through untouched, because the
+ * fail-closed branch under test narrows on a REAL `instanceof ApiError` -
+ * a hand-rolled stand-in would pass the test while the production check
+ * silently never matched.
+ */
 jest.mock('@/services/api/client', () => ({
+  ...jest.requireActual('@/services/api/client'),
   request: jest.fn(),
 }));
 
@@ -74,5 +81,38 @@ describe('fetchAdsConfig', () => {
     mockedRequest.mockResolvedValue(null);
 
     await expect(fetchAdsConfig()).resolves.toEqual(DEFAULT_ADS_CONFIG);
+  });
+});
+
+describe('fetchAdsConfig — failing closed on a permanently broken build', () => {
+  it('turns ads OFF for a MISSING_BASE_URL error', () => {
+    // `EXPO_PUBLIC_API_BASE_URL` is inlined at build time, so this artifact
+    // can never reach its backend on any screen. Serving interstitials over
+    // a feed that cannot load is monetizing a broken product.
+    mockedRequest.mockRejectedValue(
+      new ApiError(0, 'MISSING_BASE_URL', 'EXPO_PUBLIC_API_BASE_URL is not set.')
+    );
+
+    return expect(fetchAdsConfig()).resolves.toEqual({ ...DEFAULT_ADS_CONFIG, enabled: false });
+  });
+
+  it('keeps the enabled fallback for a transient NETWORK_ERROR', () => {
+    mockedRequest.mockRejectedValue(new ApiError(0, 'NETWORK_ERROR', 'Network request failed.'));
+
+    return expect(fetchAdsConfig()).resolves.toEqual(DEFAULT_ADS_CONFIG);
+  });
+
+  it('keeps the enabled fallback for a transient TIMEOUT', () => {
+    // Same `status: 0` as MISSING_BASE_URL, so the distinction has to be
+    // made on `code` - not on status.
+    mockedRequest.mockRejectedValue(new ApiError(0, 'TIMEOUT', 'Request timed out after 20000ms.'));
+
+    return expect(fetchAdsConfig()).resolves.toEqual(DEFAULT_ADS_CONFIG);
+  });
+
+  it('keeps the enabled fallback for a backend 500', () => {
+    mockedRequest.mockRejectedValue(new ApiError(500, 'INTERNAL_ERROR', 'Something broke.'));
+
+    return expect(fetchAdsConfig()).resolves.toEqual(DEFAULT_ADS_CONFIG);
   });
 });

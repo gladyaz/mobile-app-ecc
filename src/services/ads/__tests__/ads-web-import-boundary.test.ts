@@ -195,7 +195,10 @@ describe('ads web import boundary', () => {
     // If this ever legitimately drops to zero the package is gone and this
     // whole file should go with it - but silently reaching zero would mean
     // the assertions below stopped checking anything.
-    expect(nativeAdsFiles.map((file) => file.relativePath)).toEqual([
+    // Sorted rather than traversal-ordered so adding a file to this list is
+    // a decision about the boundary, not about readdir ordering.
+    expect(nativeAdsFiles.map((file) => file.relativePath).sort()).toEqual([
+      'services/ads/consent-gate.ts',
       'services/ads/interstitial-adapter.ts',
     ]);
   });

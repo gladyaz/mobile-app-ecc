@@ -38,6 +38,7 @@ function extractAdGateState(state: AdsStoreState): AdGateState {
     watchedSinceLastAd: state.watchedSinceLastAd,
     activeThreshold: state.activeThreshold,
     lastAdShownAt: state.lastAdShownAt,
+    adsShownThisSession: state.adsShownThisSession,
   };
 }
 
@@ -55,6 +56,10 @@ export const useAdsStore = create<AdsStoreState>()(
       // value always wins over this initial roll.
       activeThreshold: rollThreshold(DEFAULT_ADS_CONFIG, Math.random),
       lastAdShownAt: null,
+      // Deliberately absent from `partialize` below: the per-session cap is
+      // a ceiling on ONE sitting, so it starts at zero on every cold start.
+      // Persisting it would eventually silence ads permanently.
+      adsShownThisSession: 0,
       config: DEFAULT_ADS_CONFIG,
       isPremium: false,
       adVisible: false,
@@ -74,10 +79,11 @@ export const useAdsStore = create<AdsStoreState>()(
       name: ADS_STORE_STORAGE_NAME,
       storage: createJSONStorage(() => AsyncStorage),
       // Only the raw counter/cooldown fields survive an app restart -
-      // config, isPremium, and adVisible are all re-derived fresh on every
-      // launch (fetched, mirrored from auth, and reset-to-false
-      // respectively), so persisting them would risk serving a stale
-      // config or a wedged `adVisible: true` from a killed app.
+      // config, isPremium, adVisible and adsShownThisSession are all
+      // re-derived fresh on every launch (fetched, mirrored from auth, and
+      // reset-to-zero/false respectively), so persisting them would risk
+      // serving a stale config, a wedged `adVisible: true` from a killed
+      // app, or a session cap that never resets.
       partialize: (state): PersistedAdGateState => ({
         lifetimeWatched: state.lifetimeWatched,
         watchedSinceLastAd: state.watchedSinceLastAd,
@@ -95,6 +101,7 @@ export function __resetAdsStoreForTests(overrides?: Partial<AdsStoreState>): voi
     watchedSinceLastAd: 0,
     activeThreshold: rollThreshold(DEFAULT_ADS_CONFIG, () => 0),
     lastAdShownAt: null,
+    adsShownThisSession: 0,
     config: DEFAULT_ADS_CONFIG,
     isPremium: false,
     adVisible: false,

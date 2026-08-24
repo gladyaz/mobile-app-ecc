@@ -363,7 +363,8 @@ export default function AccountSecurityScreen() {
                 onPress={() => {
                   void handleChangePassword();
                 }}
-                style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}>
+                style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}
+                testID="change-password-retry">
                 <Text style={styles.retryButtonText}>Coba Lagi</Text>
               </Pressable>
             </View>
@@ -388,7 +389,8 @@ export default function AccountSecurityScreen() {
               <Pressable
                 accessibilityRole="button"
                 onPress={handleRetrySessions}
-                style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}>
+                style={({ pressed }) => [styles.retryButton, pressed && styles.buttonPressed]}
+                testID="sessions-retry">
                 <Text style={styles.retryButtonText}>Coba Lagi</Text>
               </Pressable>
             </View>

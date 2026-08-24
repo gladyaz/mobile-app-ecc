@@ -243,9 +243,12 @@ describe('AccountSecurityScreen - change password', () => {
     await waitFor(() => expect(getByText('Password saat ini salah.')).toBeTruthy());
     expect(mockedSetTokensAndNotify).not.toHaveBeenCalled();
 
-    // Retry affordance re-attempts the same request.
+    // Retry affordance re-attempts the same request. Targeted by testID
+    // rather than label: this screen can render more than one "Coba Lagi" at
+    // once (the linked-methods card has its own, via t('common.retry')), so a
+    // text query is ambiguous by construction.
     mockedChangePassword.mockResolvedValueOnce(buildAuthResponse());
-    await fireEvent.press(getByText('Coba Lagi'));
+    await fireEvent.press(getByTestId('change-password-retry'));
 
     await waitFor(() => expect(mockedChangePassword).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith('Password berhasil diubah.'));
@@ -290,7 +293,7 @@ describe('AccountSecurityScreen - session list', () => {
     );
 
     mockedListSessions.mockResolvedValueOnce(buildSessions());
-    await fireEvent.press(getByText('Coba Lagi'));
+    await fireEvent.press(getByTestId('sessions-retry'));
 
     await waitFor(() => expect(mockedListSessions).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(getByTestId('session-row-session_1')).toBeTruthy());

@@ -16,7 +16,12 @@ import {
 } from '@/features/auth/auth-primitives';
 import { describeGoogleLoginError } from '@/features/auth/provider-error-messages';
 import { ApiError } from '@/services/api/client';
-import { isGoogleSignInConfigured, isGoogleSignInSupported } from '@/services/auth/google-sign-in';
+import { isGoogleSignInConfigured } from '@/services/auth/google-sign-in';
+import {
+  isAnyProviderLoginOffered,
+  isGoogleLoginOffered,
+  isWhatsAppLoginOffered,
+} from '@/services/auth/provider-availability';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { useAuth } from '@/stores/auth';
 import { useTranslation } from '@/stores/language';
@@ -79,8 +84,15 @@ export default function LoginScreen() {
   // exchange a token with. Those entry points are hidden rather than left
   // to fail when someone taps them - the same choice profile.tsx already
   // makes for its backend-only rows.
+  //
+  // The provider rows extend that same rule to a build that HAS a backend but
+  // whose backend cannot serve a given method. See
+  // services/auth/provider-availability.ts for why each one is gated and what
+  // turns it back on; nothing about either provider's implementation changes.
   const isBackendAvailable = !isDemoMode();
-  const isGoogleVisible = isBackendAvailable && isGoogleSignInSupported();
+  const hasAnyProvider = isBackendAvailable && isAnyProviderLoginOffered();
+  const isGoogleVisible = isBackendAvailable && isGoogleLoginOffered();
+  const isWhatsAppVisible = isBackendAvailable && isWhatsAppLoginOffered();
   const isGoogleReady = isGoogleSignInConfigured();
 
   const trimmedEmail = email.trim();
@@ -252,7 +264,7 @@ export default function LoginScreen() {
 
           <Text style={styles.hint}>{t('login.hint')}</Text>
 
-          {isBackendAvailable ? (
+          {hasAnyProvider ? (
             <>
               <AuthDivider label={t('login.orContinueWith')} />
 
@@ -280,15 +292,17 @@ export default function LoginScreen() {
                 </View>
               ) : null}
 
-              <AuthProviderButton
-                badge={PROVIDER_BADGES.whatsapp}
-                isDisabled={isBusy}
-                label={t('login.whatsapp')}
-                onPress={() => {
-                  router.push('/login-whatsapp');
-                }}
-                testID="login-whatsapp"
-              />
+              {isWhatsAppVisible ? (
+                <AuthProviderButton
+                  badge={PROVIDER_BADGES.whatsapp}
+                  isDisabled={isBusy}
+                  label={t('login.whatsapp')}
+                  onPress={() => {
+                    router.push('/login-whatsapp');
+                  }}
+                  testID="login-whatsapp"
+                />
+              ) : null}
             </>
           ) : null}
         </View>

@@ -142,3 +142,49 @@ describe('ProfileScreen', () => {
     });
   });
 });
+
+describe('ProfileScreen legal links', () => {
+  const KEYS = [
+    'EXPO_PUBLIC_PRIVACY_POLICY_URL',
+    'EXPO_PUBLIC_TERMS_URL',
+    'EXPO_PUBLIC_ACCOUNT_DELETION_URL',
+  ] as const;
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const key of KEYS) {
+      saved.set(key, process.env[key]);
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of KEYS) {
+      const value = saved.get(key);
+
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+
+  it('renders no legal section at all when no URL is configured', async () => {
+    // Which is every build today. A row that opens a page nobody has published
+    // is worse than the absence of the row.
+    const { queryByTestId } = await render(<ProfileScreen />);
+
+    expect(queryByTestId('profile-legal-section')).toBeNull();
+  });
+
+  it('renders only the rows whose URL the build actually has', async () => {
+    process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL = 'https://example.com/privacy';
+
+    const { getByTestId, queryByTestId } = await render(<ProfileScreen />);
+
+    expect(getByTestId('profile-legal-privacy')).toBeTruthy();
+    expect(queryByTestId('profile-legal-terms')).toBeNull();
+    expect(queryByTestId('profile-legal-deletion')).toBeNull();
+  });
+});

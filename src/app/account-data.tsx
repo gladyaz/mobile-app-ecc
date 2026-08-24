@@ -15,6 +15,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { ApiError } from '@/services/api/client';
 import { deleteMyAccount } from '@/services/auth/account-deletion-service';
+import { listAuthIdentities } from '@/services/auth/provider-auth-service';
 import { exportMyData } from '@/services/export/export-service';
 import { clearPersistedProgressForIdentity } from '@/stores/series-progress';
 import { useAuth } from '@/stores/auth';
@@ -105,6 +106,58 @@ export default function AccountDataScreen() {
   }, []);
 
   // ---- Delete my account ----
+  /**
+   * Whether this account can actually complete an in-app deletion.
+   *
+   * `POST /users/me/deletion` requires the current password and fails closed
+   * with INVALID_CREDENTIALS for an account that has none - and
+   * docs/api-contract.md states outright that "the Data & Privacy screen
+   * should not offer deletion as if it will work for such an account". Before
+   * this check it did exactly that: a Google-only or WhatsApp-only account got
+   * a password field, and the backend's refusal was rendered as "Password saat
+   * ini salah." - telling a viewer they mistyped a password they never had.
+   *
+   * The signal is the presence of an `email` identity, because an email
+   * identity is inseparable from `User.passwordHash` (see the note on
+   * LinkableAuthProviderId in types/auth.ts).
+   *
+   * `null` means "not known yet". The password form is not rendered on a
+   * guess in either direction: showing it too eagerly reproduces the lie, and
+   * hiding it too eagerly takes deletion away from an account that has it.
+   */
+  const [hasPasswordCredential, setHasPasswordCredential] = useState<boolean | null>(null);
+  const [isLoadingIdentities, setIsLoadingIdentities] = useState(true);
+
+  useEffect(() => {
+    let isActive = true;
+
+    void (async () => {
+      try {
+        const identities = await listAuthIdentities();
+
+        if (isActive) {
+          setHasPasswordCredential(identities.some((identity) => identity.provider === 'email'));
+        }
+      } catch {
+        // Fail SAFE, not closed: a failed lookup must not remove a viewer's
+        // ability to delete their own account. The password path still refuses
+        // correctly on the server if it turns out there is no password, and the
+        // explanatory copy below covers that case.
+        if (isActive) {
+          setHasPasswordCredential(true);
+        }
+      } finally {
+        if (isActive) {
+          setIsLoadingIdentities(false);
+        }
+      }
+    })();
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
   const [deletePassword, setDeletePassword] = useState('');
   const [isDeleteSubmitted, setIsDeleteSubmitted] = useState(false);
   const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
@@ -261,31 +314,49 @@ export default function AccountDataScreen() {
             tidak dapat dipulihkan.
           </Text>
 
-          <View style={styles.field}>
-            <Text style={styles.label}>Password Saat Ini</Text>
-            <TextInput
-              editable={!isDeleting}
-              onChangeText={setDeletePassword}
-              placeholder="••••••••"
-              placeholderTextColor={Palette.textMuted}
-              secureTextEntry
-              style={[styles.input, deletePasswordError && styles.inputError]}
-              testID="delete-account-password-input"
-              value={deletePassword}
-            />
-            {deletePasswordError ? (
-              <Text style={styles.errorText}>{deletePasswordError}</Text>
-            ) : null}
-          </View>
+          {isLoadingIdentities ? (
+            <Text style={styles.sectionCaption} testID="delete-account-loading">
+              Memeriksa metode masukmu...
+            </Text>
+          ) : hasPasswordCredential ? (
+            <>
+              <View style={styles.field}>
+                <Text style={styles.label}>Password Saat Ini</Text>
+                <TextInput
+                  editable={!isDeleting}
+                  onChangeText={setDeletePassword}
+                  placeholder="••••••••"
+                  placeholderTextColor={Palette.textMuted}
+                  secureTextEntry
+                  style={[styles.input, deletePasswordError && styles.inputError]}
+                  testID="delete-account-password-input"
+                  value={deletePassword}
+                />
+                {deletePasswordError ? (
+                  <Text style={styles.errorText}>{deletePasswordError}</Text>
+                ) : null}
+              </View>
 
-          <Pressable
-            accessibilityRole="button"
-            disabled={isDeleting}
-            onPress={handleRequestDelete}
-            style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
-            testID="delete-account-submit">
-            <Text style={styles.dangerButtonText}>Hapus Akun Saya</Text>
-          </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={isDeleting}
+                onPress={handleRequestDelete}
+                style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+                testID="delete-account-submit">
+                <Text style={styles.dangerButtonText}>Hapus Akun Saya</Text>
+              </Pressable>
+            </>
+          ) : (
+            /* No password on this account, so the in-app path cannot succeed.
+               Saying so is the whole point: the alternative is a form that
+               takes an input, sends it, and reports a wrong password to
+               somebody who never set one. */
+            <Text style={styles.sectionCaption} testID="delete-account-unavailable">
+              Akun ini masuk tanpa password, sehingga penghapusan akun belum bisa dilakukan
+              langsung dari aplikasi. Hubungi dukungan lewat alamat email di halaman Kebijakan
+              Privasi untuk meminta penghapusan akun.
+            </Text>
+          )}
         </View>
       </ScrollView>
 

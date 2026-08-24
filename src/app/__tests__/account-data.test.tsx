@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import AccountDataScreen from '@/app/account-data';
 import { ApiError } from '@/services/api/client';
 import { deleteMyAccount } from '@/services/auth/account-deletion-service';
+import { listAuthIdentities } from '@/services/auth/provider-auth-service';
 import { exportMyData } from '@/services/export/export-service';
 import { clearPersistedProgressForIdentity } from '@/stores/series-progress';
 import { clearPersistedInteractionsForIdentity } from '@/stores/video-interactions';
@@ -21,12 +22,28 @@ jest.mock('@/stores/auth', () => ({
 }));
 
 jest.mock('@/services/auth/account-deletion-service');
+jest.mock('@/services/auth/provider-auth-service');
 jest.mock('@/services/export/export-service');
 jest.mock('@/stores/video-interactions');
 jest.mock('@/stores/series-progress');
 
 const mockedDeleteMyAccount = deleteMyAccount as jest.MockedFunction<typeof deleteMyAccount>;
 const mockedExportMyData = exportMyData as jest.MockedFunction<typeof exportMyData>;
+const mockedListAuthIdentities = listAuthIdentities as jest.MockedFunction<
+  typeof listAuthIdentities
+>;
+
+/** The shape `GET /auth/identities` returns for one linked method. */
+function buildIdentity(provider: 'email' | 'google' | 'whatsapp') {
+  return {
+    provider,
+    identifier: provider === 'email' ? 'jane@example.com' : null,
+    usable: true,
+    canBeUnlinked: provider !== 'email',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    verifiedAt: '2026-01-01T00:00:00.000Z',
+  };
+}
 const mockedClearInteractions = clearPersistedInteractionsForIdentity as jest.MockedFunction<
   typeof clearPersistedInteractionsForIdentity
 >;
@@ -73,6 +90,10 @@ beforeEach(() => {
   mockedClearInteractions.mockResolvedValue(undefined);
   mockedClearProgress.mockResolvedValue(undefined);
   mockedDeleteMyAccount.mockResolvedValue(undefined);
+  // Most cases here are about an ordinary email+password account, which is the
+  // only kind V1 can create. The cases that pin the passwordless behaviour
+  // override this.
+  mockedListAuthIdentities.mockResolvedValue([buildIdentity('email')]);
 });
 
 describe('AccountDataScreen - auth guard', () => {
@@ -412,5 +433,61 @@ describe('AccountDataScreen - no dev-only controls reachable', () => {
     await prodRender.unmount();
 
     (globalThis as { __DEV__?: boolean }).__DEV__ = originalDev;
+  });
+});
+
+describe('AccountDataScreen - deletion is only offered where it can succeed', () => {
+  it('offers the password-gated deletion to an account that has a password', async () => {
+    mockedListAuthIdentities.mockResolvedValue([buildIdentity('email')]);
+
+    const { getByTestId, queryByTestId } = await render(<AccountDataScreen />);
+
+    await waitFor(() => expect(getByTestId('delete-account-password-input')).toBeTruthy());
+    expect(getByTestId('delete-account-submit')).toBeTruthy();
+    expect(queryByTestId('delete-account-unavailable')).toBeNull();
+  });
+
+  it('does not offer a password form to a passwordless account, and says why', async () => {
+    // `POST /users/me/deletion` requires the current password and fails closed
+    // with INVALID_CREDENTIALS for an account that has none. The screen used to
+    // render that refusal as "Password saat ini salah." - telling a viewer they
+    // mistyped a password they never had. docs/api-contract.md forbids offering
+    // deletion as if it will work for such an account.
+    mockedListAuthIdentities.mockResolvedValue([buildIdentity('google')]);
+
+    const { getByTestId, queryByTestId } = await render(<AccountDataScreen />);
+
+    await waitFor(() => expect(getByTestId('delete-account-unavailable')).toBeTruthy());
+    expect(queryByTestId('delete-account-password-input')).toBeNull();
+    expect(queryByTestId('delete-account-submit')).toBeNull();
+  });
+
+  it('keeps deletion available when the identity lookup itself fails', async () => {
+    // Fail SAFE, not closed. A transient failure of an unrelated request must
+    // not take away a viewer's ability to delete their own account; the server
+    // still refuses correctly if there really is no password.
+    mockedListAuthIdentities.mockRejectedValue(new Error('network error'));
+
+    const { getByTestId } = await render(<AccountDataScreen />);
+
+    await waitFor(() => expect(getByTestId('delete-account-password-input')).toBeTruthy());
+  });
+
+  it('shows neither branch until the lookup settles, so nothing is rendered on a guess', async () => {
+    const deferred = createDeferred<Awaited<ReturnType<typeof listAuthIdentities>>>();
+
+    mockedListAuthIdentities.mockReturnValue(deferred.promise);
+
+    const { getByTestId, queryByTestId } = await render(<AccountDataScreen />);
+
+    expect(getByTestId('delete-account-loading')).toBeTruthy();
+    expect(queryByTestId('delete-account-password-input')).toBeNull();
+    expect(queryByTestId('delete-account-unavailable')).toBeNull();
+
+    await act(async () => {
+      deferred.resolve([buildIdentity('email')]);
+    });
+
+    await waitFor(() => expect(getByTestId('delete-account-password-input')).toBeTruthy());
   });
 });

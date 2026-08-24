@@ -1,8 +1,15 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
+import * as WebBrowser from 'expo-web-browser';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import {
+  getAccountDeletionUrl,
+  getPrivacyPolicyUrl,
+  getTermsUrl,
+  hasAnyLegalUrl,
+} from '@/constants/legal';
 import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
 import { isInternalScreenEnabled } from '@/services/debug/internal-screens';
 import { isDemoMode } from '@/services/demo/demo-mode';
@@ -12,6 +19,58 @@ import { LANGUAGE_LABELS, LANGUAGES } from '@/services/i18n/translations';
 import { useTranslation } from '@/stores/language';
 import { useToast } from '@/stores/toast';
 import { useVideoInteractions } from '@/stores/video-interactions';
+
+/**
+ * Links to the app's public legal pages.
+ *
+ * Rendered ONLY for the URLs a build actually has. Google Play requires a
+ * privacy policy for an app that collects account data and serves ads, and a
+ * web account-deletion page reachable without installing the app - but none of
+ * those pages exists yet, and a row that opens a 404 is worse than no row. See
+ * constants/legal.ts; publishing the pages is a configuration step, not a code
+ * change.
+ *
+ * `openBrowserAsync` rather than `Linking.openURL`: it keeps the viewer inside
+ * the app in a system browser sheet they can dismiss back to where they were,
+ * instead of handing them off to a separate browser app and losing the
+ * session's place.
+ */
+function LegalLinks() {
+  const { t } = useTranslation();
+
+  if (!hasAnyLegalUrl()) {
+    return null;
+  }
+
+  const rows = [
+    { key: 'privacy', label: t('profile.privacyPolicy'), url: getPrivacyPolicyUrl() },
+    { key: 'terms', label: t('profile.termsOfService'), url: getTermsUrl() },
+    { key: 'deletion', label: t('profile.deleteAccountHelp'), url: getAccountDeletionUrl() },
+  ].filter((row): row is { key: string; label: string; url: string } => Boolean(row.url));
+
+  return (
+    <View style={styles.legalSection} testID="profile-legal-section">
+      <Text style={styles.legalSectionTitle}>{t('profile.legalSection')}</Text>
+      {rows.map((row) => (
+        <Pressable
+          accessibilityRole="link"
+          key={row.key}
+          onPress={() => {
+            void WebBrowser.openBrowserAsync(row.url);
+          }}
+          style={({ pressed }) => [styles.legalRow, pressed && styles.buttonPressed]}
+          testID={`profile-legal-${row.key}`}>
+          <Text style={styles.legalRowText}>{row.label}</Text>
+          <SymbolView
+            name={{ ios: 'arrow.up.right', android: 'open_in_new', web: 'open_in_new' }}
+            size={14}
+            tintColor={Palette.textDisabled}
+          />
+        </Pressable>
+      ))}
+    </View>
+  );
+}
 
 // Development-only escape hatch to clear persisted auth/likes/saved/watch
 // progress. Storage is cleared immediately; in-memory state for the
@@ -230,6 +289,8 @@ export default function ProfileScreen() {
           <Text style={styles.logoutButtonText}>{t('profile.logout')}</Text>
         </Pressable>
 
+        <LegalLinks />
+
         <DevResetButton />
       </View>
     );
@@ -264,6 +325,8 @@ export default function ProfileScreen() {
         </Pressable>
 
         <LanguagePicker />
+
+        <LegalLinks />
 
         <DevResetButton />
       </View>
@@ -431,6 +494,29 @@ const styles = StyleSheet.create({
   },
   languageChipTextSelected: {
     color: Palette.primary,
+  },
+  legalSection: {
+    marginTop: 24,
+    gap: 4,
+  },
+  legalSectionTitle: {
+    fontFamily: FontFamily.semiBold,
+    fontSize: 12,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: Palette.textMuted,
+    marginBottom: 4,
+  },
+  legalRow: {
+    height: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  legalRowText: {
+    fontFamily: FontFamily.regular,
+    fontSize: 14,
+    color: Palette.textSecondary,
   },
   processingButton: {
     marginTop: 16,

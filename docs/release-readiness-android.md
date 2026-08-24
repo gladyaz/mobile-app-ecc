@@ -244,6 +244,11 @@ enters the process and none can appear in any message it prints.
 | **Rewards never fabricates numbers** | `src/services/rewards/rewards-service.ts` sends intent only, has no dev-tools route, and throws rather than falling back to fixtures. |
 | **Session survives restart; expiry handled; concurrent 401s are safe** | Tokens persist to AsyncStorage and rehydrate on mount. A `401 INVALID_ACCESS_TOKEN` refreshes once and retries once. The refresh is **single-flight**, so the three providers `_layout.tsx` mounts together cannot each spend the same (rotating) refresh token and force-log-out a valid session at launch. The retry is gated on an identity *generation*, not on the token string, so a sibling request's rotation is retried under the new token while a genuine account change is refused — a request issued by user A can never be committed to user B. Provider credentials (Google ID token, OTP) are consumed once and never persisted. |
 | **Debug diagnostics are stripped from the release bundle** | Confirmed by `strings` on the exported Hermes bundle: `[PlaybackDecision]`, `[api-client]`, `[media-url]` and the dev "Reset Local Data" button are all absent. `__DEV__` dead-code elimination works as the code assumes. |
+| **Native identity matches the app config** | `expo prebuild --platform android --clean` regenerated `android/`, then `:app:processReleaseManifest` produced a real merged **release** manifest carrying `package="com.spark.redpanda"` and `android:label` -> `Red Panda`. `applicationId`, `namespace` and the Java package directory (`com/spark/redpanda`) all agree, and `grep -rl com.anonymous android/` returns 0 files. |
+| **Unused permissions really are stripped** | Verified in the MERGED release manifest, not just the source one: `SYSTEM_ALERT_WINDOW`, `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE` are all absent. What ships is `INTERNET`, `ACCESS_NETWORK_STATE`, `VIBRATE`, `WAKE_LOCK`, `FOREGROUND_SERVICE`, `AD_ID` and the three `ACCESS_ADSERVICES_*` - every one of them from React Native or the AdMob SDK. |
+| **Release manifest flags** | Merged release manifest: `android:allowBackup="false"`, **no** `android:debuggable`, **no** app-wide `android:usesCleartextTraffic`. |
+| **No demo media in a production build, structurally** | `metro/bundled-demo-media.js` keys the exclusion on the build's declared intent rather than on disk state. Measured on a machine that HAS the media: production export 6.8 MB / 43 assets / **zero** `.mp4`; showcase export 65 MB / 11 `.mp4`. |
+| **No payment remnant in the shipped bundle** | `strings` over the release Hermes bundle: `midtrans`, `Segera Hadir`, `billing`, `Play Billing`, `in-app purchase`, `pricing` and `Rp ` are all absent. The only `checkout`/`subscription` hits are the Material Symbols icon name `add_shopping_cart_checkout` and React Native's own `Must pass in a valid subscription`. |
 | **No cleartext exemption in a default build** | `plugins/with-lan-cleartext-demo.js` keys off the scheme of `EXPO_PUBLIC_API_BASE_URL`, so an `https://` backend makes it a no-op with nothing to remember to switch off. `usesCleartextTraffic="true"` exists only in the `debug` / `debugOptimized` manifests. |
 | **No certificate pinning bypass, no trust-manager override** | None present anywhere in the repo. |
 | **No secrets in committed source** | The only committed credential-shaped values are Google's *published sample* AdMob ids (see B3) and the Android template debug keystore password, which is public by definition. `.gitignore` covers `*.jks`, `*.keystore`, `*.p12`, `*.key`, `keystore.properties`, `upload-keystore.properties`, `google-services.json`, `play-service-account*.json`. |
@@ -343,11 +348,27 @@ old placeholder:
    breaks is the local developer workflow, until the new client exists.
 2. **The AdMob app must be created against `com.spark.redpanda`** (B3).
 
-**The generated `android/` tree is now stale.** It is gitignored and still
-carries `applicationId 'com.anonymous.mobileappecc'` and
-`app_name` `mobile-app-ecc` from the last prebuild. `expo prebuild` regenerates
-both from `app.json`; an `assembleRelease`/`bundleRelease` run *without* a
-prebuild would still emit the old identity. See §4.
+**The generated `android/` tree has been regenerated and verified.** It was
+stale - it carried `applicationId 'com.anonymous.mobileappecc'` and `app_name`
+`mobile-app-ecc` from the previous prebuild. `expo prebuild --platform android
+--clean` rebuilt it from `app.json`, and the merged release manifest now carries
+`com.spark.redpanda` / `Red Panda` (§2). `android/` is gitignored build output
+(0 tracked files), so this is not in any commit; **anyone building from a fresh
+clone must run the prebuild themselves before `bundleRelease`, or the native
+identity will not exist at all.** See §4.
+
+The shared Android debug certificate's fingerprints, for the OAuth registration
+below - these are not secret, the same certificate ships with every Android SDK
+install on earth:
+
+```
+SHA1:   5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25
+SHA256: FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C
+```
+
+They are useful only for a **development** OAuth client. The Play-distributed
+build is signed by the upload/app-signing certificate from B1, whose SHA-1 does
+not exist yet and must be registered separately.
 
 **Still scaffold-derived, deliberately not changed:**
 
@@ -364,10 +385,23 @@ prebuild would still emit the old identity. See §4.
 
 ### B3 — AdMob app id AND interstitial unit id are Google's samples/unset. **BLOCKER.**
 
-`app.json` carries `androidAppId: "ca-app-pub-3940256099942544~3347511713"`,
-baked into the manifest as `com.google.android.gms.ads.APPLICATION_ID`. A real
-AdMob app id must replace it. It is not a secret, but it is account-specific and
-cannot be guessed.
+`app.json` carries Google's sample `androidAppId`
+(`ca-app-pub-3940256099942544~3347511713`), baked into the manifest as
+`com.google.android.gms.ads.APPLICATION_ID`. That default is deliberate and
+cannot simply be emptied: the SDK's `MobileAdsInitProvider` is a ContentProvider
+that runs before `Application.onCreate` and **crashes on launch** when the app id
+resolves to an empty string.
+
+Supply the real ids as configuration, not as a source edit:
+
+```
+EXPO_PUBLIC_ADMOB_ANDROID_APP_ID=ca-app-pub-XXXXXXXXXXXXXXXX~YYYYYYYYYY
+EXPO_PUBLIC_ADMOB_INTERSTITIAL_AD_UNIT_ANDROID=ca-app-pub-XXXXXXXXXXXXXXXX/ZZZZZZZZZZ
+```
+
+`app.config.js` substitutes the app id into the plugin; the preflight blocks
+until both are set, because a build with one and not the other cannot serve a
+real ad. Register the AdMob app against **`com.spark.redpanda`**.
 
 Separately, `EXPO_PUBLIC_ADMOB_INTERSTITIAL_AD_UNIT_ANDROID` unset means
 `interstitial-adapter.ts` serves `TestIds.INTERSTITIAL` — a *safe* default (it
@@ -565,10 +599,11 @@ Stated plainly so this document is not mistaken for a sign-off:
   nothing below §6 has been executed. Every playback, orientation, ad-pacing,
   consent-form, deep-link and install-size claim in this document is derived
   from source and from Jest, not from a handset.
-- **No `expo prebuild` was run.** The signing plugin is covered by unit tests
-  and its generated Groovy was parsed with the Groovy compiler shipped in the
-  Gradle wrapper, but the plugin has not been exercised by a real prebuild, and
-  no AAB has ever been produced from this repository.
+- **No AAB has ever been produced from this repository.** `expo prebuild
+  --platform android --clean` HAS now been run and its output verified (see
+  §2), and `:app:processReleaseManifest` HAS been run to produce and inspect a
+  real merged release manifest - but no `bundleRelease`, and no signed
+  artifact.
 - **No release-signed artifact exists.** The only artifact ever built here is a
   debug-signed APK predating this work.
 - **The UMP consent flow has never shown a form**, because no consent message is

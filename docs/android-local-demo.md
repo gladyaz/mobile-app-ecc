@@ -145,6 +145,18 @@ To enable it later, create in Google Cloud:
   > before that is invalid** — Google matches on package name *and* fingerprint,
   > so a client registered for the old package will reject every request from
   > this build. Create a new one; there is nothing to migrate.
+  >
+  > For a development client the fingerprints are already known — this is the
+  > shared Android debug certificate that ships with every SDK install, so it is
+  > not secret:
+  >
+  > ```
+  > SHA1:   5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25
+  > SHA256: FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C
+  > ```
+  >
+  > A Play-distributed build is signed by a different certificate; see
+  > docs/release-readiness-android.md B1.
 
 - a **Web** OAuth client — its client ID is the one that matters, because
   Google issues the ID token against the *web* client on both platforms, and

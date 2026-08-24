@@ -99,4 +99,94 @@ describe('production demo/mock boundary', () => {
       });
     });
   });
+
+});
+
+describe('bundled demo media is excluded from a production build', () => {
+  // The guarantee this pins used to be a PROCEDURE - the release preflight told
+  // a human to go move two folders - and it failed exactly the way procedures
+  // do: on a clean checkout the media was absent and the build was clean, while
+  // on the machine that had produced the showcase APK the identical command
+  // bundled ~61 MB of drama clips and the synthetic QA test card into a store
+  // artifact. metro.config.js now keys the exclusion on what the BUILD is for,
+  // so the outcome no longer depends on the state of somebody's disk.
+  const POLICY_PATH = '../../../../metro/bundled-demo-media';
+
+  type PolicyModule = {
+    shouldStubBundledDemoMedia: (
+      hasMedia?: boolean,
+      env?: Record<string, string | undefined>
+    ) => boolean;
+    isBundledDemoMediaRequest: (
+      context: { originModulePath: string },
+      moduleName: string
+    ) => boolean;
+  };
+
+  function loadPolicy(): PolicyModule {
+    let loaded: PolicyModule | undefined;
+
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      loaded = require(POLICY_PATH) as PolicyModule;
+    });
+
+    return loaded as PolicyModule;
+  }
+
+  const policy = loadPolicy();
+
+  /** Reads as the build's declared intent, which is what the policy keys on. */
+  const PRODUCTION = {};
+  const SHOWCASE = { EXPO_PUBLIC_DEMO_MODE: 'true' };
+  const MOCK_DATA = { EXPO_PUBLIC_USE_MOCK_DATA: 'true' };
+
+  it('stubs the demo media for a build that declares no bundled catalog', () => {
+    // The load-bearing case: the media IS on disk (`hasMedia: true`) and the
+    // build still carries none of it.
+    expect(policy.shouldStubBundledDemoMedia(true, PRODUCTION)).toBe(true);
+  });
+
+  it.each(['false', '0', 'FALSE', ''])(
+    'stubs it for the near-miss flag value %p too',
+    (value) => {
+      expect(
+        policy.shouldStubBundledDemoMedia(true, {
+          EXPO_PUBLIC_DEMO_MODE: value,
+          EXPO_PUBLIC_USE_MOCK_DATA: value,
+        })
+      ).toBe(true);
+    }
+  );
+
+  it('keeps the media for the offline showcase build, which needs it to play anything', () => {
+    expect(policy.shouldStubBundledDemoMedia(true, SHOWCASE)).toBe(false);
+  });
+
+  it('keeps the media for a mock-data build', () => {
+    expect(policy.shouldStubBundledDemoMedia(true, MOCK_DATA)).toBe(false);
+  });
+
+  it('still stubs a demo build whose media was never generated, rather than failing to resolve', () => {
+    // app.config.js refuses this combination at config time with an
+    // explanation, so it is a safety net under an unreachable case - but the
+    // net has to exist, or Metro throws "Unable to resolve module" instead.
+    expect(policy.shouldStubBundledDemoMedia(false, SHOWCASE)).toBe(true);
+  });
+
+  it('targets the demo directories precisely, and nothing that merely looks like them', () => {
+    const { isBundledDemoMediaRequest: isDemoMedia } = policy;
+    const fromDataDir = { originModulePath: `${process.cwd()}/src/data/mock-drama-videos.ts` };
+    const fromRoot = { originModulePath: `${process.cwd()}/app.config.js` };
+
+    expect(isDemoMedia(fromDataDir, '../../assets/videos/pewaris-ep-1.mp4')).toBe(true);
+    expect(isDemoMedia(fromDataDir, '../../assets/videos/qa-16x9-fullscreen.mp4')).toBe(true);
+    expect(isDemoMedia(fromDataDir, '../../assets/thumbnails/pewaris-ep-1.jpg')).toBe(true);
+
+    // The app's own artwork, a lookalike directory, and a package specifier
+    // must all resolve normally - stubbing any of them would blank the UI.
+    expect(isDemoMedia(fromRoot, './assets/images/icon.png')).toBe(false);
+    expect(isDemoMedia(fromDataDir, '../../assets/videos-extra/x.mp4')).toBe(false);
+    expect(isDemoMedia(fromDataDir, 'react-native')).toBe(false);
+  });
 });

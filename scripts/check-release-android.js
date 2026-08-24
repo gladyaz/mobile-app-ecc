@@ -215,20 +215,26 @@ if (!process.env.EXPO_PUBLIC_ADMOB_INTERSTITIAL_AD_UNIT_ANDROID) {
 }
 
 // --- Bundled demo media ----------------------------------------------------
-
-const bundledDemoMediaPresent = ['assets/videos', 'assets/thumbnails'].filter((relativePath) =>
-  fs.existsSync(path.join(projectRoot, relativePath))
-);
-
-if (bundledDemoMediaPresent.length > 0) {
-  blocker(
-    `Bundled demo media is present on disk: ${bundledDemoMediaPresent.join(', ')}`,
-    'Those directories are gitignored offline-showcase clips/posters (~62 MB). Metro collects ' +
-      'their `require`s unconditionally from src/data/mock-drama-videos.ts, so a build made now ' +
-      'would ship every demo clip and the QA test card inside the production APK. Move or ' +
-      'delete them, or build from a clean checkout.'
-  );
-}
+//
+// THERE IS DELIBERATELY NO CHECK HERE ANY MORE.
+//
+// This used to block whenever `assets/videos` / `assets/thumbnails` existed,
+// because Metro collected their `require`s unconditionally and a build made on
+// the machine that had produced the showcase APK silently shipped ~61 MB of
+// drama clips and the synthetic QA test card inside a store artifact.
+//
+// That is now structurally impossible rather than procedurally avoided:
+// `metro.config.js` stubs those requires for any build that does not set
+// EXPO_PUBLIC_DEMO_MODE / EXPO_PUBLIC_USE_MOCK_DATA, whatever is on disk.
+// Measured on a machine that HAS the media: a production export is 6.8 MB with
+// 43 assets and zero `.mp4`, while the demo export is still 65 MB with 11.
+// Both flags remain blockers in their own right above, so the only build that
+// can carry the clips is one that has declared it wants them.
+//
+// Re-adding a disk check would make the preflight demand a pointless chore -
+// "go move some folders" - for a risk that no longer exists, and a preflight
+// that cries wolf gets ignored. The guarantee is pinned by
+// `src/services/demo/__tests__/production-boundary.test.ts`.
 
 // --- Resolved Expo config --------------------------------------------------
 

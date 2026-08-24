@@ -143,13 +143,50 @@ describe('mapBackendSeriesDetail', () => {
     expect(detail.episodes[0].contentKind).toBe('drama');
   });
 
-  it('does not re-sort the episodes the backend already ordered', () => {
+  it('orders episodes by episode number, whatever order the backend sent them in', () => {
+    // Reverses the earlier "render the backend's order verbatim" decision.
+    // Nothing in the API contract promises an ordering for this endpoint, so
+    // rendering it faithfully meant rendering "Episode 3, Episode 1, Episode 2"
+    // to a viewer if the backend ever changed its query. See the comment on
+    // `byEpisodeNumber` in series-mapper.ts.
     const dto: BackendSeriesDetailDto = {
       ...buildSeriesDto(),
       episodes: [3, 1, 2].map((episodeNumber) => buildEpisodeDto(episodeNumber)),
     };
 
-    expect(mapBackendSeriesDetail(dto).episodes.map((e) => e.episodeNumber)).toEqual([3, 1, 2]);
+    expect(mapBackendSeriesDetail(dto).episodes.map((e) => e.episodeNumber)).toEqual([1, 2, 3]);
+  });
+
+  it('keeps every episode when the backend stops sending contentKind', () => {
+    // The filter used to read the RAW wire value, which inverted
+    // `resolveContentKind`'s production fail-open policy and silently emptied
+    // every series over one missing field. Mapping first routes the decision
+    // through that policy instead.
+    //
+    // __DEV__ is forced false because that policy only exists in production:
+    // under Jest, __DEV__ is true and the mapper throws at the boundary on
+    // purpose, so a developer sees a contract break immediately. The defect
+    // being pinned here is what a SHIPPED build does with the same response.
+    const originalDev = (globalThis as { __DEV__?: boolean }).__DEV__;
+
+    (globalThis as { __DEV__?: boolean }).__DEV__ = false;
+
+    const dto: BackendSeriesDetailDto = {
+      ...buildSeriesDto(),
+      episodes: [1, 2].map((episodeNumber) => {
+        const episode = { ...buildEpisodeDto(episodeNumber) } as Record<string, unknown>;
+
+        delete episode.contentKind;
+
+        return episode as unknown as BackendSeriesDetailDto['episodes'][number];
+      }),
+    };
+
+    try {
+      expect(mapBackendSeriesDetail(dto).episodes).toHaveLength(2);
+    } finally {
+      (globalThis as { __DEV__?: boolean }).__DEV__ = originalDev;
+    }
   });
 });
 

@@ -138,6 +138,40 @@ const ACCESS_TIERS: readonly VideoAccessTier[] = ['free', 'premium'];
  * actually free - visible, recoverable, and strictly better than silently
  * under-reporting a paywall. It is never a silent default to `free`.
  */
+/**
+ * The fallback category for a row whose `category` the client does not
+ * recognise. `Drama` is the app's own generic bucket, and category is a
+ * display/filter label only - it gates no access and no playback.
+ */
+const FALLBACK_CATEGORY: VideoCategory = 'Drama';
+
+/**
+ * Reads the category, degrading rather than throwing in production - the same
+ * policy `resolveContentKind` above applies, and for a stronger reason.
+ *
+ * This used to be a bare `assertField`, which throws unconditionally. Because
+ * `getVideoFeed` maps the whole page in one pass, ONE row carrying a category
+ * the client has never heard of took down the ENTIRE feed and left the viewer
+ * on the error state - and the way that row comes to exist is somebody adding
+ * a category on the backend, which is an ordinary, additive content operation
+ * that nobody would expect to break every installed app.
+ *
+ * Degrading costs one row a slightly wrong filter label, which is visible and
+ * recoverable. The dev-time throw is kept so the drift is still caught at the
+ * boundary by whoever can fix it.
+ */
+function resolveCategory(dto: BackendVideoDto): VideoCategory {
+  const value = typeof dto.category === 'string' ? normalizeCategory(dto.category) : undefined;
+
+  if (value !== undefined) {
+    return value;
+  }
+
+  assertField(!__DEV__, 'category', dto);
+
+  return FALLBACK_CATEGORY;
+}
+
 function resolveAccessTier(dto: BackendVideoDto): VideoAccessTier {
   const value = dto.accessTier;
 
@@ -157,10 +191,7 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
   assertField(typeof dto.episodeNumber === 'number', 'episodeNumber', dto);
   assertField(typeof dto.channelName === 'string', 'channelName', dto);
   assertField(typeof dto.caption === 'string', 'caption', dto);
-  const normalizedCategory =
-    typeof dto.category === 'string' ? normalizeCategory(dto.category) : undefined;
-
-  assertField(normalizedCategory !== undefined, 'category', dto);
+  const normalizedCategory = resolveCategory(dto);
   assertField(typeof dto.storageKey === 'string', 'storageKey', dto);
   assertField(
     typeof dto.playbackUrl === 'string' && dto.playbackUrl.length > 0,
@@ -188,7 +219,7 @@ export function mapBackendVideoToVideo(dto: BackendVideoDto): Video {
     title: dto.title,
     episodeNumber: dto.episodeNumber,
     channelName: dto.channelName,
-    category: normalizedCategory as VideoCategory,
+    category: normalizedCategory,
     sourceLanguage: dto.sourceLanguage,
     hasEmbeddedIndonesianSubtitle: dto.hasEmbeddedIndonesianSubtitle,
     // The feed only returns playable videos, so treat every backend-fetched

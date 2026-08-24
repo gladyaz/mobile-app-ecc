@@ -39,9 +39,34 @@ describe('mapBackendVideoToVideo', () => {
     expect(video.category).toBe('Romance');
   });
 
-  it('throws when category does not match any known category, case-insensitively', () => {
+  it('throws in development when category does not match any known category, case-insensitively', () => {
     const dtoWithUnknownCategory = buildDto({ category: 'not-a-real-category' });
 
     expect(() => mapBackendVideoToVideo(dtoWithUnknownCategory)).toThrow(/category/);
+  });
+
+  it('degrades an unrecognised category to Drama in production, instead of taking the feed down', () => {
+    // The dev-time throw above is the other half of this policy. It used to be
+    // the ONLY half: a bare assertField that threw unconditionally. Because
+    // `getVideoFeed` maps a whole page in one pass, ONE row carrying a category
+    // the client had never heard of blanked the ENTIRE feed for every installed
+    // app - and the way such a row comes to exist is somebody adding a category
+    // on the backend, an ordinary additive content operation that nobody would
+    // expect to break shipped clients. Category is a display/filter label; it
+    // gates no access and no playback, so degrading it is cosmetic.
+    const originalDev = (globalThis as { __DEV__?: boolean }).__DEV__;
+
+    (globalThis as { __DEV__?: boolean }).__DEV__ = false;
+
+    try {
+      expect(mapBackendVideoToVideo(buildDto({ category: 'Thriller' })).category).toBe('Drama');
+      expect(
+        mapBackendVideoToVideo(
+          buildDto({ category: undefined as unknown as BackendVideoDto['category'] })
+        ).category
+      ).toBe('Drama');
+    } finally {
+      (globalThis as { __DEV__?: boolean }).__DEV__ = originalDev;
+    }
   });
 });

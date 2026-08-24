@@ -1,6 +1,6 @@
 import { mapBackendVideoToVideo, type BackendVideoDto } from '@/services/videos/video-mapper';
 import type { CatalogSeries, CatalogSeriesDetail } from '@/types/series-catalog';
-import type { VideoCategory } from '@/types/video';
+import type { Video, VideoCategory } from '@/types/video';
 
 /**
  * Wire shape of `SeriesPublicDto` (backend
@@ -93,22 +93,51 @@ export function mapBackendSeries(dto: BackendSeriesDto): CatalogSeries {
 }
 
 /**
+ * Orders episodes for display: by episode number ascending, with the id as a
+ * tie-break so two rows sharing a number still land in a stable, repeatable
+ * order rather than whatever the input happened to be.
+ *
+ * This REVERSES an earlier deliberate decision to render the backend's order
+ * verbatim (pinned by its own test, "does not re-sort the episodes the backend
+ * already ordered"). That decision rested on an assumption the client cannot
+ * check: nothing in docs/api-contract.md promises an ordering for this
+ * endpoint's `episodes[]`, so "the backend already ordered them" was a hope,
+ * not a contract. Sorting is a no-op when that hope holds and repairs the list
+ * when it does not, and a deterministic episode list is a release requirement
+ * - a viewer scrolling "Episode 3, Episode 1, Episode 2" reads that as a
+ * broken app, not as a faithful rendering of a response.
+ */
+function byEpisodeNumber(left: Video, right: Video): number {
+  return left.episodeNumber - right.episodeNumber || left.id.localeCompare(right.id);
+}
+
+/**
  * Maps `GET /series/:id`. Episodes reuse the existing video mapper, so a
  * series episode and a feed episode are the same `Video` and stay playable
- * through the untouched playback path. Backend order (`episodeNumber`
- * ascending) is preserved as sent - the client does not re-sort.
+ * through the untouched playback path.
  */
 export function mapBackendSeriesDetail(dto: BackendSeriesDetailDto): CatalogSeriesDetail {
   assertField(Array.isArray(dto?.episodes), 'episodes', dto);
 
   return {
     ...mapBackendSeries(dto),
-    // Same user-facing boundary `selectUserFacingCatalog` applies to the feed:
-    // a QA fixture episode must not reach a normal surface just because it
-    // shares a seriesId. The backend is expected to exclude them here too;
-    // this keeps the client's own guarantee rather than assuming it.
+    // MAP FIRST, THEN FILTER. Filtering the raw wire value inverted
+    // `resolveContentKind`'s production policy, which degrades an
+    // unrecognised or missing `contentKind` to `drama` precisely because
+    // "mislabelling real content as a fixture would erase it from every
+    // user-facing surface" (see video-mapper.ts). Reading `episode.contentKind`
+    // off the DTO skipped that degradation entirely: a backend that stopped
+    // sending the field - or renamed its value - would match nothing here and
+    // silently empty EVERY series, while the feed built from the same rows
+    // carried on working. Filtering the mapped value routes both surfaces
+    // through the one policy.
+    //
+    // The filter itself stays: it is the same user-facing boundary
+    // `selectUserFacingCatalog` applies to the feed, so a QA fixture episode
+    // cannot reach a normal surface just because it shares a seriesId.
     episodes: dto.episodes
+      .map(mapBackendVideoToVideo)
       .filter((episode) => episode.contentKind === 'drama')
-      .map(mapBackendVideoToVideo),
+      .sort(byEpisodeNumber),
   };
 }

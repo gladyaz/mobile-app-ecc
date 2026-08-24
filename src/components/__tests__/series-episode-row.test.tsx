@@ -195,6 +195,6 @@ describe('SeriesEpisodeRow artwork', () => {
     expect(getByRole('button').props.accessibilityState.selected).toBe(true);
     expect(getByText('Episode 3')).toBeTruthy();
     expect(getByText('Sedang diputar')).toBeTruthy();
-    expect(getByText('Free')).toBeTruthy();
+    expect(getByText('Gratis')).toBeTruthy();
   });
 });

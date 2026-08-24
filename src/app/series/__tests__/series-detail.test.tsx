@@ -254,8 +254,11 @@ describe('SeriesDetailScreen - authoritative access tier (Admin override)', () =
 
     // 3 premium (2, 9, 10) and 7 free - counted from the backend values, not
     // from any 5/6 boundary.
+    // The default locale is Indonesian: the free badge reads "Gratis"
+    // ("Free" was untranslated English sitting in the `id` block). "Premium"
+    // is a loanword and is the same in all three locales.
     expect(getAllByText('Premium')).toHaveLength(3);
-    expect(getAllByText('Free')).toHaveLength(7);
+    expect(getAllByText('Gratis')).toHaveLength(7);
   });
 
   it('emits premium_gate_hit for the overridden EARLY episode, not for a late free one', async () => {

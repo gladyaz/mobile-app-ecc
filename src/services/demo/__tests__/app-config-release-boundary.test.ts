@@ -13,13 +13,20 @@ const APP_CONFIG_PATH = '../../../../app.config.js';
 
 type PluginEntry = string | [string, Record<string, unknown>];
 
-function resolvePlugins(nodeEnv: string | undefined): PluginEntry[] {
-  const savedNodeEnv = process.env.NODE_ENV;
+type NodeEnv = NodeJS.ProcessEnv['NODE_ENV'];
+
+// `@types/node` declares NODE_ENV as a required union, so neither `delete` nor
+// an assignment type-checks against `process.env` directly. This view is the
+// narrowest thing that expresses what the test actually does to it.
+const mutableEnv = process.env as { NODE_ENV?: NodeEnv };
+
+function resolvePlugins(nodeEnv: NodeEnv | undefined): PluginEntry[] {
+  const savedNodeEnv = mutableEnv.NODE_ENV;
 
   if (nodeEnv === undefined) {
-    delete process.env.NODE_ENV;
+    delete mutableEnv.NODE_ENV;
   } else {
-    process.env.NODE_ENV = nodeEnv;
+    mutableEnv.NODE_ENV = nodeEnv;
   }
 
   try {
@@ -37,9 +44,9 @@ function resolvePlugins(nodeEnv: string | undefined): PluginEntry[] {
     return plugins;
   } finally {
     if (savedNodeEnv === undefined) {
-      delete process.env.NODE_ENV;
+      delete mutableEnv.NODE_ENV;
     } else {
-      process.env.NODE_ENV = savedNodeEnv;
+      mutableEnv.NODE_ENV = savedNodeEnv;
     }
   }
 }

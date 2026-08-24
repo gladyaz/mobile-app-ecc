@@ -7,6 +7,23 @@ import type { AuthResponse } from '@/types/auth';
 
 const HTTP_NO_CONTENT = 204;
 
+/**
+ * How long a single request may wait before it is abandoned.
+ *
+ * `fetch` has no default timeout. Without one, a host that RESOLVES but never
+ * answers - the LAN backend after the laptop sleeps, a captive portal, a
+ * production origin behind a wedged load balancer - leaves the promise pending
+ * forever, and every screen that awaited it keeps its spinner permanently. The
+ * app has honest error states for a refused connection and shows none of them
+ * for a silent one, which reads to a viewer as a frozen app rather than a
+ * failed request.
+ *
+ * 20s is deliberately generous: it is a ceiling on hanging, not a latency
+ * budget. A cold backend on a slow mobile connection must still be able to
+ * answer inside it.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -91,14 +108,16 @@ export type RequestConfig = {
   readonly requiresAuth?: boolean;
 };
 
-function buildAuthHeader(): Record<string, string> {
-  const tokens = getTokens();
+function readAccessToken(): string | undefined {
+  return getTokens()?.accessToken;
+}
 
-  if (!tokens?.accessToken) {
+function buildAuthHeader(accessToken: string | undefined): Record<string, string> {
+  if (!accessToken) {
     return {};
   }
 
-  return { Authorization: `Bearer ${tokens.accessToken}` };
+  return { Authorization: `Bearer ${accessToken}` };
 }
 
 function isInvalidAccessTokenError(error: unknown): boolean {
@@ -186,30 +205,70 @@ export async function request<TResponse>(
   }
 
   const url = `${baseUrl}/${normalizePath(path)}`;
+
+  // Pinned BEFORE the request is sent, and compared again before any refresh:
+  // this exact token is the identity this request was made under. See the
+  // refresh branch below for what that comparison prevents.
+  const sentAccessToken = requiresAuth ? readAccessToken() : undefined;
+
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => {
+    abortController.abort();
+  }, REQUEST_TIMEOUT_MS);
+
   let response: Response;
 
   try {
     response = await fetch(url, {
       ...options,
+      signal: abortController.signal,
       headers: {
         Accept: 'application/json',
-        ...(requiresAuth ? buildAuthHeader() : {}),
+        ...(requiresAuth ? buildAuthHeader(sentAccessToken) : {}),
         ...options?.headers,
       },
     });
   } catch (error) {
+    // An abort is the timeout firing, not a refused connection. Both are
+    // network failures to a caller, but only one of them is worth telling a
+    // viewer to check their connection about, so they get distinct codes.
+    if (abortController.signal.aborted) {
+      throw new ApiError(
+        0,
+        'TIMEOUT',
+        `Request timed out after ${REQUEST_TIMEOUT_MS}ms.`
+      );
+    }
+
     throw new ApiError(
       0,
       'NETWORK_ERROR',
       error instanceof Error ? error.message : 'Network request failed.'
     );
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!response.ok) {
     const { code, message } = await parseErrorBody(response);
     const apiError = new ApiError(response.status, code, message);
 
-    if (requiresAuth && !isRetry && isInvalidAccessTokenError(apiError)) {
+    // The token-identity check is what stops a 401 arriving for one account
+    // from being answered on behalf of another.
+    //
+    // `attemptTokenRefresh` and the retry both read the LIVE token store. If
+    // the viewer signed out and back in - as a different user, or the same one
+    // - while this request was in flight, the store now holds someone else's
+    // pair. Refreshing then rotates THAT session, and the retry re-sends this
+    // request with THAT access token: a like, a watch position, or an account
+    // mutation issued by user A gets committed to user B's account, and both
+    // sides look like ordinary successful requests.
+    //
+    // A 401 for a token that is no longer the current one is stale by
+    // definition, so there is nothing to recover: propagate it.
+    const isStillTheSameSession = readAccessToken() === sentAccessToken;
+
+    if (requiresAuth && !isRetry && isInvalidAccessTokenError(apiError) && isStillTheSameSession) {
       const refreshed = await attemptTokenRefresh();
 
       if (refreshed) {

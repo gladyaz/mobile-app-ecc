@@ -268,5 +268,115 @@ describe('request', () => {
       // even though the retry is also a 401 INVALID_ACCESS_TOKEN.
       expect(fetchMock).toHaveBeenCalledTimes(3);
     });
+
+    it('does not refresh or retry when the session changed while the request was in flight', async () => {
+      setTokens(ORIGINAL_TOKENS);
+
+      const OTHER_USERS_TOKENS: AuthTokens = {
+        accessToken: 'other-users-access-token',
+        refreshToken: 'other-users-refresh-token',
+      };
+
+      // The 401 arrives AFTER someone else has signed in on this device. Both
+      // the refresh and the retry read the live token store, so without the
+      // identity pin this request would be re-sent - and committed - as the
+      // new user.
+      fetchMock.mockImplementationOnce(() => {
+        setTokens(OTHER_USERS_TOKENS);
+
+        return Promise.resolve(
+          jsonResponse(401, { code: 'INVALID_ACCESS_TOKEN', message: 'expired' })
+        );
+      });
+
+      await expect(
+        request('protected/thing', { method: 'POST' }, { requiresAuth: true })
+      ).rejects.toMatchObject({ status: 401, code: 'INVALID_ACCESS_TOKEN' });
+
+      // Exactly one call: the original. No refresh, no retry.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // And the new session was left completely alone.
+      expect(getTokens()).toEqual(OTHER_USERS_TOKENS);
+    });
+
+    it('still refreshes when the session is unchanged, so the pin does not disable recovery', async () => {
+      setTokens(ORIGINAL_TOKENS);
+      const rotatedTokens: AuthTokens = {
+        accessToken: 'new-access-token',
+        refreshToken: 'new-refresh-token',
+      };
+
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse(401, { code: 'INVALID_ACCESS_TOKEN', message: 'expired' })
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(200, {
+            user: { id: 'user_1', email: 'jane@example.com' },
+            ...rotatedTokens,
+          })
+        )
+        .mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+
+      await expect(request('protected/thing', undefined, { requiresAuth: true })).resolves.toEqual({
+        ok: true,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('request timeout', () => {
+    it('aborts a request that never answers and reports it as TIMEOUT, not NETWORK_ERROR', async () => {
+      jest.useFakeTimers();
+
+      try {
+        // A host that resolves and then says nothing: the promise never
+        // settles on its own. Only the abort ends it.
+        fetchMock.mockImplementationOnce(
+          (_url: string, init: RequestInit) =>
+            new Promise((_resolve, reject) => {
+              init.signal?.addEventListener('abort', () => {
+                reject(new Error('The operation was aborted.'));
+              });
+            })
+        );
+
+        const pending = request('videos/feed');
+
+        jest.advanceTimersByTime(20_000);
+
+        await expect(pending).rejects.toMatchObject({ status: 0, code: 'TIMEOUT' });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('passes an abort signal on every request', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+
+      await request('videos/feed');
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.signal?.aborted).toBe(false);
+    });
+
+    it('does not leave the timeout armed after a request settles', async () => {
+      jest.useFakeTimers();
+
+      try {
+        fetchMock.mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+
+        await request('videos/feed');
+
+        // If the timer were still armed it would abort here, and a later
+        // reader of the same signal would see a request that "failed" long
+        // after it succeeded.
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 });

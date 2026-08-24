@@ -154,9 +154,10 @@ const MAX_PLAYBACK_AUTH_AUTO_RETRIES = PLAYBACK_AUTH_RETRY_DELAYS_MS.length;
 
 /**
  * Only an HTTP 429 (the backend's own per-user throttle - the exact failure
- * mode this ADDENDUM exists to recover from) or a genuine network failure
- * (`ApiError` status 0, code `NETWORK_ERROR` - see `services/api/client.ts`)
- * is worth automatically retrying. Every other failure - most importantly a
+ * mode this ADDENDUM exists to recover from) or a genuine transport failure
+ * (`ApiError` status 0, code `NETWORK_ERROR` for a refused connection or
+ * `TIMEOUT` for a host that resolved and then never answered - see
+ * `services/api/client.ts`) is worth automatically retrying. Every other failure - most importantly a
  * 403 `ENTITLEMENT_REQUIRED` (the viewer genuinely does not have access) -
  * is a legitimate, stable "unavailable" state: hammering it on a timer would
  * not fix it, and would just add load for nothing. `status === 0` is
@@ -166,7 +167,10 @@ const MAX_PLAYBACK_AUTH_AUTO_RETRIES = PLAYBACK_AUTH_RETRY_DELAYS_MS.length;
  * misconfiguration, not a transient blip.
  */
 function isRetryablePlaybackAuthError(error: unknown): boolean {
-  return error instanceof ApiError && (error.status === 429 || error.code === 'NETWORK_ERROR');
+  return (
+    error instanceof ApiError &&
+    (error.status === 429 || error.code === 'NETWORK_ERROR' || error.code === 'TIMEOUT')
+  );
 }
 
 const ENTITLEMENT_REQUIRED_ERROR_CODE = 'ENTITLEMENT_REQUIRED';

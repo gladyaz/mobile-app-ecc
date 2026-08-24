@@ -100,6 +100,12 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   secondaryButton: {
+    // 44pt minimum. For a series with no free episode this is the ONLY
+    // visible way out of the dialog - drama-feed-item.tsx and series/[id].tsx
+    // both pass `onGoToFreeEpisode: undefined` in that case - so a target that
+    // is hard to hit turns the card back into the dead end this change removed.
+    minHeight: 44,
+    justifyContent: 'center',
     marginTop: 12,
     paddingVertical: 12,
     alignItems: 'center',

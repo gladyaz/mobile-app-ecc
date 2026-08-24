@@ -1,4 +1,9 @@
-import { __resetConsentGateForTests, ensureAdsConsent } from '@/services/ads/consent-gate';
+import {
+  __resetConsentGateForTests,
+  ensureAdsConsent,
+  isAdPrivacyOptionsRequired,
+  showAdPrivacyOptionsForm,
+} from '@/services/ads/consent-gate';
 
 /**
  * The one place in this codebase that stubs `react-native-google-mobile-ads`
@@ -14,12 +19,14 @@ import { __resetConsentGateForTests, ensureAdsConsent } from '@/services/ads/con
 const mockRequestInfoUpdate = jest.fn();
 const mockLoadAndShowConsentFormIfRequired = jest.fn();
 const mockInitialize = jest.fn();
+const mockShowPrivacyOptionsForm = jest.fn();
 
 jest.mock('react-native-google-mobile-ads', () => ({
   AdsConsent: {
     requestInfoUpdate: (...args: unknown[]) => mockRequestInfoUpdate(...args),
     loadAndShowConsentFormIfRequired: (...args: unknown[]) =>
       mockLoadAndShowConsentFormIfRequired(...args),
+    showPrivacyOptionsForm: (...args: unknown[]) => mockShowPrivacyOptionsForm(...args),
   },
   AdsConsentStatus: {
     UNKNOWN: 'UNKNOWN',
@@ -36,6 +43,7 @@ type ConsentInfoOverrides = {
   readonly status?: string;
   readonly canRequestAds?: boolean;
   readonly isConsentFormAvailable?: boolean;
+  readonly privacyOptionsRequirementStatus?: string;
 };
 
 function buildConsentInfo(overrides: ConsentInfoOverrides = {}) {
@@ -51,6 +59,7 @@ function buildConsentInfo(overrides: ConsentInfoOverrides = {}) {
 beforeEach(() => {
   __resetConsentGateForTests();
   mockInitialize.mockResolvedValue([]);
+  mockShowPrivacyOptionsForm.mockResolvedValue(buildConsentInfo());
 });
 
 describe('ensureAdsConsent — the sequence', () => {
@@ -170,5 +179,49 @@ describe('ensureAdsConsent — memoization', () => {
     await expect(ensureAdsConsent()).resolves.toBe(false);
 
     expect(mockRequestInfoUpdate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ad privacy options', () => {
+  it('reports the control as not required until the sequence has run', () => {
+    // Nothing is known before `requestInfoUpdate`, and a Profile row that
+    // opens a form Google has not asked for is worse than no row.
+    expect(isAdPrivacyOptionsRequired()).toBe(false);
+  });
+
+  it('reports the control as required when Google says the region needs one', async () => {
+    // UMP's requirement is not only "show a form once": where
+    // privacyOptionsRequirementStatus is REQUIRED - the whole EEA and UK - the
+    // app must expose a persistent way to reopen it, or a viewer's first-launch
+    // choice is permanent.
+    mockRequestInfoUpdate.mockResolvedValue(
+      buildConsentInfo({ privacyOptionsRequirementStatus: 'REQUIRED' })
+    );
+
+    await ensureAdsConsent();
+
+    expect(isAdPrivacyOptionsRequired()).toBe(true);
+  });
+
+  it('reports the control as not required elsewhere', async () => {
+    mockRequestInfoUpdate.mockResolvedValue(
+      buildConsentInfo({ privacyOptionsRequirementStatus: 'NOT_REQUIRED' })
+    );
+
+    await ensureAdsConsent();
+
+    expect(isAdPrivacyOptionsRequired()).toBe(false);
+  });
+
+  it('reports failure rather than throwing when the form cannot be shown', async () => {
+    mockShowPrivacyOptionsForm.mockRejectedValue(new Error('no form published'));
+
+    await expect(showAdPrivacyOptionsForm()).resolves.toBe(false);
+  });
+
+  it('reports success when the form is shown', async () => {
+    mockShowPrivacyOptionsForm.mockResolvedValue(buildConsentInfo());
+
+    await expect(showAdPrivacyOptionsForm()).resolves.toBe(true);
   });
 });

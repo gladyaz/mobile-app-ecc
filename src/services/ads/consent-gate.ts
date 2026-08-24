@@ -48,6 +48,22 @@ let hasSettledSuccessfully = false;
 let inFlight: Promise<boolean> | null = null;
 let lastFailureAt: number | null = null;
 
+/**
+ * Whether Google told us this user's region requires an ongoing way to change
+ * their ad-consent choice, recorded from the last `requestInfoUpdate()`.
+ *
+ * UMP's integration requirement is not only "show a form once". When
+ * `privacyOptionsRequirementStatus` is REQUIRED - which it is throughout the
+ * EEA and the UK - the app must ALSO expose a persistent control that reopens
+ * the form, so somebody who accepted personalised ads at first launch can
+ * withdraw that later. Without it there is no route back: the form is shown
+ * once and never again, and the choice is effectively permanent.
+ *
+ * `false` until proven otherwise, so a region that does not require the control
+ * never grows a settings row it has no use for.
+ */
+let isPrivacyOptionsRequired = false;
+
 async function runConsentSequence(): Promise<boolean> {
   if (Platform.OS === 'web') {
     // Defensive only - Metro resolves `consent-gate.web.ts` for web, so this
@@ -75,6 +91,18 @@ async function runConsentSequence(): Promise<boolean> {
     // post-form answer, never the pre-form one.
     info = await AdsConsent.loadAndShowConsentFormIfRequired();
   }
+
+  // Recorded from the POST-form info for the same reason `canRequestAds` is:
+  // the requirement can change as a result of what the viewer chose.
+  //
+  // Compared against the literal rather than
+  // `AdsConsentPrivacyOptionsRequirementStatus.REQUIRED`, because the enum is a
+  // plain string enum whose members ARE these literals
+  // (specs/modules/NativeConsentModule.ts) and reading it off the lazily
+  // required module would make this line throw on any consumer whose SDK stub
+  // does not re-export it - turning a missing test double into "consent
+  // failed", which fails closed and silently disables ads.
+  isPrivacyOptionsRequired = info.privacyOptionsRequirementStatus === 'REQUIRED';
 
   if (!info.canRequestAds) {
     return false;
@@ -133,9 +161,54 @@ export function ensureAdsConsent(): Promise<boolean> {
   return inFlight;
 }
 
+/**
+ * Whether this build must offer a persistent "ad privacy options" control.
+ *
+ * Reads the answer recorded by the last consent sequence, so it is `false`
+ * until that sequence has run and Google has said the region requires it. The
+ * Profile screen renders its row off this, which means the row appears for an
+ * EEA/UK viewer and stays absent everywhere else instead of showing a control
+ * that opens nothing.
+ */
+export function isAdPrivacyOptionsRequired(): boolean {
+  return isPrivacyOptionsRequired;
+}
+
+/**
+ * Reopens Google's privacy options form so a viewer can change or withdraw the
+ * ad-consent choice they made at first launch.
+ *
+ * Resolves `false` rather than rejecting when the form cannot be shown, so a
+ * caller can report a failure instead of crashing on one. It deliberately does
+ * NOT re-run the whole consent sequence: `ensureAdsConsent` has already
+ * latched, and the ad state Google returns after the form is applied on the
+ * next `requestInfoUpdate` - which is the next launch.
+ */
+export async function showAdPrivacyOptionsForm(): Promise<boolean> {
+  if (Platform.OS === 'web') {
+    return false;
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { AdsConsent } = require('react-native-google-mobile-ads') as typeof import('react-native-google-mobile-ads');
+
+    await AdsConsent.showPrivacyOptionsForm();
+
+    return true;
+  } catch (error) {
+    if (__DEV__) {
+      console.warn('[consent-gate] Could not show the ad privacy options form.', error);
+    }
+
+    return false;
+  }
+}
+
 /** Test-only: drops the memoized session state so each case starts clean. */
 export function __resetConsentGateForTests(): void {
   hasSettledSuccessfully = false;
   inFlight = null;
   lastFailureAt = null;
+  isPrivacyOptionsRequired = false;
 }

@@ -15,6 +15,21 @@ export function ensureAdsConsent(): Promise<boolean> {
   return Promise.resolve(false);
 }
 
+/**
+ * Web never runs the UMP sequence, so it never learns that a region requires
+ * the privacy-options control - and there is no ad surface for it to govern.
+ * Answering `false` keeps the Profile row off web rather than rendering one
+ * that opens nothing.
+ */
+export function isAdPrivacyOptionsRequired(): boolean {
+  return false;
+}
+
+/** Nothing to show: web has no UMP form. */
+export function showAdPrivacyOptionsForm(): Promise<boolean> {
+  return Promise.resolve(false);
+}
+
 /** Present only so both platform files expose the identical surface. */
 export function __resetConsentGateForTests(): void {
   // No state to reset - this file holds none by design.

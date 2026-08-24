@@ -97,7 +97,16 @@ export function onVideoTransition(): void {
   );
 
   if (result.show && presenter) {
-    presenter.show();
+    // STAMPED BEFORE `show()`, not after.
+    //
+    // `MobileAd.show()` can fail SYNCHRONOUSLY (the adapter's own note: it
+    // throws when its `_loaded` flag disagrees with ours). The adapter catches
+    // that and calls `onError` inline, which reaches `clearShowInFlight()` and
+    // sets this back to null - all before `show()` returns. Stamping
+    // afterwards therefore wrote the guard back ON top of the clear that had
+    // just happened, holding every later interstitial for the full 10-second
+    // window over a failure the app had already handled.
     showRequestedAt = now;
+    presenter.show();
   }
 }

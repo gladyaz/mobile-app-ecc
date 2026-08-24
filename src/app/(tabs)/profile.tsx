@@ -2,7 +2,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import * as WebBrowser from 'expo-web-browser';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   getAccountDeletionUrl,
@@ -11,6 +11,10 @@ import {
   hasAnyLegalUrl,
 } from '@/constants/legal';
 import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
+import {
+  isAdPrivacyOptionsRequired,
+  showAdPrivacyOptionsForm,
+} from '@/services/ads/consent-gate';
 import { isInternalScreenEnabled } from '@/services/debug/internal-screens';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { resetAllPersistedState } from '@/services/storage/local-storage';
@@ -37,8 +41,17 @@ import { useVideoInteractions } from '@/stores/video-interactions';
  */
 function LegalLinks() {
   const { t } = useTranslation();
+  const { showToast } = useToast();
 
-  if (!hasAnyLegalUrl()) {
+  // UMP's integration requirement is not only "show a form once". Where
+  // `privacyOptionsRequirementStatus` is REQUIRED - the whole EEA and UK - the
+  // app must ALSO expose a persistent control that reopens it, so somebody who
+  // accepted personalised ads at first launch has a route back. Without one the
+  // first-launch choice is permanent. Rendered only where Google says it is
+  // required, so no other region grows a row that opens nothing.
+  const showsAdPrivacyOptions = isAdPrivacyOptionsRequired();
+
+  if (!hasAnyLegalUrl() && !showsAdPrivacyOptions) {
     return null;
   }
 
@@ -48,6 +61,28 @@ function LegalLinks() {
     { key: 'deletion', label: t('profile.deleteAccountHelp'), url: getAccountDeletionUrl() },
   ].filter((row): row is { key: string; label: string; url: string } => Boolean(row.url));
 
+  /**
+   * Opens an external page, and says so when it cannot.
+   *
+   * `openBrowserAsync` REJECTS on a device with no browser exposing a Custom
+   * Tabs service, or none matching the https VIEW intent - stripped OEM images,
+   * managed profiles, a viewer who disabled Chrome. Discarding that rejection
+   * turns a legally-required link into a row that silently does nothing when
+   * tapped, which is the same dead-end shape this release is removing
+   * elsewhere. Fall back to the system browser, and only then admit failure.
+   */
+  const openExternal = async (url: string) => {
+    try {
+      await WebBrowser.openBrowserAsync(url);
+    } catch {
+      try {
+        await Linking.openURL(url);
+      } catch {
+        showToast(t('profile.linkUnavailable'));
+      }
+    }
+  };
+
   return (
     <View style={styles.legalSection} testID="profile-legal-section">
       <Text style={styles.legalSectionTitle}>{t('profile.legalSection')}</Text>
@@ -56,7 +91,7 @@ function LegalLinks() {
           accessibilityRole="link"
           key={row.key}
           onPress={() => {
-            void WebBrowser.openBrowserAsync(row.url);
+            void openExternal(row.url);
           }}
           style={({ pressed }) => [styles.legalRow, pressed && styles.buttonPressed]}
           testID={`profile-legal-${row.key}`}>
@@ -68,6 +103,26 @@ function LegalLinks() {
           />
         </Pressable>
       ))}
+      {showsAdPrivacyOptions ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            void showAdPrivacyOptionsForm().then((wasShown) => {
+              if (!wasShown) {
+                showToast(t('profile.adPrivacyOptionsFailed'));
+              }
+            });
+          }}
+          style={({ pressed }) => [styles.legalRow, pressed && styles.buttonPressed]}
+          testID="profile-ad-privacy-options">
+          <Text style={styles.legalRowText}>{t('profile.adPrivacyOptions')}</Text>
+          <SymbolView
+            name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+            size={14}
+            tintColor={Palette.textDisabled}
+          />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -508,6 +563,8 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   legalRow: {
+    // 44pt is the minimum comfortable touch target; these rows are the app's
+    // only route to its legal pages and to the ad-consent control.
     height: 44,
     flexDirection: 'row',
     alignItems: 'center',

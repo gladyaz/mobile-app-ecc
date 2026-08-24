@@ -89,6 +89,16 @@ type PersistedVideoInteractionsSyncFlag = {
   readonly hasSynced: boolean;
 };
 
+/**
+ * How many times the one-time first-login merge may be attempted in a single
+ * session before it is left for the next cold start. Two is a blip's worth of
+ * tolerance, not a reconnection strategy.
+ */
+const MAX_MERGE_ATTEMPTS = 2;
+
+/** Long enough for a transient failure to clear, short enough to still matter. */
+const MERGE_RETRY_DELAY_MS = 5000;
+
 const MAX_SYNC_ATTEMPTS = 5;
 const RETRY_BACKOFF_BASE_MS = 1000;
 const RETRY_BACKOFF_CAP_MS = 15000;
@@ -362,7 +372,20 @@ export function VideoInteractionsProvider({ children }: PropsWithChildren) {
 
   const queueRef = useRef<InteractionSyncCommand[]>([]);
   const isDrainingRef = useRef(false);
+  const mergeRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasMergeStartedRef = useRef(false);
+  /**
+   * Re-triggers the first-login merge after a failed remote pull.
+   *
+   * Releasing `hasMergeStartedRef` alone is NOT a retry: every other dependency
+   * of the merge effect is stable for the life of a session, so nothing would
+   * ever re-run it and the account's likes and saves would stay unpulled until
+   * the next cold start. Bumping this state is what actually schedules another
+   * attempt, and it is bounded so an offline device does not re-drive it
+   * forever - the synced flag was never written, so the next launch retries.
+   */
+  const mergeAttemptsRef = useRef(0);
+  const [mergeAttempt, setMergeAttempt] = useState(0);
   // Bumped on every identity change to invalidate any in-flight retry
   // `setTimeout`/hydration-in-flight from a previous identity, so stale work
   // can never apply itself against a new identity.
@@ -462,6 +485,14 @@ export function VideoInteractionsProvider({ children }: PropsWithChildren) {
 
     identityKeyRef.current = identityKey;
     sessionEpochRef.current += 1;
+
+    // A merge retry scheduled for the previous identity must not fire under
+    // this one - it would re-run the merge for an account that never failed.
+    if (mergeRetryTimeoutRef.current !== null) {
+      clearTimeout(mergeRetryTimeoutRef.current);
+      mergeRetryTimeoutRef.current = null;
+    }
+
     const epochAtStart = sessionEpochRef.current;
     isDrainingRef.current = false;
     hasMergeStartedRef.current = false;
@@ -577,9 +608,18 @@ export function VideoInteractionsProvider({ children }: PropsWithChildren) {
         // at first login would leave the Saved tab empty for good on that
         // install.
         //
-        // Releasing the started-flag is what makes this a retry rather than a
-        // give-up: the effect re-runs on the next relevant change.
+        // Releasing the started-flag lets the effect run again; bumping the
+        // attempt counter is what makes it actually re-run, since none of its
+        // other dependencies ever change within a session.
         hasMergeStartedRef.current = false;
+
+        if (mergeAttemptsRef.current < MAX_MERGE_ATTEMPTS - 1) {
+          mergeAttemptsRef.current += 1;
+
+          mergeRetryTimeoutRef.current = setTimeout(() => {
+            setMergeAttempt((attempt) => attempt + 1);
+          }, MERGE_RETRY_DELAY_MS);
+        }
 
         return;
       }
@@ -656,6 +696,7 @@ export function VideoInteractionsProvider({ children }: PropsWithChildren) {
     commitInteractions,
     persistInteractions,
     identityKey,
+    mergeAttempt,
   ]);
 
   const getInteraction = useCallback(

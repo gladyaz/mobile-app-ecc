@@ -101,6 +101,16 @@ type PersistedSeriesProgressSyncFlag = {
   readonly hasSynced: boolean;
 };
 
+/**
+ * How many times the one-time first-login merge may be attempted in a single
+ * session before it is left for the next cold start. Two is a blip's worth of
+ * tolerance, not a reconnection strategy.
+ */
+const MAX_MERGE_ATTEMPTS = 2;
+
+/** Long enough for a transient failure to clear, short enough to still matter. */
+const MERGE_RETRY_DELAY_MS = 5000;
+
 const MAX_SYNC_ATTEMPTS = 5;
 const RETRY_BACKOFF_BASE_MS = 1000;
 const RETRY_BACKOFF_CAP_MS = 15000;
@@ -338,7 +348,22 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
 
   const queueRef = useRef<ProgressSyncCommand[]>([]);
   const isDrainingRef = useRef(false);
+  const mergeRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasMergeStartedRef = useRef(false);
+  /**
+   * Re-triggers the first-login merge after a failed remote pull.
+   *
+   * Releasing `hasMergeStartedRef` alone is NOT a retry: every other dependency
+   * of the merge effect is stable for the life of a session, so nothing would
+   * ever re-run it and the account would sit un-merged until the next cold
+   * start. Bumping this state is what actually schedules another attempt.
+   *
+   * Bounded on purpose. A device that is simply offline must not re-drive the
+   * merge forever, and the cost of stopping is small and self-healing: the
+   * synced flag was never written, so the next launch tries again from scratch.
+   */
+  const mergeAttemptsRef = useRef(0);
+  const [mergeAttempt, setMergeAttempt] = useState(0);
   const sessionEpochRef = useRef(0);
   const authRef = useRef({ isAuthenticated, isAuthHydrated });
   // Distinct from `null` (no identity resolved yet, i.e. "before first
@@ -430,6 +455,14 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
 
     identityKeyRef.current = identityKey;
     sessionEpochRef.current += 1;
+
+    // A merge retry scheduled for the previous identity must not fire under
+    // this one - it would re-run the merge for an account that never failed.
+    if (mergeRetryTimeoutRef.current !== null) {
+      clearTimeout(mergeRetryTimeoutRef.current);
+      mergeRetryTimeoutRef.current = null;
+    }
+
     const epochAtStart = sessionEpochRef.current;
     isDrainingRef.current = false;
     hasMergeStartedRef.current = false;
@@ -539,9 +572,18 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
         // request at first login would silently cost the account its
         // cross-device history.
         //
-        // Releasing the started-flag is what makes this a retry rather than a
-        // give-up: the effect re-runs on the next relevant change.
+        // Releasing the started-flag lets the effect run again; bumping the
+        // attempt counter is what makes it actually re-run, since none of its
+        // other dependencies ever change within a session.
         hasMergeStartedRef.current = false;
+
+        if (mergeAttemptsRef.current < MAX_MERGE_ATTEMPTS - 1) {
+          mergeAttemptsRef.current += 1;
+
+          mergeRetryTimeoutRef.current = setTimeout(() => {
+            setMergeAttempt((attempt) => attempt + 1);
+          }, MERGE_RETRY_DELAY_MS);
+        }
 
         return;
       }
@@ -623,6 +665,7 @@ export function SeriesProgressProvider({ children }: PropsWithChildren) {
     commitProgress,
     persistProgress,
     identityKey,
+    mergeAttempt,
   ]);
 
   const getProgress = useCallback(

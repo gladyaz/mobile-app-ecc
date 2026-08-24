@@ -473,6 +473,37 @@ export default function HomeScreen() {
         // deterministic correction on top of it.
         disableIntervalMomentum
         showsVerticalScrollIndicator={false}
+        // BOUNDS HOW MANY NATIVE VIDEO PLAYERS EXIST AT ONCE.
+        //
+        // Every rendered cell is a `DramaFeedItem`, and every DramaFeedItem
+        // owns an `expo-video` player - a real native decoder and its buffers,
+        // not a cheap view. FlatList's default `windowSize` is 21 (ten
+        // viewports either side of the visible one), so a viewer who had
+        // scrolled a little way into the feed could be holding around twenty
+        // of them. That is invisible on a development handset and is exactly
+        // the shape of failure a 2 GB device meets first: memory pressure, then
+        // decoder exhaustion, then a black frame or a kill.
+        //
+        // 3 keeps the previous and next page mounted, which is what makes a
+        // swipe feel instant and gives the next item a chance to prepare - the
+        // reason for not simply using 1. `getItemLayout` above means a jump to
+        // an arbitrary index (Series Detail -> a specific episode) still works
+        // exactly as before, because FlatList can compute the offset without
+        // having rendered the rows in between.
+        //
+        // `initialNumToRender` is deliberately LEFT at its default. Lowering it
+        // to 1 is the usual companion to this and does bound the cold-start
+        // burst too, but it also stops the episode-navigation and guest-entry
+        // suites from mounting the rows they assert on - and those are the only
+        // automated proof that a Series Detail tap lands on the right episode.
+        // Trading that proof for a smaller first batch is a bad deal: the
+        // steady-state window is what actually grows without bound as somebody
+        // scrolls a long feed, and that is what `windowSize` fixes.
+        //
+        // `removeClippedSubviews` is deliberately NOT set: on Android it is a
+        // known source of blank cells with complex children, and there is no
+        // device here to prove it safe.
+        windowSize={3}
         viewabilityConfig={VIEWABILITY_CONFIG}
         onViewableItemsChanged={handleViewableItemsChanged}
         onScrollBeginDrag={onScrollBeginDrag}

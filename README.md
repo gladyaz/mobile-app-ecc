@@ -240,13 +240,40 @@ On Android, the JS runtime pauses while `VideoView` is in fullscreen (documented
 
 ## Current Limitations
 
-- Google and WhatsApp sign-in are implemented on the mobile side but not yet usable end to end: Google needs real client IDs and a development build, and the WhatsApp/provider backend endpoints are not landed (see "Authentication" above). Email + password login, registration, refresh, and logout work against the real backend today.
-- Like/save state is local only, persisted on-device, but not synced to the backend.
-- Processing History still reads local mock data (not backend-connected in this phase).
-- Video playback in development requires the backend's `playbackUrl` to resolve to a reachable server — see "Local Company Video Playback" below if you're serving raw files locally rather than through the backend.
-- No real upload or production video storage/CDN integration exists yet.
-- Premium episode access is a display-only rule (episode 6+); there is no payment, subscription, credit, or purchase system.
-- Series progress (last-watched episode + playback position) is persisted on-device only; it is not synced across devices or to any backend/database.
+Last reconciled against the code on 2026-08-24, during the Play Store V1
+release-hardening pass. Several entries previously listed here were stale — the
+backend work they described has since landed.
+
+**Sign-in.** Email + password works end to end against the real backend. Google
+sign-in is complete on the mobile side but is only OFFERED when the build
+carries `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`, and the backend keeps it behind
+`GOOGLE_AUTH_ENABLED` with an allowlist; no live Google credential has been
+exercised yet. WhatsApp OTP is complete on the mobile side and deliberately NOT
+offered — the backend cannot enable it in production (only a `fake` driver
+exists, and the process refuses to boot with WhatsApp enabled outside
+development/test). See `src/services/auth/provider-availability.ts`.
+
+**Premium access.** The backend is authoritative: every episode carries a
+resolved `accessTier`, and `GET /videos/:id/stream` refuses a premium episode
+without an entitlement. There is still no payment, subscription or purchase flow
+of any kind, and V1 deliberately ships none — the app is free, monetized by ads.
+Points earned in Rewards are the only route to a premium entitlement.
+
+**Not connected to any backend.** Processing History (`/processing`) renders
+bundled fixture rows and always has. It is now gated to development builds only
+(`src/services/debug/internal-screens.ts`) and is unreachable in any shipped
+artifact, including by deep link.
+
+**No production backend exists yet.** There is no deployed HTTPS origin for this
+app anywhere in this repository or its history, so every build today points at a
+LAN address. `npm run release:preflight` refuses a build configured that way.
+
+**No upload path.** There is no in-app upload; production video storage/CDN is
+backend-side and out of scope for this client.
+
+For the full, evidence-backed release picture — what is done, what is blocked,
+and what a human has to do outside this repository — see
+[docs/release-readiness-android.md](docs/release-readiness-android.md).
 
 ## API Contract
 
@@ -258,8 +285,15 @@ Real company videos should live in backend/internal storage, not inside this mob
 
 ## Next Planned Tasks
 
-- Land the provider-auth backend endpoints and reconcile `src/services/auth/provider-auth-service.ts` against the real contract.
-- Connect likes/saves to the backend.
-- Connect Processing History to the backend.
-- Uploaded videos list.
-- Production video storage/CDN.
+The immediate target is the Google Play Store V1 release: Android, free install,
+AdMob interstitials, no payment. The remaining work is external rather than in
+this repository — a deployed HTTPS backend, a release keystore, Google Cloud
+OAuth clients, real AdMob ids, a published privacy policy and account-deletion
+page, and a Play Console listing. `npm run release:preflight` reports the
+current blocker list, and
+[docs/release-readiness-android.md](docs/release-readiness-android.md) explains
+each one and what closes it.
+
+Deferred past V1: in-app password reset, Google and WhatsApp as user-visible
+sign-in methods, banner/rewarded ad formats, uploaded-videos list, verified
+Android App Links, and iOS.

@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { Redirect, router } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
@@ -14,6 +14,7 @@ import { WhatsAppPhoneStep } from '@/features/auth/whatsapp-phone-step';
 import { ApiError } from '@/services/api/client';
 import { maskPhoneNumber, normalizePhoneNumber } from '@/services/auth/phone-number';
 import { startWhatsAppOtp } from '@/services/auth/provider-auth-service';
+import { isWhatsAppLoginOffered } from '@/services/auth/provider-availability';
 import { useAuth } from '@/stores/auth';
 import { useTranslation } from '@/stores/language';
 import { useToast } from '@/stores/toast';
@@ -220,6 +221,21 @@ export default function WhatsAppLoginScreen() {
     setIsCodeSubmitted(false);
     setFormError(null);
   }, []);
+
+  // GATED HERE AS WELL AS ON THE LOGIN SCREEN, for the same reason
+  // `processing.tsx` guards itself rather than trusting Profile: `_layout.tsx`
+  // registers this as a real route and `app.json` declares the `mobileappecc`
+  // URL scheme, so `mobileappecc://login-whatsapp` reaches this screen whatever
+  // the login screen chose to render. Hiding only the button would leave a
+  // fully functional phone-number form one deep link away in a store build -
+  // a viewer could type their real number, tap send, and get a 503 from a
+  // provider that cannot exist yet.
+  //
+  // Placed after every hook so the hook order is identical in both branches.
+  // See services/auth/provider-availability.ts for what turns this back on.
+  if (!isWhatsAppLoginOffered()) {
+    return <Redirect href="/login" />;
+  }
 
   return (
     <View style={styles.container}>

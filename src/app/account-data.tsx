@@ -61,9 +61,19 @@ function describeExportError(error: unknown): string {
  * `true` - so it falls into the generic fallback below along with any other
  * unexpected failure (network, 500, etc.).
  */
-function describeDeleteAccountError(error: unknown): string {
+function describeDeleteAccountError(error: unknown, wasSignInMethodUnknown = false): string {
   if (error instanceof ApiError && error.code === 'INVALID_CREDENTIALS') {
-    return 'Password saat ini salah.';
+    // The backend returns this code both for a genuinely wrong password AND
+    // for an account that has no password at all. Normally the screen has
+    // already ruled the second case out by reading the account's identities,
+    // so naming the password is correct. When that lookup FAILED, the form was
+    // shown on an assumption, and the same code no longer distinguishes the
+    // two - so the copy must not assert which one happened.
+    return wasSignInMethodUnknown
+      ? 'Penghapusan akun gagal. Jika kamu masuk lewat Google atau WhatsApp, akun ini tidak ' +
+          'punya password dan belum bisa dihapus dari aplikasi - hubungi dukungan. Jika kamu ' +
+          'punya password, pastikan password yang kamu masukkan benar.'
+      : 'Password saat ini salah.';
   }
 
   if (error instanceof ApiError && error.code === 'ACCOUNT_DELETION_FORBIDDEN') {
@@ -127,6 +137,18 @@ export default function AccountDataScreen() {
    */
   const [hasPasswordCredential, setHasPasswordCredential] = useState<boolean | null>(null);
   const [isLoadingIdentities, setIsLoadingIdentities] = useState(true);
+  /**
+   * Set when the identity lookup never succeeded, so the password form below is
+   * being shown on a fail-SAFE assumption rather than on a known answer.
+   *
+   * It matters because the assumption can be wrong in exactly the direction
+   * this screen was fixed to stop being wrong: a passwordless account whose
+   * lookup failed still gets the form, submits, and the backend answers
+   * INVALID_CREDENTIALS - which would otherwise render as "Password saat ini
+   * salah." to somebody who never had a password. Knowing the answer was a
+   * guess lets that case say what actually happened.
+   */
+  const [didIdentityLookupFail, setDidIdentityLookupFail] = useState(false);
 
   useEffect(() => {
     let isActive = true;
@@ -145,6 +167,7 @@ export default function AccountDataScreen() {
         // explanatory copy below covers that case.
         if (isActive) {
           setHasPasswordCredential(true);
+          setDidIdentityLookupFail(true);
         }
       } finally {
         if (isActive) {
@@ -214,11 +237,11 @@ export default function AccountDataScreen() {
       await logout();
       router.replace('/login');
     } catch (error) {
-      setDeleteError(describeDeleteAccountError(error));
+      setDeleteError(describeDeleteAccountError(error, didIdentityLookupFail));
     } finally {
       setIsDeleting(false);
     }
-  }, [deletePassword, logout, user]);
+  }, [deletePassword, didIdentityLookupFail, logout, user]);
 
   if (!isHydrated || !isAuthenticated) {
     return null;

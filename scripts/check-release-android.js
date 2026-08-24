@@ -162,14 +162,15 @@ if (!isUsableLegalUrl(process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL)) {
 }
 
 if (!isUsableLegalUrl(process.env.EXPO_PUBLIC_ACCOUNT_DELETION_URL)) {
-  warning(
+  blocker(
     'EXPO_PUBLIC_ACCOUNT_DELETION_URL is not set to an https URL',
     'Google Play requires a web account-deletion page reachable WITHOUT installing the app, ' +
-      'declared in the Data safety form, even though this app also deletes accounts in-app. It ' +
-      'is also the only route for an account with no password, which the in-app path correctly ' +
-      'refuses (src/app/account-data.tsx). A warning rather than a blocker because the ' +
-      'declaration lives in the Play Console, not in the binary - but the Profile row is absent ' +
-      'until this is set.'
+      'declared in the Data safety form. It is a blocker rather than a warning because the ' +
+      'BINARY depends on it too: an account with no password cannot use the in-app path (the ' +
+      'backend requires the current password and fails closed), so this URL is the only ' +
+      'deletion route the app can offer such an account, and without it the Profile row that ' +
+      'would carry it is not rendered at all. See src/app/account-data.tsx and ' +
+      'src/constants/legal.ts.'
   );
 }
 
@@ -203,10 +204,13 @@ if (!process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID) {
 }
 
 if (!process.env.EXPO_PUBLIC_ADMOB_INTERSTITIAL_AD_UNIT_ANDROID) {
-  warning(
+  blocker(
     'EXPO_PUBLIC_ADMOB_INTERSTITIAL_AD_UNIT_ANDROID is not set',
-    "Interstitials will serve Google's published TEST unit, which earns nothing. See " +
-      'src/services/ads/interstitial-adapter.ts.'
+    "`resolveAdUnitId` falls back to Google's published TEST interstitial when this is unset " +
+      '(src/services/ads/interstitial-adapter.ts), so a store build would interrupt real users ' +
+      'with a full-screen sample ad carrying a "Test Ad" watermark, earning nothing. That is ' +
+      'the app showing fabricated content as its own monetization. The AdMob app id and the ad ' +
+      'unit id are one decision: a build with one and not the other cannot serve a real ad.'
   );
 }
 

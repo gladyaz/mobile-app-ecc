@@ -8,6 +8,13 @@ import type { OtpChallenge } from '@/types/auth';
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), canGoBack: () => true },
+  // The screen redirects rather than rendering when WhatsApp sign-in is not
+  // offered, so the mock has to provide a real component for that path.
+  Redirect: ({ href }: { href: string }) => {
+    const { Text } = jest.requireActual('react-native') as typeof import('react-native');
+
+    return <Text testID="whatsapp-redirect">{href}</Text>;
+  },
 }));
 
 const mockLoginWithWhatsApp = jest.fn();
@@ -43,7 +50,23 @@ function buildChallenge(overrides?: Partial<OtpChallenge>): OtpChallenge {
   };
 }
 
+// The WhatsApp entry point is gated OFF by default for V1 - the backend cannot
+// serve it - and the screen itself redirects when it is not offered, so a deep
+// link cannot reach the form. Every case here is about the form's behaviour
+// once the method IS offered, so the flag is on for the suite; the dedicated
+// case below pins the default.
+const ORIGINAL_WHATSAPP_FLAG = process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
+
+afterAll(() => {
+  if (ORIGINAL_WHATSAPP_FLAG === undefined) {
+    delete process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
+  } else {
+    process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = ORIGINAL_WHATSAPP_FLAG;
+  }
+});
+
 beforeEach(() => {
+  process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = 'true';
   jest.clearAllMocks();
   mockedStartWhatsAppOtp.mockResolvedValue(buildChallenge());
   mockLoginWithWhatsApp.mockResolvedValue(undefined);
@@ -491,5 +514,22 @@ describe('changing the number', () => {
 
     await waitFor(() => expect(getByTestId('whatsapp-phone-input')).toBeTruthy());
     expect(queryByTestId('whatsapp-otp-input')).toBeNull();
+  });
+});
+
+describe('WhatsApp screen is unreachable when the method is not offered', () => {
+  it('redirects to /login instead of rendering the form', async () => {
+    // `_layout.tsx` registers this as a real route and app.json declares the
+    // mobileappecc scheme, so mobileappecc://login-whatsapp reaches this screen
+    // whatever the login screen rendered. Without this guard a store build
+    // would show a working phone-number form for a method whose backend
+    // answers every request with 503.
+    delete process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
+
+    const { getByTestId, queryByTestId } = await render(<WhatsAppLoginScreen />);
+
+    expect(getByTestId('whatsapp-redirect')).toHaveTextContent('/login');
+    expect(queryByTestId('whatsapp-phone-input')).toBeNull();
+    expect(queryByTestId('whatsapp-send-code')).toBeNull();
   });
 });

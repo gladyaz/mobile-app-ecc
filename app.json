@@ -19,7 +19,14 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.mobileappecc"
+      "package": "com.anonymous.mobileappecc",
+      "versionCode": 1,
+      "allowBackup": false,
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
     },
     "web": {
       "output": "static",
@@ -41,6 +48,7 @@
         }
       ],
       "./plugins/with-lan-cleartext-demo",
+      "./plugins/with-android-release-signing",
       "expo-router",
       [
         "expo-splash-screen",

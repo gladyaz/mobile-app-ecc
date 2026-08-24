@@ -274,9 +274,12 @@ const adMobAndroidAppId = adMobPlugin && adMobPlugin[1] && adMobPlugin[1].androi
 if (adMobAndroidAppId && adMobAndroidAppId.startsWith(GOOGLE_SAMPLE_ADMOB_PUBLISHER)) {
   blocker(
     `AdMob androidAppId is Google's public SAMPLE id: "${adMobAndroidAppId}"`,
-    'It is baked into AndroidManifest.xml as com.google.android.gms.ads.APPLICATION_ID. A real ' +
-      'AdMob app id has to replace it in app.json before external distribution; it is not a ' +
-      'secret, but it is account-specific and cannot be guessed.'
+    'It is baked into AndroidManifest.xml as com.google.android.gms.ads.APPLICATION_ID, so a ' +
+      'store build would register with Google under the sample publisher. Set ' +
+      'EXPO_PUBLIC_ADMOB_ANDROID_APP_ID (app.config.js substitutes it into the plugin) rather ' +
+      "than editing app.json - it is not a secret, but it is one AdMob account's identity and " +
+      'does not belong in every checkout. It cannot be guessed, and it must be registered ' +
+      'against the final package name.'
   );
 }
 

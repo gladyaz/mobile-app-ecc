@@ -14,6 +14,17 @@ const GOOGLE_SIGN_IN_MODULE = '@react-native-google-signin/google-signin';
 const BUNDLED_DEMO_MEDIA_DIRECTORIES = ['assets/videos', 'assets/thumbnails'];
 
 /**
+ * Google's published SAMPLE AdMob publisher prefix. `app.json` ships this
+ * publisher's test app ids, which is the only safe committed default: the
+ * native SDK's `MobileAdsInitProvider` is a ContentProvider that runs before
+ * `Application.onCreate`, and it CRASHES ON LAUNCH when
+ * `com.google.android.gms.ads.APPLICATION_ID` resolves to an empty string. So
+ * there must always be some id; the question is only whether it is the real one.
+ */
+const GOOGLE_SAMPLE_ADMOB_PUBLISHER = 'ca-app-pub-3940256099942544';
+
+
+/**
  * The reversed iOS OAuth client ID (`com.googleusercontent.apps.<id>`).
  * A public client identifier, not a secret - but still project-specific, so
  * it comes from the environment and is never committed. See .env.example.
@@ -196,6 +207,51 @@ function withoutSitemap(config) {
   };
 }
 
+/**
+ * Replaces the committed sample AdMob app ids with this build's real ones.
+ *
+ * The app id is a project-specific PUBLIC identifier - it ships inside every
+ * binary by design and is not a secret - which is exactly the category
+ * `.env.example` already keeps out of committed source for the OAuth client ids
+ * and the interstitial ad UNIT id. Reading it from the environment makes the
+ * app id and the unit id one decision instead of two: a build cannot end up
+ * with a real unit and a sample app, or the reverse, and supplying them is a
+ * configuration step rather than an edit to a tracked file that would put one
+ * AdMob account's identity in everyone's checkout.
+ *
+ * Absent, the sample ids stay. That is deliberate and safe - no ad is served
+ * against them that earns anything, and `npm run release:preflight` BLOCKS on
+ * the sample publisher, so the fallback cannot reach a store artifact quietly.
+ */
+function withAdMobAppIds(config) {
+  // Static member access, matching the rule `expo/no-dynamic-env-var` enforces
+  // in src/.
+  const androidAppId = process.env.EXPO_PUBLIC_ADMOB_ANDROID_APP_ID;
+  const iosAppId = process.env.EXPO_PUBLIC_ADMOB_IOS_APP_ID;
+
+  if (!androidAppId && !iosAppId) {
+    return config;
+  }
+
+  return {
+    ...config,
+    plugins: (config.plugins ?? []).map((plugin) => {
+      if (!Array.isArray(plugin) || plugin[0] !== ADMOB_MODULE) {
+        return plugin;
+      }
+
+      return [
+        plugin[0],
+        {
+          ...plugin[1],
+          ...(androidAppId ? { androidAppId } : {}),
+          ...(iosAppId ? { iosAppId } : {}),
+        },
+      ];
+    }),
+  };
+}
+
 module.exports = ({ config }) => {
   assertBundledCatalogMediaPresent();
 
@@ -249,5 +305,5 @@ module.exports = ({ config }) => {
     ? withAdMobResolved
     : withoutSitemap(withAdMobResolved);
 
-  return withGoogleSignIn(withSitemapResolved);
+  return withGoogleSignIn(withAdMobAppIds(withSitemapResolved));
 };

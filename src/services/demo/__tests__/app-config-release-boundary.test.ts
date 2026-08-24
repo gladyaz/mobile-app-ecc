@@ -20,7 +20,10 @@ type NodeEnv = NodeJS.ProcessEnv['NODE_ENV'];
 // narrowest thing that expresses what the test actually does to it.
 const mutableEnv = process.env as { NODE_ENV?: NodeEnv };
 
-function resolvePlugins(nodeEnv: NodeEnv | undefined): PluginEntry[] {
+function resolvePlugins(
+  nodeEnv: NodeEnv | undefined,
+  inputPlugins: PluginEntry[] = ['expo-router']
+): PluginEntry[] {
   const savedNodeEnv = mutableEnv.NODE_ENV;
 
   if (nodeEnv === undefined) {
@@ -38,7 +41,7 @@ function resolvePlugins(nodeEnv: NodeEnv | undefined): PluginEntry[] {
         config: { plugins: PluginEntry[] };
       }) => { plugins?: PluginEntry[] };
 
-      plugins = withExpoConfig({ config: { plugins: ['expo-router'] } }).plugins ?? [];
+      plugins = withExpoConfig({ config: { plugins: inputPlugins } }).plugins ?? [];
     });
 
     return plugins;
@@ -84,4 +87,37 @@ describe('app.config.js release boundary', () => {
   it('keeps /_sitemap for the development server', () => {
     expect(sitemapProp(resolvePlugins('development'))).toBeUndefined();
   });
+
+  it('keeps Google\'s sample AdMob ids when no real app id is configured', () => {
+    // The committed default is the SAMPLE publisher, and it has to be
+    // something: the native SDK's MobileAdsInitProvider is a ContentProvider
+    // that crashes on launch when the app id resolves to an empty string. The
+    // preflight is what stops the fallback reaching a store artifact.
+    const plugins = resolvePlugins('production', [
+      'expo-router',
+      ['react-native-google-mobile-ads', { androidAppId: 'ca-app-pub-3940256099942544~3347511713' }],
+    ]);
+    const admob = plugins.find(
+      (plugin) => (Array.isArray(plugin) ? plugin[0] : plugin) === 'react-native-google-mobile-ads'
+    );
+
+    expect(Array.isArray(admob) && admob[1].androidAppId).toMatch(/^ca-app-pub-3940256099942544/);
+  });
+
+  // NOT TESTED HERE: that EXPO_PUBLIC_ADMOB_ANDROID_APP_ID actually substitutes.
+  // `babel-preset-expo`'s inline-env-vars plugin rewrites static
+  // `process.env.EXPO_PUBLIC_*` member expressions during transform, so
+  // app.config.js loaded through Jest never sees a value this file assigns -
+  // a case written here would pass or fail for reasons unrelated to the code.
+  // It is verified instead against the real Expo config resolver in plain Node,
+  // which is how a build reads it:
+  //
+  //   EXPO_PUBLIC_ADMOB_ANDROID_APP_ID=ca-app-pub-XXXX~YYYY \
+  //     node -e "console.log(require('expo/config').getConfig(process.cwd(),
+  //       { skipSDKVersionRequirement: true, isPublicConfig: true })
+  //       .exp.plugins.find(p => Array.isArray(p) &&
+  //         p[0] === 'react-native-google-mobile-ads')[1].androidAppId)"
+  //
+  // and `npm run release:preflight` reads the same resolved config, so its
+  // blocker clearing IS the end-to-end proof.
 });

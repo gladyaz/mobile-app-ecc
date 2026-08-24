@@ -1,5 +1,6 @@
 import {
   clearTokensAndNotify,
+  getSessionGeneration,
   getTokens,
   setTokensAndNotify,
 } from '@/services/auth/token-store';
@@ -146,7 +147,35 @@ function isInvalidAccessTokenError(error: unknown): boolean {
  * `request()` avoids the cycle entirely while keeping the exact same
  * network contract.
  */
+/**
+ * The refresh currently in flight, shared by every caller that arrives while it
+ * runs.
+ *
+ * Without this, a launch with an expired access token is a race the app loses.
+ * `_layout.tsx` mounts the entitlement, interactions and progress providers
+ * together, so three authenticated requests go out at once, all get 401, and
+ * all call this function. Each then POSTs `auth/refresh` with the SAME refresh
+ * token - and the backend rotates refresh tokens, so the first rotation
+ * invalidates the token the other two are still spending. Their refreshes fail,
+ * `clearTokensAndNotify()` runs, and a perfectly valid session is force-signed-
+ * out at launch. Sharing one rotation makes the outcome the same whether one
+ * request or ten hit the window.
+ */
+let refreshInFlight: Promise<boolean> | null = null;
+
 async function attemptTokenRefresh(): Promise<boolean> {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  refreshInFlight = runTokenRefresh().finally(() => {
+    refreshInFlight = null;
+  });
+
+  return refreshInFlight;
+}
+
+async function runTokenRefresh(): Promise<boolean> {
   const currentRefreshToken = getTokens()?.refreshToken;
 
   if (!currentRefreshToken) {
@@ -206,10 +235,14 @@ export async function request<TResponse>(
 
   const url = `${baseUrl}/${normalizePath(path)}`;
 
-  // Pinned BEFORE the request is sent, and compared again before any refresh:
-  // this exact token is the identity this request was made under. See the
-  // refresh branch below for what that comparison prevents.
+  // Pinned BEFORE the request is sent, and both compared again before any
+  // refresh. The generation identifies WHO the request was made for; the token
+  // identifies WHICH credential it carried. The refresh branch below needs both
+  // to tell "somebody else signed in" apart from "a sibling request already
+  // rotated my session's token", which are opposite situations that look
+  // identical if you only compare tokens.
   const sentAccessToken = requiresAuth ? readAccessToken() : undefined;
+  const sentSessionGeneration = getSessionGeneration();
 
   const abortController = new AbortController();
   const timeoutId = setTimeout(() => {
@@ -253,22 +286,34 @@ export async function request<TResponse>(
     const { code, message } = await parseErrorBody(response);
     const apiError = new ApiError(response.status, code, message);
 
-    // The token-identity check is what stops a 401 arriving for one account
-    // from being answered on behalf of another.
-    //
-    // `attemptTokenRefresh` and the retry both read the LIVE token store. If
-    // the viewer signed out and back in - as a different user, or the same one
-    // - while this request was in flight, the store now holds someone else's
-    // pair. Refreshing then rotates THAT session, and the retry re-sends this
-    // request with THAT access token: a like, a watch position, or an account
-    // mutation issued by user A gets committed to user B's account, and both
-    // sides look like ordinary successful requests.
-    //
-    // A 401 for a token that is no longer the current one is stale by
-    // definition, so there is nothing to recover: propagate it.
-    const isStillTheSameSession = readAccessToken() === sentAccessToken;
+    if (requiresAuth && !isRetry && isInvalidAccessTokenError(apiError)) {
+      // CASE 1 - a different identity now owns the store.
+      //
+      // `attemptTokenRefresh` and the retry both read the LIVE token store, so
+      // recovering here would rotate SOMEBODY ELSE'S session and re-send this
+      // request with THEIR access token: a like, a watch position or an account
+      // mutation issued by user A committed to user B's account, with both
+      // sides looking like ordinary successful requests. There is nothing to
+      // recover - this 401 belongs to a session that no longer exists.
+      if (getSessionGeneration() !== sentSessionGeneration) {
+        throw apiError;
+      }
 
-    if (requiresAuth && !isRetry && isInvalidAccessTokenError(apiError) && isStillTheSameSession) {
+      // CASE 2 - same identity, but the token moved while we were in flight.
+      //
+      // A sibling request hit the same expiry, refreshed, and the store already
+      // holds a working pair. Refreshing again would spend the rotated refresh
+      // token for nothing; the right move is simply to retry with what is now
+      // current. Skipping this used to strand every concurrent request of a
+      // launch-with-expired-token - including the entitlement fetch, which
+      // fails safe to isPremium:false and would latch a paying subscriber out
+      // of their own premium episodes for the rest of the session.
+      if (readAccessToken() !== sentAccessToken) {
+        return request<TResponse>(path, options, config, true);
+      }
+
+      // CASE 3 - same identity, same token: we are the first to notice. Refresh
+      // (single-flight, so concurrent 401s share one rotation) and retry once.
       const refreshed = await attemptTokenRefresh();
 
       if (refreshed) {

@@ -34,7 +34,7 @@ def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 android {
     ndkVersion rootProject.ext.ndkVersion
 
-    namespace 'com.anonymous.mobileappecc'
+    namespace 'com.spark.redpanda'
     signingConfigs {
         debug {
             storeFile file('debug.keystore')

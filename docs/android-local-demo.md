@@ -135,10 +135,17 @@ affected, and no credential was invented to paper over it.
 
 To enable it later, create in Google Cloud:
 
-- an **Android** OAuth client for package `com.anonymous.mobileappecc`, using
-  the SHA-1 of whichever keystore signs the build (for the debug keystore used
-  here, read it with
+- an **Android** OAuth client for package `com.spark.redpanda`, using the SHA-1
+  of whichever keystore signs the build (for the debug keystore used here, read
+  it with
   `keytool -list -v -keystore android/app/debug.keystore -alias androiddebugkey -storepass android`);
+
+  > The package changed from `com.anonymous.mobileappecc` to `com.spark.redpanda`
+  > when the production identity was settled. **Any Android OAuth client created
+  > before that is invalid** — Google matches on package name *and* fingerprint,
+  > so a client registered for the old package will reject every request from
+  > this build. Create a new one; there is nothing to migrate.
+
 - a **Web** OAuth client — its client ID is the one that matters, because
   Google issues the ID token against the *web* client on both platforms, and
   the backend verifies that audience.

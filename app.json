@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "mobile-app-ecc",
+    "name": "Red Panda",
     "slug": "mobile-app-ecc",
     "version": "1.0.0",
     "orientation": "default",
@@ -9,7 +9,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.anonymous.mobile-app-ecc"
+      "bundleIdentifier": "com.spark.redpanda"
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +19,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.mobileappecc",
+      "package": "com.spark.redpanda",
       "versionCode": 1,
       "allowBackup": false,
       "blockedPermissions": [

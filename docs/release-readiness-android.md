@@ -220,7 +220,8 @@ transform, the fallback, prebuild idempotence, and the throw on template drift.
 
 alongside what it already blocked: a missing / non-HTTPS / localhost / LAN API
 base URL, the three release-unsafe flags, bundled demo media on disk, a
-`com.anonymous.*` package, and the sample AdMob app id.
+`com.anonymous.*` package (now `com.spark.redpanda`, see B2), and the sample
+AdMob app id.
 
 The signing check reads `keystore.properties` for **key names only** — it
 captures the text to the left of the first `=` and nothing else, so no password
@@ -317,16 +318,49 @@ keytool -list -v -keystore <path-to-release-keystore> -alias <your-alias>
 There is no `eas.json` in this repository, so EAS-managed credentials are not
 wired up. Local Gradle is the only supported path today (§4).
 
-### B2 — `android.package` is `com.anonymous.mobileappecc`. **OWNER DECISION.**
+### B2 — Production identity. **DECIDED — `com.spark.redpanda` / "Red Panda".**
 
-Unchanged in this branch, deliberately. It is permanent once published, and it
-is the identity the existing Google OAuth Android client is registered against —
-changing it invalidates that client and every fingerprint registered under it.
-It is a product-owner decision, not an engineering one. The preflight blocks on
-it so it cannot be reached by drift.
+Settled by the product owner and applied to `app.json`:
 
-The iOS bundle identifier (`com.anonymous.mobile-app-ecc`) is not even
-consistent with it. Settle both in the same decision.
+| | |
+|---|---|
+| `android.package` | `com.spark.redpanda` |
+| `ios.bundleIdentifier` | `com.spark.redpanda` |
+| Display name (`expo.name`) | `Red Panda` |
+
+This value is **permanent once published** — Google Play never allows an
+`applicationId` to be renamed or reused. It is now the identity that every
+external registration must bind to, and two of them are currently bound to the
+old placeholder:
+
+1. **The Google OAuth Android client is now invalid.** It was registered for
+   `com.anonymous.mobileappecc` with the debug keystore's SHA-1. A new Android
+   client is required for `com.spark.redpanda`, carrying the SHA-1 of whichever
+   keystore signs the build — see B1 and `docs/android-local-demo.md`. There is
+   **no user-visible regression in V1**, because the Google button is not
+   offered unless `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` is set
+   (`src/services/auth/provider-availability.ts`), and it is not set. What
+   breaks is the local developer workflow, until the new client exists.
+2. **The AdMob app must be created against `com.spark.redpanda`** (B3).
+
+**The generated `android/` tree is now stale.** It is gitignored and still
+carries `applicationId 'com.anonymous.mobileappecc'` and
+`app_name` `mobile-app-ecc` from the last prebuild. `expo prebuild` regenerates
+both from `app.json`; an `assembleRelease`/`bundleRelease` run *without* a
+prebuild would still emit the old identity. See §4.
+
+**Still scaffold-derived, deliberately not changed:**
+
+- `expo.slug` (`mobile-app-ecc`) — an Expo/EAS project identifier, not
+  user-facing and not part of the Android identity. Changing it can re-point EAS
+  project linking, so it is left alone until there is an EAS project to link.
+- `expo.scheme` (`mobileappecc://`) — the custom deep-link scheme. It is not the
+  applicationId and nothing published depends on it, but it is what
+  `mobileappecc://` links resolve to. Renaming it is a separate, safe decision
+  that nobody has asked for yet.
+- The `@mobile-app-ecc/*` AsyncStorage key prefixes. These are **storage keys,
+  not identity**: renaming them would orphan every existing install's auth
+  tokens, likes, saves and watch progress on upgrade. They must not be tidied.
 
 ### B3 — AdMob app id AND interstitial unit id are Google's samples/unset. **BLOCKER.**
 

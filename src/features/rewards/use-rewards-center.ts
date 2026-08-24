@@ -7,6 +7,7 @@ import {
   mapWallet,
 } from '@/features/rewards/rewards-mapper';
 import { ApiError } from '@/services/api/client';
+import { isDemoMode } from '@/services/demo/demo-mode';
 import { createRedemptionIdempotencyKey } from '@/services/rewards/idempotency-key';
 import { REWARD_ERROR_CODES } from '@/services/rewards/rewards-dto';
 import {
@@ -133,6 +134,23 @@ const INITIAL_FETCHED = (userId: string): FetchedRewards => ({
   ledger: { status: 'loading' },
 });
 
+/**
+ * A settled, empty history - not a loading one.
+ *
+ * Used where there is nothing to fetch and never will be (a demo build).
+ * Module-level so the reference is stable across renders: the history sheet
+ * keys work off this object, and a fresh literal each render would churn it
+ * for no reason. Leaving the ledger at `loading` instead would show an
+ * ActivityIndicator that nothing could ever resolve.
+ */
+const EMPTY_LEDGER: RewardsLedgerState = {
+  status: 'ready',
+  entries: [],
+  hasMore: false,
+  isLoadingMore: false,
+  loadMoreError: null,
+};
+
 export function useRewardsCenter(): RewardsCenterController {
   const { t } = useTranslation();
   const { isAuthenticated, isHydrated: isAuthHydrated, user } = useAuth();
@@ -233,6 +251,16 @@ export function useRewardsCenter(): RewardsCenterController {
   // ---------------------------------------------------------------- load
 
   useEffect(() => {
+    // An offline demo build has no backend, so there is no request to make.
+    // Returning here - ahead of the auth guards - is what keeps a demo
+    // viewer off the generic `error` state, whose Retry button could never
+    // succeed, and off the permanent spinner the API layer's missing
+    // timeout would otherwise allow. The state shown instead is DERIVED
+    // below, for the same reason the signed-out state is.
+    if (isDemoMode()) {
+      return;
+    }
+
     if (!isAuthHydrated) {
       return;
     }
@@ -772,16 +800,34 @@ export function useRewardsCenter(): RewardsCenterController {
    * previous account's balance, because state tagged with someone else's id
    * is not trusted at all.
    */
-  const view: RewardsViewState = !isAuthHydrated
-    ? { status: 'loading' }
-    : !isAuthenticated || !user
-      ? { status: 'signInRequired' }
-      : fetched?.userId === user.id
-        ? fetched.view
-        : { status: 'loading' };
+  /**
+   * Demo mode is checked BEFORE the auth branches, deliberately.
+   *
+   * Ordering it after would let a demo viewer see the good
+   * `signInRequired` prompt, then lose it by signing in - and demo login
+   * accepts anything, so that is the natural thing to do. Rewards is
+   * unavailable in this build whoever is looking, which is both simpler to
+   * explain and the truth.
+   *
+   * `unavailable` is the SAME state a `REWARDS_ENABLED=false` deployment
+   * produces, reusing copy that already exists in id/en/zh. Nothing is
+   * fabricated: no balance, no streak, no ledger row.
+   */
+  const isDemoBuild = isDemoMode();
 
-  const ledger: RewardsLedgerState =
-    isAuthHydrated && isAuthenticated && user && fetched?.userId === user.id
+  const view: RewardsViewState = isDemoBuild
+    ? { status: 'unavailable', message: t('rewards.unavailableBody') }
+    : !isAuthHydrated
+      ? { status: 'loading' }
+      : !isAuthenticated || !user
+        ? { status: 'signInRequired' }
+        : fetched?.userId === user.id
+          ? fetched.view
+          : { status: 'loading' };
+
+  const ledger: RewardsLedgerState = isDemoBuild
+    ? EMPTY_LEDGER
+    : isAuthHydrated && isAuthenticated && user && fetched?.userId === user.id
       ? fetched.ledger
       : { status: 'loading' };
 

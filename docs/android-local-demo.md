@@ -69,14 +69,36 @@ That switch is exactly what this build must not use, because a demo whose login
 always succeeds proves nothing about the product. It is therefore pinned to
 `false` explicitly rather than left to its default.
 
-**How to verify it from the APK itself, without trusting this document:** a
-demo build strips the AdMob config plugin (`app.config.js`, `isDemoBuild()`),
-so a demo APK has no `com.google.android.gms.ads.APPLICATION_ID` in its
-manifest. If that meta-data is present, demo mode was off at build time:
+> **There is now a second, different artifact.** The *offline* demo APK
+> (`EXPO_PUBLIC_DEMO_MODE=true`) is documented separately in
+> [android-offline-demo-apk.md](./android-offline-demo-apk.md). Everything in
+> THIS file describes the LAN-backed build, which still requires the flag to
+> stay `false`.
+
+**How to verify it from the APK itself, without trusting this document.**
+
+The old check here was "a demo build has no
+`com.google.android.gms.ads.APPLICATION_ID` in its manifest". **That check no
+longer works, and following it would now mislead you.** It relied on the demo
+build stripping the AdMob config plugin, which was correct only while the demo
+build also excluded the AdMob native module from autolinking. It no longer
+does (see §4 and the note in `app.config.js`), and stripping the plugin while
+the SDK stays linked leaves `MobileAdsInitProvider` initializing with an empty
+App ID - a crash on launch, before any JavaScript runs. The plugin is
+therefore applied to BOTH builds now, so that meta-data is present either way
+and distinguishes nothing.
+
+Check the cleartext exemption instead. It is the property that actually
+matters here, and only a build pointed at an `http://` backend has it:
 
 ```bash
-aapt2 dump xmltree --file AndroidManifest.xml <apk> | grep -A1 APPLICATION_ID
+# THIS (LAN-backed) build: prints a networkSecurityConfig attribute, and the
+# resource names the LAN host from EXPO_PUBLIC_API_BASE_URL.
+aapt2 dump xmltree --file AndroidManifest.xml <apk> | grep -i networkSecurityConfig
 ```
+
+No `networkSecurityConfig` attribute means the build had no `http://` backend
+configured - i.e. it is not this artifact.
 
 ---
 

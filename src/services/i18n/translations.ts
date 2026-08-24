@@ -25,6 +25,10 @@ const id = {
   'common.retry': 'Retry',
   'common.back': 'Back',
 
+  'notFound.title': 'Halaman tidak ditemukan',
+  'notFound.body': 'Tautan yang kamu buka tidak tersedia di aplikasi ini.',
+  'notFound.action': 'Kembali ke Home',
+
   'home.title': 'Home',
   'home.loadError': 'Video gagal dimuat.',
   'home.empty': 'Belum ada video tersedia.',
@@ -468,6 +472,10 @@ const en: Copy = {
   'common.retry': 'Retry',
   'common.back': 'Back',
 
+  'notFound.title': 'Page not found',
+  'notFound.body': 'The link you opened is not available in this app.',
+  'notFound.action': 'Back to Home',
+
   'home.title': 'Home',
   'home.loadError': 'Could not load videos.',
   'home.empty': 'No videos yet.',
@@ -847,6 +855,10 @@ const en: Copy = {
 const zh: Copy = {
   'common.retry': '重试',
   'common.back': '返回',
+
+  'notFound.title': '页面不存在',
+  'notFound.body': '你打开的链接在本应用中不可用。',
+  'notFound.action': '返回首页',
 
   'home.title': '首页',
   'home.loadError': '视频加载失败。',

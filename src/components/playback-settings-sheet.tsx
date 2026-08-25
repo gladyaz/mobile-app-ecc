@@ -1,6 +1,11 @@
 import { Modal, Platform, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import {
+  AUTO_PLAYBACK_QUALITY,
+  type PlaybackQuality,
+  type PlaybackQualityOption,
+} from '@/constants/playback-quality';
 import { PLAYBACK_SPEEDS, type PlaybackSpeed } from '@/constants/playback-speed';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useTranslation } from '@/stores/language';
@@ -19,10 +24,17 @@ import { useTranslation } from '@/stores/language';
  * is replaced, no authorization is re-requested, and the active item is
  * unchanged.
  *
- * SCOPE: Speed / Immersive / Fullscreen, and nothing else. No quality
- * selector, no HLS terminology, no download - manual rendition choice is not
- * part of this app's playback model, and surfacing it would imply a control
- * the player does not actually offer.
+ * SCOPE: Quality / Speed / Immersive / Fullscreen, and nothing else. No HLS
+ * terminology, no download.
+ *
+ * The Quality section is rendered ONLY when `qualityOptions` is non-empty,
+ * and that list is derived (in `constants/playback-quality.ts`) from the
+ * renditions the backend actually produced for THIS video - so a video with
+ * one fixed stream, or an MP4-backed one with no ladder at all, shows no
+ * quality control rather than a menu that cannot do anything. Selecting a
+ * rendition really constrains playback to it (the item swaps the source to
+ * that rendition's own variant playlist); it is not a label over an
+ * unchanged player.
  */
 
 type PlaybackSettingsSheetProps = {
@@ -37,6 +49,19 @@ type PlaybackSettingsSheetProps = {
   readonly onDismissed?: () => void;
   readonly playbackSpeed: PlaybackSpeed;
   readonly onSelectPlaybackSpeed: (speed: PlaybackSpeed) => void;
+  /**
+   * The renditions this video genuinely offers, already ordered and
+   * labelled. EMPTY means "no real choice exists here" and the whole
+   * section is omitted - never rendered as a disabled or single-entry menu.
+   */
+  readonly qualityOptions: readonly PlaybackQualityOption[];
+  /**
+   * The quality to mark as selected. The feed item passes the EFFECTIVE
+   * quality (`resolveEffectiveQuality`), so the checkmark can never sit on a
+   * rendition the player is not actually on.
+   */
+  readonly playbackQuality: PlaybackQuality;
+  readonly onSelectPlaybackQuality: (quality: PlaybackQuality) => void;
   readonly isClearDisplay: boolean;
   readonly onToggleClearDisplay: () => void;
   /** Omitted for a vertical video, which has no fullscreen affordance. */
@@ -49,6 +74,9 @@ export function PlaybackSettingsSheet({
   onDismissed,
   playbackSpeed,
   onSelectPlaybackSpeed,
+  qualityOptions,
+  playbackQuality,
+  onSelectPlaybackQuality,
   isClearDisplay,
   onToggleClearDisplay,
   onEnterFullscreen,
@@ -80,6 +108,73 @@ export function PlaybackSettingsSheet({
         <Text accessibilityRole="header" style={styles.title}>
           {t('feed.playbackSettings')}
         </Text>
+
+        {qualityOptions.length > 0 ? (
+          <>
+            <Text style={styles.sectionLabel}>{t('feed.quality')}</Text>
+            {/* Wraps rather than stretching each chip to an equal share: with
+                up to five entries ("Auto" through "1080p HD") equal flex
+                squeezes the longest label to the point of truncation, and a
+                quality a viewer cannot read is a quality they will not
+                pick. */}
+            <View style={styles.optionRow}>
+              <Pressable
+                accessibilityHint={t('feed.qualityAutoOption')}
+                accessibilityLabel={t('feed.qualityAuto')}
+                accessibilityRole="button"
+                accessibilityState={{ selected: playbackQuality.mode === 'auto' }}
+                onPress={() => onSelectPlaybackQuality(AUTO_PLAYBACK_QUALITY)}
+                style={({ pressed }) => [
+                  styles.option,
+                  playbackQuality.mode === 'auto' && styles.optionSelected,
+                  pressed && styles.pressed,
+                ]}
+                testID="playback-settings-quality-auto">
+                <Text
+                  style={[
+                    styles.optionText,
+                    playbackQuality.mode !== 'auto' && styles.optionTextDimmed,
+                  ]}>
+                  {t('feed.qualityAuto')}
+                </Text>
+              </Pressable>
+
+              {qualityOptions.map((option) => {
+                const isSelected =
+                  playbackQuality.mode === 'manual' && playbackQuality.quality === option.quality;
+                // "1080p HD" - the HD marker is localized copy, not an
+                // English literal, so a zh viewer reads "1080p 高清". The
+                // rendition token itself ("1080p") is deliberately NOT
+                // translated: it is the backend's own rendition name and
+                // reads identically in every streaming app in every locale.
+                const label = option.isHighDefinition
+                  ? `${option.quality} ${t('feed.qualityHd')}`
+                  : option.quality;
+
+                return (
+                  <Pressable
+                    accessibilityLabel={t('feed.qualityOption', { label })}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: isSelected }}
+                    key={option.quality}
+                    onPress={() =>
+                      onSelectPlaybackQuality({ mode: 'manual', quality: option.quality })
+                    }
+                    style={({ pressed }) => [
+                      styles.option,
+                      isSelected && styles.optionSelected,
+                      pressed && styles.pressed,
+                    ]}
+                    testID={`playback-settings-quality-${option.quality}`}>
+                    <Text style={[styles.optionText, !isSelected && styles.optionTextDimmed]}>
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </>
+        ) : null}
 
         <Text style={styles.sectionLabel}>{t('feed.speed')}</Text>
         <View style={styles.speedRow}>
@@ -190,6 +285,35 @@ const styles = StyleSheet.create({
   speedRow: {
     flexDirection: 'row',
     gap: 8,
+  },
+  optionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  option: {
+    paddingHorizontal: 16,
+    // Matches the speed chips: 48 clears Android's 48dp minimum as well as
+    // iOS's 44pt.
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Palette.border,
+    backgroundColor: Palette.surfaceMuted,
+  },
+  optionSelected: {
+    borderColor: Palette.primary,
+    backgroundColor: 'rgba(255, 122, 26, 0.14)',
+  },
+  optionText: {
+    fontSize: 15,
+    fontFamily: FontFamily.bold,
+    color: Palette.text,
+  },
+  optionTextDimmed: {
+    color: Palette.textSecondary,
   },
   speedOption: {
     flex: 1,

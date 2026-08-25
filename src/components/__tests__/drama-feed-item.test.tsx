@@ -3623,10 +3623,16 @@ describe('DramaFeedItem', () => {
       expect(queryByTestId('playback-settings-sheet')).toBeNull();
     });
 
-    it('offers exactly Speed, Clear Display and Fullscreen - no quality or download', async () => {
-      const { getByLabelText, getByTestId, queryByLabelText } = await renderFeedItem(
-        <DramaFeedItem video={buildVideo({ width: 1280, height: 720 })} {...baseProps} isActive />
-      );
+    it('offers Speed, Clear Display and Fullscreen - and, for an MP4-backed video, no quality control', async () => {
+      // The default authorization in `beforeEach` is MP4-shaped: one fixed
+      // stream with no rendition ladder behind it. The sheet must therefore
+      // show no quality control at all rather than a menu that cannot change
+      // anything - the same rule that keeps it from ever implying a control
+      // the player does not offer.
+      const { getByLabelText, getByTestId, queryByLabelText, queryByTestId } =
+        await renderFeedItem(
+          <DramaFeedItem video={buildVideo({ width: 1280, height: 720 })} {...baseProps} isActive />
+        );
 
       await act(async () => {
         fireEvent.press(getByLabelText('Pengaturan pemutaran'));
@@ -3637,11 +3643,326 @@ describe('DramaFeedItem', () => {
       expect(getByLabelText('Kecepatan 2x')).toBeTruthy();
       expect(getByTestId('playback-settings-clear-display-row')).toBeTruthy();
       expect(getByTestId('playback-settings-fullscreen')).toBeTruthy();
-      // Manual rendition choice is not part of this app's playback model, so
-      // the sheet must not imply a control the player does not offer.
-      for (const absent of ['Quality', 'Kualitas', 'HLS', 'Download', 'Unduh']) {
+      expect(queryByTestId('playback-settings-quality-auto')).toBeNull();
+      for (const absent of ['Kualitas', 'Otomatis', 'HLS', 'Download', 'Unduh']) {
         expect(queryByLabelText(absent)).toBeNull();
       }
+    });
+  });
+
+  // Manual rendition selection is REAL here, not cosmetic: expo-video 57
+  // exposes `videoTrack`/`availableVideoTracks` as read-only (no setter), so
+  // a manual choice is made by playing that rendition's OWN variant playlist
+  // - a playlist that advertises exactly one rendition. Every case below
+  // therefore asserts on the SOURCE the player was actually given, never on
+  // the button that was pressed.
+  describe('video quality selector (Auto + real HLS rendition selection)', () => {
+    const MASTER_URL = 'https://gateway.example.com/t/tok/master.m3u8';
+
+    function variantUrl(quality: string) {
+      return `https://gateway.example.com/t/tok/${quality}/index.m3u8`;
+    }
+
+    // The backend's real portrait ladder: named by SHORT side, so the "1080p"
+    // rung of a 1080x1920 source is 1080 WIDE and 1920 TALL.
+    function portraitLadder(...qualities: readonly number[]) {
+      return qualities.map((shortSide) => ({
+        quality: `${shortSide}p`,
+        width: shortSide,
+        height: Math.round((shortSide * 16) / 9),
+        url: variantUrl(`${shortSide}p`),
+      }));
+    }
+
+    function authorizeHls(...qualities: readonly number[]) {
+      mockGetPlaybackAuthorization.mockResolvedValue(
+        buildHlsPlaybackAuthorization({
+          masterUrl: MASTER_URL,
+          renditions: portraitLadder(...qualities),
+        })
+      );
+    }
+
+    async function openSheet(getByLabelText: (label: string) => unknown) {
+      await act(async () => {
+        fireEvent.press(getByLabelText('Pengaturan pemutaran') as never);
+      });
+    }
+
+    function latestSourceUri() {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+      return ((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0] as { uri?: string } | null)?.uri;
+    }
+
+    it('defaults to Auto: the adaptive master playlist is what the player is given', async () => {
+      authorizeHls(360, 540, 720, 1080);
+
+      const { getByLabelText, getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+      await act(async () => {});
+
+      // The player really is on the master (ABR unrestricted)...
+      expect(latestSourceUri()).toBe(MASTER_URL);
+
+      await openSheet(getByLabelText);
+
+      // ...and the menu says so.
+      expect(getByTestId('playback-settings-quality-auto').props.accessibilityState).toEqual(
+        expect.objectContaining({ selected: true })
+      );
+    });
+
+    it('lists exactly the renditions the backend produced, highest first, with 1080p marked HD', async () => {
+      authorizeHls(360, 540, 720, 1080);
+
+      const { getByLabelText, getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+      await act(async () => {});
+      await openSheet(getByLabelText);
+
+      expect(getByTestId('playback-settings-quality-auto')).toBeTruthy();
+      for (const quality of ['360p', '540p', '720p', '1080p']) {
+        expect(getByTestId(`playback-settings-quality-${quality}`)).toBeTruthy();
+      }
+      // The top rung reads "1080p HD"; nothing below it does.
+      expect(getByLabelText('Kualitas 1080p HD')).toBeTruthy();
+      expect(getByLabelText('Kualitas 720p')).toBeTruthy();
+    });
+
+    it('never shows a rendition this video does not have', async () => {
+      // A source whose short side is 540 cannot produce the upper rungs, so
+      // the backend never sends them - and the menu must not invent them.
+      authorizeHls(360, 540);
+
+      const { getByLabelText, getByTestId, queryByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+      await act(async () => {});
+      await openSheet(getByLabelText);
+
+      expect(getByTestId('playback-settings-quality-360p')).toBeTruthy();
+      expect(getByTestId('playback-settings-quality-540p')).toBeTruthy();
+      expect(queryByTestId('playback-settings-quality-720p')).toBeNull();
+      expect(queryByTestId('playback-settings-quality-1080p')).toBeNull();
+    });
+
+    it('selecting 360p really constrains the player to that rendition, not just the label', async () => {
+      authorizeHls(360, 540, 720, 1080);
+
+      const { getByLabelText, getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+      await act(async () => {});
+
+      const masterPlayer = findPlayerByUri(MASTER_URL);
+
+      await openSheet(getByLabelText);
+      await act(async () => {
+        fireEvent.press(getByTestId('playback-settings-quality-360p'));
+      });
+
+      // THE assertion: the player is handed the 360p VARIANT playlist. That
+      // playlist advertises one rendition, so ABR cannot climb off it.
+      expect(latestSourceUri()).toBe(variantUrl('360p'));
+      expect(findPlayerByUri(variantUrl('360p'))).not.toBe(masterPlayer);
+      expect(getByTestId('playback-settings-quality-360p').props.accessibilityState).toEqual(
+        expect.objectContaining({ selected: true })
+      );
+    });
+
+    it('returning to Auto restores adaptive playback on the master playlist', async () => {
+      authorizeHls(360, 720);
+
+      const { getByLabelText, getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+      await act(async () => {});
+      await openSheet(getByLabelText);
+
+      await act(async () => {
+        fireEvent.press(getByTestId('playback-settings-quality-720p'));
+      });
+      expect(latestSourceUri()).toBe(variantUrl('720p'));
+
+      await act(async () => {
+        fireEvent.press(getByTestId('playback-settings-quality-auto'));
+      });
+
+      expect(latestSourceUri()).toBe(MASTER_URL);
+      expect(getByTestId('playback-settings-quality-auto').props.accessibilityState).toEqual(
+        expect.objectContaining({ selected: true })
+      );
+    });
+
+    it('keeps a manual pause manual across a quality change', async () => {
+      authorizeHls(360, 720);
+
+      const video = buildVideo();
+      const { getByLabelText, getByTestId, rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+      await act(async () => {});
+
+      // The tap target only PAUSES a player that reports playing - otherwise
+      // it is a play press. The mock's `play()` is a spy and never flips
+      // `playing`, so drive it here to reach the real pause branch.
+      const masterPlayer = findPlayerByUri(MASTER_URL) as unknown as { playing: boolean };
+
+      masterPlayer.playing = true;
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      // The viewer pauses on purpose.
+      await act(async () => {
+        fireEvent.press(getByTestId('feed-item-play-pause'));
+      });
+
+      await openSheet(getByLabelText);
+      await act(async () => {
+        fireEvent.press(getByTestId('playback-settings-quality-720p'));
+      });
+
+      const incomingPlayer = findPlayerByUri(variantUrl('720p'));
+
+      expect(incomingPlayer).toBeTruthy();
+      // A quality change must not silently resume a video the viewer stopped.
+      expect(incomingPlayer?.play).not.toHaveBeenCalled();
+    });
+
+    it('carries the playback position across a quality change via the existing generation-swap reseek', async () => {
+      authorizeHls(360, 720);
+
+      const video = buildVideo();
+      const { getByLabelText, getByTestId, rerender } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} isActive />
+      );
+      await act(async () => {});
+
+      // The item has been playing for 42s on the master, and its player is
+      // confirmed ready.
+      const { useEvent } = jest.requireMock<typeof import('expo')>('expo');
+      (useEvent as jest.Mock).mockImplementation(
+        (_player: unknown, eventName: string, defaultValue: unknown) => {
+          if (eventName === 'statusChange') {
+            return { status: 'readyToPlay', error: undefined };
+          }
+          if (eventName === 'timeUpdate') {
+            return {
+              currentTime: 42,
+              currentLiveTimestamp: null,
+              currentOffsetFromLive: null,
+              bufferedPosition: 0,
+            };
+          }
+          return defaultValue;
+        }
+      );
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      await openSheet(getByLabelText);
+      await act(async () => {
+        fireEvent.press(getByTestId('playback-settings-quality-720p'));
+      });
+
+      const incomingPlayer = findPlayerByUri(variantUrl('720p')) as
+        | { seekBy: jest.Mock; currentTime: number; status: string }
+        | undefined;
+
+      // Same contract as every other generation swap: nothing is seeked
+      // until the INCOMING player itself reports readyToPlay.
+      expect(incomingPlayer?.seekBy).not.toHaveBeenCalled();
+
+      incomingPlayer!.status = 'readyToPlay';
+      await act(async () => {
+        rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      // No second, competing restore mechanism: the existing DETECT/APPLY
+      // pair does this, and does it exactly once.
+      expect(incomingPlayer?.seekBy).toHaveBeenCalledTimes(1);
+      expect(incomingPlayer?.seekBy).toHaveBeenCalledWith(42 - (incomingPlayer?.currentTime ?? 0));
+    });
+
+    it('pauses the outgoing player on a quality swap, so only one player is ever live', async () => {
+      authorizeHls(360, 720);
+
+      const { getByLabelText, getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+      await act(async () => {});
+
+      const masterPlayer = findPlayerByUri(MASTER_URL);
+
+      await openSheet(getByLabelText);
+      await act(async () => {
+        fireEvent.press(getByTestId('playback-settings-quality-720p'));
+      });
+
+      // The superseded generation is stopped by the existing
+      // outgoing-player cleanup - a quality change introduces no second
+      // simultaneous player.
+      expect(masterPlayer?.pause).toHaveBeenCalled();
+      expect(findPlayerByUri(variantUrl('720p'))).not.toBe(masterPlayer);
+    });
+
+    it('scopes the choice to its own video: a new video starts back on Auto', async () => {
+      jest.useFakeTimers();
+      try {
+        authorizeHls(360, 720);
+
+        const { getByLabelText, getByTestId, rerender } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo({ id: 'video-1' })} {...baseProps} isActive />
+        );
+        await act(async () => {});
+        await openSheet(getByLabelText);
+        await act(async () => {
+          fireEvent.press(getByTestId('playback-settings-quality-720p'));
+        });
+        expect(latestSourceUri()).toBe(variantUrl('720p'));
+
+        // The same mounted instance receives a DIFFERENT video. Its own
+        // authorization fetch goes through the activation settle-window
+        // debounce, so let that land before reading the source.
+        await act(async () => {
+          rerender(<DramaFeedItem video={buildVideo({ id: 'video-2' })} {...baseProps} isActive />);
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+
+        // A rendition pinned on the previous clip must not follow the viewer
+        // here - this video's ladder may not even contain it.
+        expect(latestSourceUri()).toBe(MASTER_URL);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('leaves speed, clear display and fullscreen working alongside the new section', async () => {
+      authorizeHls(360, 720, 1080);
+
+      const { getByLabelText, getByTestId } = await renderFeedItem(
+        <DramaFeedItem
+          video={buildVideo({ width: 1280, height: 720 })}
+          {...baseProps}
+          isActive
+        />
+      );
+      await act(async () => {});
+      await openSheet(getByLabelText);
+
+      expect(getByLabelText('Kecepatan 1x')).toBeTruthy();
+      expect(getByLabelText('Kecepatan 1.5x')).toBeTruthy();
+      expect(getByLabelText('Kecepatan 2x')).toBeTruthy();
+      expect(getByTestId('playback-settings-clear-display-row')).toBeTruthy();
+      expect(getByTestId('playback-settings-fullscreen')).toBeTruthy();
+      expect(getByTestId('playback-settings-quality-auto')).toBeTruthy();
     });
   });
 

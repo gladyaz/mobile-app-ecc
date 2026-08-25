@@ -1,5 +1,6 @@
 import { ApiError, request } from '@/services/api/client';
 import { isDemoMode } from '@/services/demo/demo-mode';
+import { AUTO_PLAYBACK_QUALITY } from '@/constants/playback-quality';
 import { getPlaybackAuthorization, resolvePlaybackSource } from '@/services/videos/video-service';
 import type {
   HlsPlaybackAuthorization,
@@ -324,6 +325,85 @@ describe('resolvePlaybackSource', () => {
     const auth = buildHls();
 
     expect(resolvePlaybackSource(auth, 'token-123', true)).toEqual({ uri: auth.masterUrl });
+  });
+
+  it('defaults to the adaptive masterUrl when no quality argument is supplied', () => {
+    const auth = buildHls();
+
+    // Every pre-existing caller passes three arguments. Auto has to be what
+    // they keep getting, or adding the parameter would have silently changed
+    // playback for code that never asked for a rendition.
+    expect(resolvePlaybackSource(auth, 'token-123', true)).toEqual(
+      resolvePlaybackSource(auth, 'token-123', true, AUTO_PLAYBACK_QUALITY)
+    );
+  });
+
+  it('kind: "hls" + manual quality: plays that rendition\'s OWN variant playlist, not the master', () => {
+    // THE assertion that manual selection is real. A variant playlist
+    // advertises exactly one rendition, so the player can only fetch that
+    // rendition's segments - this is a spec-level constraint, not a label.
+    const auth = buildHls({
+      renditions: [
+        {
+          quality: '360p',
+          width: 360,
+          height: 640,
+          url: 'https://gateway.example.com/t/tok/360p/index.m3u8',
+        },
+        {
+          quality: '720p',
+          width: 720,
+          height: 1280,
+          url: 'https://gateway.example.com/t/tok/720p/index.m3u8',
+        },
+      ],
+    });
+
+    const source = resolvePlaybackSource(auth, 'token-123', true, {
+      mode: 'manual',
+      quality: '360p',
+    });
+
+    expect(source).toEqual({ uri: 'https://gateway.example.com/t/tok/360p/index.m3u8' });
+    expect(source?.uri).not.toBe(auth.masterUrl);
+  });
+
+  it('kind: "hls" + back to auto: returns to the adaptive master, re-enabling ABR', () => {
+    const auth = buildHls();
+
+    expect(resolvePlaybackSource(auth, 'token-123', true, AUTO_PLAYBACK_QUALITY)).toEqual({
+      uri: auth.masterUrl,
+    });
+  });
+
+  it('kind: "hls" + a manual quality this authorization does not list: degrades to adaptive, never to null', () => {
+    // Happens when a refreshed grant returns a re-transcoded ladder. Adaptive
+    // playback is strictly better than a black frame, and
+    // `resolveEffectiveQuality` makes the menu show Auto to match.
+    const auth = buildHls();
+
+    expect(
+      resolvePlaybackSource(auth, 'token-123', true, { mode: 'manual', quality: '4320p' })
+    ).toEqual({ uri: auth.masterUrl });
+  });
+
+  it('kind: "hls" + manual quality + HLS disabled: still null - the kill switch outranks a quality choice', () => {
+    const auth = buildHls();
+
+    expect(
+      resolvePlaybackSource(auth, 'token-123', false, { mode: 'manual', quality: '720p' })
+    ).toBeNull();
+  });
+
+  it('kind: "mp4" ignores a manual quality entirely - the MP4 path is byte-identical either way', () => {
+    // A quality choice can never reach an MP4-backed video through the UI
+    // (no options are offered for one), but the selector must not corrupt
+    // that path even if one somehow arrived.
+    const auth = buildMp4({ requiresAuthHeader: true });
+
+    expect(
+      resolvePlaybackSource(auth, 'token-123', true, { mode: 'manual', quality: '720p' })
+    ).toEqual(resolvePlaybackSource(auth, 'token-123', true, AUTO_PLAYBACK_QUALITY));
   });
 
   it('kind: "mp4" with requiresAuthHeader true: attaches Authorization: Bearer <accessToken> (byte-identical to pre-11R)', () => {

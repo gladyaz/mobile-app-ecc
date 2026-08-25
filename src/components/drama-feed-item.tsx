@@ -22,12 +22,19 @@ import {
   playbackPlayerLabel,
   reportPlaybackDecision,
   reportPlayingState,
+  reportVideoTrack,
 } from '@/services/debug/playback-invariant';
 import {
   acquirePlaybackOwnership,
   releasePlaybackOwnership,
 } from '@/services/playback/playback-ownership';
 import { useTranslation } from '@/stores/language';
+import {
+  AUTO_PLAYBACK_QUALITY,
+  resolveEffectiveQuality,
+  selectQualityOptions,
+  type PlaybackQuality,
+} from '@/constants/playback-quality';
 import { DEFAULT_PLAYBACK_SPEED, type PlaybackSpeed } from '@/constants/playback-speed';
 import { trackEvent } from '@/services/analytics/analytics-queue';
 import { recordVideoWatched } from '@/services/ads/ad-controller';
@@ -545,6 +552,14 @@ export function DramaFeedItem({
   // never be replaced by the poster again for the same video, or the
   // poster would flicker back in on every pause/swipe-away.
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
+  // The viewer's quality choice for THIS item. Auto (adaptive, the backend's
+  // master playlist) unless they picked a rendition; a manual choice holds the
+  // rendition NAME, never its tokened URL, so a pre-expiry re-authorization
+  // re-resolves it against the fresh grant instead of pinning a dead URL.
+  // See `constants/playback-quality.ts` for why this is a source swap and not
+  // a player API call.
+  const [playbackQuality, setPlaybackQuality] =
+    useState<PlaybackQuality>(AUTO_PLAYBACK_QUALITY);
 
   if (lastVideoId !== video.id) {
     setLastVideoId(video.id);
@@ -559,6 +574,11 @@ export function DramaFeedItem({
     // inherited rate is exactly the cross-video surprise the per-video
     // decision exists to prevent.
     setPlaybackSpeed(DEFAULT_PLAYBACK_SPEED);
+    // Same per-item scope rule as the rate above, and the same reason: a
+    // rendition pinned on the previous clip must not silently follow the
+    // viewer to this one, whose ladder may not even contain it. Every newly
+    // assigned video starts adaptive.
+    setPlaybackQuality(AUTO_PLAYBACK_QUALITY);
   }
 
   // Kept in sync via a LAYOUT effect, not a plain `useEffect` (this file's
@@ -619,8 +639,16 @@ export function DramaFeedItem({
   // into the same "no real playable source" state as "authorization hasn't
   // arrived yet" / "authorization failed" below.
   const playbackSource = useMemo(
-    () => (playbackAuth ? resolvePlaybackSource(playbackAuth, accessToken, isHlsPlaybackEnabled()) : null),
-    [playbackAuth, accessToken]
+    () =>
+      playbackAuth
+        ? resolvePlaybackSource(
+            playbackAuth,
+            accessToken,
+            isHlsPlaybackEnabled(),
+            playbackQuality
+          )
+        : null,
+    [playbackAuth, accessToken, playbackQuality]
   );
   const hasPlaybackUrl = playbackSource !== null;
   const videoViewRef = useRef<VideoView>(null);
@@ -1136,6 +1164,11 @@ export function DramaFeedItem({
     setHasStartedPlaying(true);
   }
 
+  // The rendition the native player reports it is DECODING. Two consumers:
+  // the orientation heuristic just below, and (11R quality selector) the
+  // __DEV__ track report near the quality handlers - the only honest answer
+  // to "did the quality change actually take", and, on the master playlist,
+  // the observable proof that ABR is still moving between rungs.
   const { videoTrack } = useEvent(player, 'videoTrackChange', { videoTrack: null });
   const { currentTime: playbackPositionSeconds } = useEvent(player, 'timeUpdate', {
     currentTime: player.currentTime,
@@ -1668,6 +1701,72 @@ export function DramaFeedItem({
 
   const handleOpenSettingsSheet = useCallback(() => setIsSettingsSheetVisible(true), []);
   const handleCloseSettingsSheet = useCallback(() => setIsSettingsSheetVisible(false), []);
+
+  // The renditions THIS video actually has, derived from the authorization
+  // the backend returned and from nothing else - an MP4-shaped grant, a
+  // failed one, or a ladder with fewer than two rungs all yield an empty
+  // list, and the sheet then renders no quality control at all.
+  const qualityOptions = useMemo(() => selectQualityOptions(playbackAuth), [playbackAuth]);
+  // What the menu marks as selected. Falls back to Auto when a refreshed
+  // ladder no longer contains the pinned rendition, which is exactly what
+  // `resolvePlaybackSource` does with the source in that case - so the
+  // checkmark and the player can never disagree.
+  const effectivePlaybackQuality = useMemo(
+    () => resolveEffectiveQuality(playbackQuality, qualityOptions),
+    [playbackQuality, qualityOptions]
+  );
+
+  // Emits the decoder's own view of the current rendition whenever it
+  // changes, next to what the viewer asked for - the pair is what makes an
+  // on-device quality claim verifiable instead of assumed. __DEV__-only
+  // inside the reporter, so release builds carry nothing.
+  useEffect(() => {
+    reportVideoTrack(
+      playerLabel,
+      video.id,
+      effectivePlaybackQuality.mode === 'auto' ? 'auto' : effectivePlaybackQuality.quality,
+      videoTrack
+        ? {
+            width: videoTrack.size.width,
+            height: videoTrack.size.height,
+            peakBitrate: videoTrack.peakBitrate,
+            frameRate: videoTrack.frameRate,
+          }
+        : null
+    );
+  }, [playerLabel, video.id, effectivePlaybackQuality, videoTrack]);
+
+  // Changing quality changes only the resolved SOURCE. Everything else is
+  // deliberately left alone: manual-pause intent, the active item, ownership,
+  // and clear display are all untouched, and the position is carried across
+  // by the existing generation-swap reseek (the DETECT/APPLY effect pair
+  // above) rather than by anything new here. The sheet stays open so a
+  // viewer can hear/see the result and try another rung without re-opening
+  // it - a quality menu that closes on every tap makes comparing two
+  // renditions needlessly laborious.
+  const handleSelectPlaybackQuality = useCallback(
+    (nextQuality: PlaybackQuality) => {
+      reportPlaybackDecision(playerLabel, video.id, 'source-replace', 'quality-selected', {
+        isActive,
+        isScreenFocused,
+        isAppForeground,
+        isManuallyPaused,
+        sourceKind: playbackAuth?.kind ?? 'none',
+        playerStatus: player.status,
+      });
+      setPlaybackQuality(nextQuality);
+    },
+    [
+      playerLabel,
+      video.id,
+      isActive,
+      isScreenFocused,
+      isAppForeground,
+      isManuallyPaused,
+      playbackAuth,
+      player,
+    ]
+  );
 
   // The sheet's Clear Display switch drives the SAME lifted state as the
   // single tap and the pinch - one implementation, three entry points. The
@@ -2375,9 +2474,12 @@ export function DramaFeedItem({
           onClose={handleCloseSettingsSheet}
           onDismissed={handleSettingsSheetDismissed}
           onEnterFullscreen={isHorizontal ? handleEnterFullscreenFromSheet : undefined}
+          onSelectPlaybackQuality={handleSelectPlaybackQuality}
           onSelectPlaybackSpeed={setPlaybackSpeed}
           onToggleClearDisplay={handleToggleClearDisplayFromSheet}
+          playbackQuality={effectivePlaybackQuality}
           playbackSpeed={playbackSpeed}
+          qualityOptions={qualityOptions}
           visible={isSettingsSheetVisible}
         />
       )}

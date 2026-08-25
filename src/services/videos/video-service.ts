@@ -2,6 +2,7 @@ import { mockDramaVideos } from '@/data/mock-drama-videos';
 import { ApiError, request } from '@/services/api/client';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { mapBackendVideoToVideo, type BackendVideoDto } from '@/services/videos/video-mapper';
+import { AUTO_PLAYBACK_QUALITY, type PlaybackQuality } from '@/constants/playback-quality';
 import type { Mp4PlaybackAuthorization, PlaybackAuthorization, PlaybackRendition } from '@/types/playback';
 import type { Video, VideoCategory } from '@/types/video';
 
@@ -264,11 +265,26 @@ function parsePlaybackAuthorization(value: unknown): PlaybackAuthorization {
 export function resolvePlaybackSource(
   auth: PlaybackAuthorization,
   accessToken: string | undefined,
-  hlsEnabled: boolean
+  hlsEnabled: boolean,
+  quality: PlaybackQuality = AUTO_PLAYBACK_QUALITY
 ): { uri: string; headers?: Record<string, string> } | null {
   if (auth.kind === 'hls') {
     if (!hlsEnabled) {
       return null;
+    }
+
+    if (quality.mode === 'manual') {
+      const rendition = auth.renditions.find((entry) => entry.quality === quality.quality);
+
+      // A requested rendition that this authorization does not list falls
+      // through to the adaptive master rather than failing playback. That
+      // happens when a refresh returns a re-transcoded ladder without the
+      // chosen rung - degrading to adaptive is strictly better than a black
+      // frame, and `resolveEffectiveQuality` makes the MENU agree by showing
+      // Auto, so the UI never claims a rendition the player is not on.
+      if (rendition) {
+        return { uri: rendition.url };
+      }
     }
 
     return { uri: auth.masterUrl };

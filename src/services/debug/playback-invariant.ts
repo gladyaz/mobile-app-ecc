@@ -110,3 +110,45 @@ export function reportPlaybackDecision(
 
   console.log(`[PlaybackDecision] ${playerLabel} ${videoId} ${action} reason=${reason}`, context);
 }
+
+// 11R QUALITY SELECTOR: the ONE truthful answer to "which rendition is this
+// player ACTUALLY on." `VideoPlayer.videoTrack` is read-only and reported by
+// the native player itself (ExoPlayer/AVPlayer), so this is decoder truth -
+// not an echo of whatever the quality menu was last set to. A manual
+// selection is only verified when this line says the expected dimensions;
+// the button changing colour proves nothing.
+//
+// Also the evidence that AUTO is genuinely adaptive: on the master playlist
+// this fires again whenever ABR moves between rungs, so a sequence of
+// differing sizes for one video IS the adaptive behaviour, observed.
+//
+// Same contract as the rest of this module: a no-op outside __DEV__, and it
+// logs dimensions/bitrate only - never a manifest URL or a gateway token.
+export type PlaybackVideoTrackSnapshot = {
+  readonly width: number;
+  readonly height: number;
+  readonly peakBitrate: number | null;
+  readonly frameRate: number | null;
+};
+
+export function reportVideoTrack(
+  playerLabel: string,
+  videoId: string,
+  requestedQuality: string,
+  track: PlaybackVideoTrackSnapshot | null
+): void {
+  if (!__DEV__) {
+    return;
+  }
+
+  console.log(
+    `[PlaybackVideoTrack] ${playerLabel} ${videoId} requested=${requestedQuality}`,
+    track === null
+      ? { playing: 'unknown' }
+      : {
+          playing: `${track.width}x${track.height}`,
+          peakBitrate: track.peakBitrate,
+          frameRate: track.frameRate,
+        }
+  );
+}

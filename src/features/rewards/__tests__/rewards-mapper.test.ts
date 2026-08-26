@@ -12,6 +12,7 @@ import { DEFAULT_LANGUAGE, translations } from '@/services/i18n/translations';
 import type {
   CheckInResponseDto,
   DailyCheckInDto,
+  RewardRedemptionOfferDto,
   RewardTaskDto,
   RewardWalletDto,
   RewardsSnapshotDto,
@@ -163,8 +164,24 @@ describe('mapTask', () => {
     unsupportedReason: 'NO_VERIFIABLE_SIGNAL',
   };
 
+  /**
+   * `mapTask` returns `null` for a task type this build cannot render, which
+   * is a real outcome rather than an error. These cases are all about tasks
+   * it CAN render, so the null is a test failure rather than something each
+   * assertion has to re-check.
+   */
+  function mapKnownTask(dto: RewardTaskDto, stage?: 'idle' | 'opened' | 'claimed') {
+    const task = mapTask(dto, t, stage);
+
+    if (!task) {
+      throw new Error(`Expected mapTask to render a task of type ${dto.type}`);
+    }
+
+    return task;
+  }
+
   it('copies the reward figure and status through', () => {
-    const task = mapTask(socialDto, t);
+    const task = mapKnownTask(socialDto);
 
     expect(task.rewardPoints).toBe(50);
     expect(task.status).toBe('AVAILABLE');
@@ -172,38 +189,115 @@ describe('mapTask', () => {
   });
 
   it('never flips an unsupported task to claimable', () => {
-    expect(mapTask(socialDto, t).isClaimSupported).toBe(false);
-    expect(mapTask({ ...socialDto, isClaimSupported: true }, t).isClaimSupported).toBe(true);
+    expect(mapKnownTask(socialDto).isClaimSupported).toBe(false);
+    expect(mapKnownTask({ ...socialDto, isClaimSupported: true }).isClaimSupported).toBe(true);
   });
 
   it('carries the machine-readable unsupported reason', () => {
-    expect(mapTask(socialDto, t).unsupportedReason).toBe('NO_VERIFIABLE_SIGNAL');
+    expect(mapKnownTask(socialDto).unsupportedReason).toBe('NO_VERIFIABLE_SIGNAL');
   });
 
   it('gives an unsupported task NO action word', () => {
     // "Follow" beside a +50 pill invites the user to earn points the backend
     // has no verifiable signal for and will refuse to pay.
-    expect(mapTask(socialDto, t).ctaLabel).toBe('rewards.ctaUnavailable');
+    expect(mapKnownTask(socialDto).ctaLabel).toBe('rewards.ctaUnavailable');
     expect(
-      mapTask({ ...socialDto, unsupportedReason: 'AWAITING_PRODUCT_DECISION' }, t).ctaLabel
+      mapKnownTask({ ...socialDto, unsupportedReason: 'AWAITING_PRODUCT_DECISION' }).ctaLabel
     ).toBe('rewards.ctaSoon');
   });
 
   it('gives the action word back the moment the server supports the claim', () => {
-    expect(mapTask({ ...socialDto, isClaimSupported: true }, t).ctaLabel).toBe(
+    expect(mapKnownTask({ ...socialDto, isClaimSupported: true }).ctaLabel).toBe(
       'rewards.ctaFollow'
     );
     expect(
-      mapTask({ ...socialDto, socialPlatform: 'YOUTUBE', isClaimSupported: true }, t).ctaLabel
+      mapKnownTask({ ...socialDto, socialPlatform: 'YOUTUBE', isClaimSupported: true }).ctaLabel
     ).toBe('rewards.ctaSubscribe');
   });
 
-  it('reports no task progress, because the server sends none', () => {
-    // A client-counted "2 of 5 ads watched" would be a local number dressed
-    // as server progress toward a reward the server will not pay.
-    expect(mapTask(socialDto, t).progress).toBeNull();
+  it('turns the CTA into a CONFIRMATION once the profile has been opened', () => {
+    // The second step of the two-call flow is the viewer confirming an action
+    // NOBODY observed. The word has to be theirs ("I've followed"), not a
+    // claim that anything was checked.
+    expect(mapKnownTask({ ...socialDto, isClaimSupported: true }, 'opened').ctaLabel).toBe(
+      'rewards.ctaConfirmFollow'
+    );
+  });
+
+  it('carries the USER_CONFIRMED evidence class instead of implying verification', () => {
+    const task = mapKnownTask({
+      ...socialDto,
+      isClaimSupported: true,
+      verification: 'USER_CONFIRMED',
+    });
+
+    expect(task.verification).toBe('USER_CONFIRMED');
+  });
+
+  it('withdraws the action word entirely once the server reports the claim paid', () => {
+    // A second press would reach a backend that answers `alreadyClaimed`, and
+    // a viewer reads that as a reward that silently failed.
+    const task = mapKnownTask({
+      ...socialDto,
+      isClaimSupported: true,
+      claimedAt: '2026-08-26T09:00:00.000Z',
+    });
+
+    expect(task.isClaimed).toBe(true);
+    expect(task.ctaLabel).toBe('rewards.ctaClaimed');
+  });
+
+  it('renders WATCH_EPISODES progress from the SERVER pair, never a local count', () => {
+    const task = mapKnownTask({
+      id: 'task_watch_5_episodes',
+      type: 'WATCH_EPISODES',
+      rewardPoints: 50,
+      status: 'IN_PROGRESS',
+      isClaimSupported: true,
+      verification: 'SERVER_OBSERVED',
+      progress: { current: 3, required: 5 },
+    });
+
+    expect(task.type).toBe('WATCH_EPISODES');
+    expect(task.progress).toEqual({ current: 3, target: 5 });
+  });
+
+  it('carries the server-derived account handle for a social tile', () => {
+    const task = mapKnownTask({
+      ...socialDto,
+      isClaimSupported: true,
+      accountHandle: '@redpanda',
+      destinationUrl: 'https://www.instagram.com/redpanda',
+    });
+
+    expect(task.accountHandle).toBe('@redpanda');
+  });
+
+  it('DROPS a task type this build does not know, rather than crashing on it', () => {
+    // The backend adds task types server-side and expects already-installed
+    // clients to keep working. A `Record` lookup on an unknown member returns
+    // `undefined` and then crashes the row, so the seam refuses it here.
     expect(
-      mapTask({ ...socialDto, type: 'REWARDED_AD', socialPlatform: undefined }, t).progress
+      mapTask({ ...socialDto, type: 'QUANTUM_MISSION' as never, socialPlatform: undefined }, t)
+    ).toBeNull();
+  });
+
+  it('renders a known task whose social platform is unknown, without crashing', () => {
+    // The platform is decoration; the reward is not. Dropping the whole tile
+    // over an unrenderable mark would hide a mission the viewer can complete.
+    const task = mapTask({ ...socialDto, socialPlatform: 'BLUESKY' as never }, t);
+
+    expect(task).not.toBeNull();
+    expect(task?.socialPlatform).toBeUndefined();
+  });
+
+  it('reports no progress for a task the server sent none for', () => {
+    // Still true for one-shot missions, and still for the same reason: a
+    // client-counted "2 of 5" would be a local number dressed as server
+    // progress toward a payout only the server makes.
+    expect(mapKnownTask(socialDto).progress).toBeNull();
+    expect(
+      mapKnownTask({ ...socialDto, type: 'REWARDED_AD', socialPlatform: undefined }).progress
     ).toBeNull();
   });
 });
@@ -217,6 +311,7 @@ describe('mapRedemption', () => {
         grantsDays: 1,
         availability: 'AVAILABLE',
         isRedeemSupported: true,
+        kind: 'PREMIUM_DAYS' as const,
       },
       t
     );
@@ -238,6 +333,7 @@ describe('mapRedemption', () => {
         grantsDays: 3,
         availability: 'INSUFFICIENT_POINTS',
         isRedeemSupported: true,
+        kind: 'PREMIUM_DAYS' as const,
       },
       t
     );
@@ -256,6 +352,7 @@ describe('mapRedemption', () => {
         grantsDays: 30,
         availability: 'AVAILABLE',
         isRedeemSupported: true,
+        kind: 'PREMIUM_DAYS' as const,
       },
       interpolate
     );
@@ -321,6 +418,7 @@ describe('applyCheckInResponse', () => {
     watchTime: null,
     tasks: [],
     redemptions: [],
+    activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
   };
 
   const response: CheckInResponseDto = {
@@ -368,8 +466,10 @@ describe('applyCheckInResponse', () => {
             grantsDays: 1,
             availability: 'INSUFFICIENT_POINTS',
             isRedeemSupported: true,
+            kind: 'PREMIUM_DAYS' as const,
           },
         ],
+        activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
       },
       t
     );
@@ -392,7 +492,14 @@ describe('applyCheckInResponse', () => {
 describe('mapRewardsSnapshot', () => {
   it('maps a null watchTime straight to the section’s empty state', () => {
     const snapshot = mapRewardsSnapshot(
-      { wallet: WALLET_DTO, dailyCheckIn: CHECK_IN_DTO, watchTime: null, tasks: [], redemptions: [] },
+      {
+        wallet: WALLET_DTO,
+        dailyCheckIn: CHECK_IN_DTO,
+        watchTime: null,
+        tasks: [],
+        redemptions: [],
+        activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
+      },
       t
     );
 
@@ -422,6 +529,7 @@ describe('mapRewardsSnapshot redemption scope (V1: free + ads)', () => {
     grantsDays: 1,
     availability: 'AVAILABLE',
     isRedeemSupported: true,
+    kind: 'PREMIUM_DAYS' as const,
   } as const;
 
   /** The forward shape: a perk that grants no premium days. */
@@ -431,9 +539,10 @@ describe('mapRewardsSnapshot redemption scope (V1: free + ads)', () => {
     grantsDays: 0,
     availability: 'AVAILABLE',
     isRedeemSupported: true,
+    kind: 'AD_PERK' as const,
   } as const;
 
-  function snapshotWith(redemptions: readonly (typeof vipOffer | typeof perkOffer)[]) {
+  function snapshotWith(redemptions: readonly RewardRedemptionOfferDto[]) {
     return mapRewardsSnapshot(
       {
         wallet: WALLET_DTO,
@@ -441,6 +550,7 @@ describe('mapRewardsSnapshot redemption scope (V1: free + ads)', () => {
         watchTime: null,
         tasks: [],
         redemptions: [...redemptions],
+        activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
       },
       t
     );
@@ -448,6 +558,103 @@ describe('mapRewardsSnapshot redemption scope (V1: free + ads)', () => {
 
   it('drops every premium-granting offer, so V1 advertises no paid unlock', () => {
     expect(snapshotWith([vipOffer]).redemptions).toEqual([]);
+  });
+
+  it('withholds a PREMIUM_DAYS offer even when it claims to grant zero days', () => {
+    // `kind` states the rule directly and `grantsDays` is the fail-closed
+    // half beside it. An offer that contradicts itself is still not something
+    // V1 sells - the two checks are an AND, not a fallback for each other.
+    expect(snapshotWith([{ ...vipOffer, grantsDays: 0 }]).redemptions).toEqual([]);
+  });
+
+  it('lets an AD_PERK offer through - it is the coin utility V1 actually ships', () => {
+    const [offer] = snapshotWith([perkOffer]).redemptions;
+
+    expect(offer.id).toBe('redeem_skip_next_ad');
+    expect(offer.kind).toBe('AD_PERK');
+  });
+
+  it('describes an ad perk from the SERVER’s own perk block, never a hardcoded duration', () => {
+    // Retuning "2 hours" to "3 hours" server-side has to change this copy
+    // with no mobile release, which it only can if the number is data.
+    const snapshot = mapRewardsSnapshot(
+      {
+        wallet: WALLET_DTO,
+        dailyCheckIn: CHECK_IN_DTO,
+        watchTime: null,
+        tasks: [],
+        redemptions: [
+          {
+            id: 'redeem_ad_pass_2h',
+            costPoints: 600,
+            grantsDays: 0,
+            availability: 'AVAILABLE',
+            isRedeemSupported: true,
+            kind: 'AD_PERK',
+            perk: { type: 'TEMPORARY_AD_PASS', uses: null, durationMinutes: 120 },
+          },
+        ],
+        activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
+      },
+      t
+    );
+
+    expect(snapshot.redemptions[0].perk).toEqual({
+      type: 'TEMPORARY_AD_PASS',
+      uses: null,
+      durationMinutes: 120,
+    });
+  });
+
+  it('maps the perks the account already HOLDS, so they render beside what sells them', () => {
+    const snapshot = mapRewardsSnapshot(
+      {
+        wallet: WALLET_DTO,
+        dailyCheckIn: CHECK_IN_DTO,
+        watchTime: null,
+        tasks: [],
+        redemptions: [],
+        activePerks: {
+          perks: [
+            {
+              id: 'perk-1',
+              perkType: 'SKIP_NEXT_INTERSTITIAL',
+              expiresAt: '2026-08-27T09:00:00.000Z',
+              remainingUses: 1,
+              grantedAt: '2026-08-26T09:00:00.000Z',
+            },
+          ],
+          skipNextInterstitial: true,
+          adFreeUntil: null,
+        },
+      },
+      t
+    );
+
+    expect(snapshot.activePerks.perks).toHaveLength(1);
+    // COPIED, not recomputed from the array - that rule is the server's.
+    expect(snapshot.activePerks.skipNextInterstitial).toBe(true);
+  });
+
+  it('reports NO perks for a snapshot that predates the field, rather than crashing', () => {
+    // The safe direction as well as the honest one: it suppresses no ad and
+    // grants no skip.
+    const snapshot = mapRewardsSnapshot(
+      {
+        wallet: WALLET_DTO,
+        dailyCheckIn: CHECK_IN_DTO,
+        watchTime: null,
+        tasks: [],
+        redemptions: [],
+      } as never,
+      t
+    );
+
+    expect(snapshot.activePerks).toEqual({
+      perks: [],
+      skipNextInterstitial: false,
+      adFreeUntil: null,
+    });
   });
 
   it('keeps an offer that grants no premium days, so coin utility can still ship', () => {

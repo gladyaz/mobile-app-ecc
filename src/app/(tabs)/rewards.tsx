@@ -45,6 +45,7 @@ export default function RewardsRoute() {
       onCheckIn={rewards.checkIn}
       onDismissNotice={rewards.dismissNotice}
       onLoadMoreLedger={rewards.loadMoreLedger}
+      onPressTask={rewards.pressTask}
       onRedeem={rewards.redeem}
       onRetry={rewards.reload}
       onRetryLedger={rewards.retryLedger}

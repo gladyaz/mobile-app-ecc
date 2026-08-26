@@ -87,6 +87,7 @@ function snapshotDto(balancePoints: number, version: number): RewardsSnapshotDto
     watchTime: null,
     tasks: [],
     redemptions: [],
+    activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
   };
 }
 

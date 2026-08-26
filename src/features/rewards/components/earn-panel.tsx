@@ -17,21 +17,27 @@ import type { RewardTask, RewardsUnavailableAction } from '@/types/rewards';
  * The per-type caveat dedup that used to live here is gone with the notices
  * themselves - see `rewards-primitives.tsx` for why.
  *
- * EVERY TASK THE BACKEND SERVES IS CURRENTLY UNCLAIMABLE, and pressing one
- * reports the tap and nothing else. That is not this component's decision:
- * `isClaimSupported` arrives false on each task because the server has no
- * way to verify a social follow, a finished ad or a campaign, and a reward
- * it cannot verify is one it will not pay. The flag is server-owned, so the
- * day a verifiable signal exists these rows become claimable with no change
- * here and no mobile release.
+ * TWO PRESS OUTCOMES, AND THE SERVER PICKS WHICH. A task the backend marked
+ * `isClaimSupported: false` - or one it reports already claimed - reaches
+ * `onAction`, which acknowledges the tap and does nothing else. Everything
+ * else reaches `onTaskAction`, which the container turns into a real request.
+ * This component decides neither: it reads two server-owned flags and routes.
+ *
+ * The rows that are still unclaimable are unclaimable because the backend has
+ * no way to verify them (a finished rewarded ad needs an ad-network server
+ * callback that does not exist; a campaign has no completion signal at all).
+ * Those flags are server-owned, so the day a signal exists these rows become
+ * claimable with no change here and no mobile release.
  */
 
 type EarnPanelProps = {
   readonly tasks: readonly RewardTask[];
   readonly onAction: (action: RewardsUnavailableAction) => void;
+  /** A press on a task the SERVER says it can pay. Omitted in preview renders. */
+  readonly onTaskAction?: (task: RewardTask) => void;
 };
 
-export function EarnPanel({ tasks, onAction }: EarnPanelProps) {
+export function EarnPanel({ tasks, onAction, onTaskAction }: EarnPanelProps) {
   const { t } = useTranslation();
 
   return (
@@ -40,7 +46,19 @@ export function EarnPanel({ tasks, onAction }: EarnPanelProps) {
         tasks.map((task) => (
           <RewardTaskCard
             key={task.id}
-            onPressCta={(pressed) => onAction({ kind: 'TASK', id: pressed.id, label: pressed.title })}
+            onPressCta={(pressed) => {
+              // A claimed mission is routed to the acknowledgement branch as
+              // well as an unsupported one: there is genuinely nothing left to
+              // request, and sending it on would ask the server to re-pay
+              // something it has already paid.
+              if (!pressed.isClaimSupported || pressed.isClaimed || !onTaskAction) {
+                onAction({ kind: 'TASK', id: pressed.id, label: pressed.title });
+
+                return;
+              }
+
+              onTaskAction(pressed);
+            }}
             task={task}
           />
         ))

@@ -78,6 +78,7 @@ function buildSnapshot(overrides?: Partial<RewardsSnapshot>): RewardsSnapshot {
         socialPlatform: 'FACEBOOK',
         isClaimSupported: false,
         unsupportedReason: 'NO_VERIFIABLE_SIGNAL',
+        isClaimed: false,
       },
       {
         id: 'uji_done',
@@ -89,6 +90,7 @@ function buildSnapshot(overrides?: Partial<RewardsSnapshot>): RewardsSnapshot {
         status: 'COMPLETED',
         ctaLabel: 'Segera Uji',
         isClaimSupported: false,
+        isClaimed: false,
         unsupportedReason: 'AWAITING_PRODUCT_DECISION',
       },
     ],
@@ -102,8 +104,13 @@ function buildSnapshot(overrides?: Partial<RewardsSnapshot>): RewardsSnapshot {
         availability: 'AVAILABLE',
         ctaLabel: 'Tukar Uji',
         isRedeemSupported: true,
+        kind: 'AD_PERK' as const,
       },
     ],
+    // The V1 earn-and-spend addition. An account holding nothing is the
+    // neutral fixture: `ActivePerksCard` renders nothing for it, so these
+    // cases keep asserting the surfaces they were written for.
+    activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
     ...overrides,
   };
 }

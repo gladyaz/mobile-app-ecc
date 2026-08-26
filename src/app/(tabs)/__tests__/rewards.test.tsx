@@ -144,6 +144,7 @@ function buildSnapshotDto(overrides: Partial<RewardsSnapshotDto> = {}): RewardsS
         grantsDays: 1,
         availability: 'AVAILABLE',
         isRedeemSupported: true,
+        kind: 'PREMIUM_DAYS' as const,
       },
       {
         id: 'redeem_vip_3d',
@@ -152,6 +153,7 @@ function buildSnapshotDto(overrides: Partial<RewardsSnapshotDto> = {}): RewardsS
         // Server-computed against the SERVER's balance, not the client's.
         availability: 'INSUFFICIENT_POINTS',
         isRedeemSupported: true,
+        kind: 'PREMIUM_DAYS' as const,
       },
       {
         id: 'redeem_vip_7d',
@@ -159,8 +161,10 @@ function buildSnapshotDto(overrides: Partial<RewardsSnapshotDto> = {}): RewardsS
         grantsDays: 7,
         availability: 'COMING_SOON',
         isRedeemSupported: false,
+        kind: 'PREMIUM_DAYS' as const,
       },
     ],
+    activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
     ...overrides,
   };
 }
@@ -230,6 +234,7 @@ function buildRedeemResponse(overrides: Partial<RedeemResponseDto> = {}): Redeem
       version: base.wallet.version + 1,
     },
     entitlementExpiresAt: '2026-08-23T03:00:00.000Z',
+    perk: null,
     ...overrides,
   };
 }

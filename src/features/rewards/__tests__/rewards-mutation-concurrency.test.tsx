@@ -96,8 +96,10 @@ function snapshotDto(balancePoints: number, version: number): RewardsSnapshotDto
         grantsDays: 1,
         availability: 'AVAILABLE',
         isRedeemSupported: true,
+        kind: 'PREMIUM_DAYS' as const,
       },
     ],
+    activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
   };
 }
 
@@ -123,6 +125,7 @@ function redeemDto(balancePoints: number, version: number): RedeemResponseDto {
     replayed: false,
     wallet: snapshotDto(balancePoints, version).wallet,
     entitlementExpiresAt: '2026-08-23T03:00:00.000Z',
+    perk: null,
   };
 }
 
@@ -159,6 +162,7 @@ function offer(overrides: Partial<RewardRedemption> = {}): RewardRedemption {
     availability: 'AVAILABLE',
     ctaLabel: 'redeem',
     isRedeemSupported: true,
+    kind: 'PREMIUM_DAYS' as const,
     ...overrides,
   };
 }

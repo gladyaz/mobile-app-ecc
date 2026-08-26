@@ -92,6 +92,7 @@ function buildSnapshot(overrides?: Partial<RewardsSnapshot>): RewardsSnapshot {
         status: 'AVAILABLE',
         ctaLabel: 'Follow Uji',
         isClaimSupported: false,
+        isClaimed: false,
       },
       {
         id: 'uji_ad',
@@ -103,6 +104,7 @@ function buildSnapshot(overrides?: Partial<RewardsSnapshot>): RewardsSnapshot {
         status: 'IN_PROGRESS',
         ctaLabel: 'Tonton Uji',
         isClaimSupported: false,
+        isClaimed: false,
       },
     ],
     redemptions: [
@@ -115,8 +117,13 @@ function buildSnapshot(overrides?: Partial<RewardsSnapshot>): RewardsSnapshot {
         availability: 'AVAILABLE',
         ctaLabel: 'Tukar Uji',
         isRedeemSupported: false,
+        kind: 'AD_PERK' as const,
       },
     ],
+    // The V1 earn-and-spend addition. An account holding nothing is the
+    // neutral fixture: `ActivePerksCard` renders nothing for it, so these
+    // cases keep asserting the surfaces they were written for.
+    activePerks: { perks: [], skipNextInterstitial: false, adFreeUntil: null },
     ...overrides,
   };
 }

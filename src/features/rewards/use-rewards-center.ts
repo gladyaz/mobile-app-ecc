@@ -3,18 +3,24 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { dedupeLedgerEntries, mergeLedgerEntries } from '@/features/rewards/ledger-merge';
 import {
   applyCheckInResponse,
+  applyMissionClaimResponse,
+  applySocialMissionStage,
   mapLedgerPage,
   mapRewardsSnapshot,
   mapWallet,
 } from '@/features/rewards/rewards-mapper';
+import { syncRewardAdPerks } from '@/hooks/use-reward-ad-perks';
 import { ApiError } from '@/services/api/client';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { createRedemptionIdempotencyKey } from '@/services/rewards/idempotency-key';
 import { REWARD_ERROR_CODES } from '@/services/rewards/rewards-dto';
+import { openExternalProfile } from '@/services/rewards/open-external-profile';
 import {
   claimDailyCheckIn,
+  claimMission,
   fetchRewardsLedger,
   fetchRewardsSnapshot,
+  openSocialMission,
   redeemReward,
 } from '@/services/rewards/rewards-service';
 import { useAuth } from '@/stores/auth';
@@ -22,10 +28,12 @@ import { useEntitlement } from '@/stores/entitlement';
 import { useTranslation, type Translate } from '@/stores/language';
 import type {
   RewardRedemption,
+  RewardTask,
   RewardsLedgerState,
   RewardsSnapshot,
   RewardsNotice,
   RewardsViewState,
+  SocialMissionStage,
 } from '@/types/rewards';
 
 /**
@@ -108,6 +116,12 @@ export type RewardsCenterController = {
   readonly reload: () => void;
   readonly checkIn: () => void;
   readonly redeem: (redemption: RewardRedemption) => void;
+  /**
+   * The ONE entry point for pressing a task CTA. Which of the two social
+   * calls it makes depends on the stage the tile is already on, so the
+   * screen never has to know that a follow mission is two requests.
+   */
+  readonly pressTask: (task: RewardTask) => void;
   readonly retryLedger: () => void;
   readonly loadMoreLedger: () => void;
 };
@@ -212,6 +226,22 @@ export function useRewardsCenter(): RewardsCenterController {
    * while that attempt's outcome is unknown. See `isIndeterminateFailure`.
    */
   const pendingRedemptionKeysRef = useRef<Record<string, string>>({});
+  /**
+   * Which social missions this SESSION has opened, keyed by mission id.
+   *
+   * A REF, AND DELIBERATELY NOT PERSISTED. It records "the server handed this
+   * device a destination and is waiting to be told the viewer came back",
+   * which is true of a sitting rather than of an account. Persisting it would
+   * offer the confirm control to someone who opened the profile last week and
+   * never went, and the server's own `open` record - not this - is what
+   * actually gates the claim (`REWARD_MISSION_NOT_STARTED`).
+   *
+   * A ref rather than state because the snapshot already carries the rendered
+   * consequence: `applySocialMissionStage` writes the new CTA into the view
+   * model, so this is only the bookkeeping that decides which call the NEXT
+   * press makes.
+   */
+  const socialStagesRef = useRef<Record<string, SocialMissionStage>>({});
   /**
    * The mutation currently in flight, or `null`.
    *
@@ -378,6 +408,7 @@ export function useRewardsCenter(): RewardsCenterController {
       walletVersionRef.current = -1;
       ledgerCursorRef.current = null;
       pendingRedemptionKeysRef.current = {};
+      socialStagesRef.current = {};
       // Hand the mutation slot back. Whatever was in flight belongs to an
       // account that is no longer signed in, and `releaseMutation` will
       // decline to clear the slot if someone has since taken it.
@@ -412,6 +443,12 @@ export function useRewardsCenter(): RewardsCenterController {
       // harmless, because the server scopes uniqueness to [userId, key], but
       // untrue, and untrue state is what later bugs are built on.
       pendingRedemptionKeysRef.current = {};
+      // A HALF-FINISHED MISSION BELONGS TO THE ACCOUNT THAT STARTED IT.
+      // Carrying a stage across a switch would offer the new account a
+      // confirm control for an open the server recorded against someone
+      // else - which the backend refuses, but only after the viewer has
+      // pressed a button the app should never have shown them.
+      socialStagesRef.current = {};
     }
 
     // Inline async IIFE rather than a `useCallback` called by reference, so
@@ -433,7 +470,7 @@ export function useRewardsCenter(): RewardsCenterController {
           walletVersionRef.current = snapshotDto.wallet.version;
           setView(targetUserId, {
             status: 'ready',
-            snapshot: mapRewardsSnapshot(snapshotDto, t),
+            snapshot: mapRewardsSnapshot(snapshotDto, t, socialStagesRef.current),
           });
         }
       } catch (error) {
@@ -872,6 +909,14 @@ export function useRewardsCenter(): RewardsCenterController {
             // relaunch.
             await refreshEntitlement();
 
+            // The same move for an AD PERK, and the same rule: the backend
+            // issued it in the transaction that took the coins, and this only
+            // makes the ad gate see it. Without it, a viewer who buys an ad
+            // skip and goes straight back to the feed would meet the next
+            // interstitial in full, and the perk would look broken until the
+            // app next came to the foreground.
+            await syncRewardAdPerks();
+
             // Re-read rather than patch: a new balance changes which offers
             // are affordable, and `availability` is server-computed.
             const [snapshotDto] = await Promise.all([
@@ -887,7 +932,7 @@ export function useRewardsCenter(): RewardsCenterController {
               walletVersionRef.current = snapshotDto.wallet.version;
               setView(targetUserId, {
                 status: 'ready',
-                snapshot: mapRewardsSnapshot(snapshotDto, t),
+                snapshot: mapRewardsSnapshot(snapshotDto, t, socialStagesRef.current),
               });
             }
           } catch {
@@ -966,6 +1011,288 @@ export function useRewardsCenter(): RewardsCenterController {
     ]
   );
 
+  // ------------------------------------------------------- missions
+
+  /**
+   * Maps a mission failure onto copy, with a branch for every refusal the
+   * server can actually reach.
+   *
+   * Each of these is a DIFFERENT thing for the viewer to do, which is why
+   * none of them collapses into the generic error: "open the profile first"
+   * and "wait a moment" are instructions, and a mission that no longer exists
+   * is not something to retry at all. Collapsing them into "gagal" would turn
+   * a precise, correct refusal into an unexplained dead end.
+   */
+  const describeMissionError = useCallback(
+    (error: unknown, task: RewardTask): string => {
+      if (isApiErrorWithCode(error, REWARD_ERROR_CODES.REWARD_MISSION_NOT_STARTED)) {
+        return t('rewards.missionNotStarted');
+      }
+
+      if (isApiErrorWithCode(error, REWARD_ERROR_CODES.REWARD_MISSION_TOO_SOON)) {
+        return t('rewards.missionTooSoon');
+      }
+
+      if (isApiErrorWithCode(error, REWARD_ERROR_CODES.REWARD_MISSION_NOT_COMPLETE)) {
+        return t('rewards.missionNotComplete', { title: task.title });
+      }
+
+      if (
+        isApiErrorWithCode(error, REWARD_ERROR_CODES.REWARD_MISSION_UNAVAILABLE) ||
+        isApiErrorWithCode(error, REWARD_ERROR_CODES.REWARD_MISSION_NOT_OPENABLE)
+      ) {
+        return t('rewards.missionUnavailable', { title: task.title });
+      }
+
+      if (isApiErrorWithCode(error, REWARD_ERROR_CODES.REWARD_MISSION_NOT_FOUND)) {
+        return t('rewards.missionNotFound', { title: task.title });
+      }
+
+      return describeError(error, t);
+    },
+    [t]
+  );
+
+  /** Records the stage and re-renders the tile's CTA through the mapper. */
+  const setSocialStage = useCallback(
+    (targetUserId: string, missionId: string, stage: SocialMissionStage) => {
+      socialStagesRef.current = { ...socialStagesRef.current, [missionId]: stage };
+      updateSnapshot(targetUserId, (snapshot) =>
+        applySocialMissionStage(snapshot, missionId, stage, t)
+      );
+    },
+    [t, updateSnapshot]
+  );
+
+  /**
+   * Step one of the social flow: ask the server for the destination, then
+   * open it.
+   *
+   * THE SERVER SENDS THE URL; THIS NEVER SUPPLIES ONE. A route that accepted
+   * a destination would let a caller choose where the app opens an external
+   * browser, with Red Panda's branding around it. So the open is: call, take
+   * the URL from the response, hand it to the OS.
+   *
+   * THE STAGE ADVANCES ONLY IF THE HAND-OFF ACTUALLY HAPPENED. If no app and
+   * no browser would take the URL, the viewer was never sent anywhere, and
+   * offering them "I've followed" next would be asking them to confirm
+   * something the app failed to start. The server's `open` record stands
+   * either way, so a retry is a normal second press.
+   */
+  const openMission = useCallback(
+    (task: RewardTask) => {
+      const targetUserId = activeUserIdRef.current;
+
+      if (!targetUserId) {
+        return;
+      }
+
+      const mutation = acquireMutation(targetUserId, task.id);
+
+      if (!mutation) {
+        return;
+      }
+
+      setNotice(null);
+
+      (async () => {
+        try {
+          const response = await openSocialMission(task.id);
+          const isOpened = await openExternalProfile(response.destinationUrl);
+
+          if (!isForActiveUser(targetUserId)) {
+            return;
+          }
+
+          if (!isOpened) {
+            setNotice({ tone: 'error', message: t('rewards.missionOpenFailed') });
+
+            return;
+          }
+
+          setSocialStage(targetUserId, task.id, 'opened');
+        } catch (error) {
+          if (!isForActiveUser(targetUserId)) {
+            return;
+          }
+
+          if (isApiErrorWithCode(error, REWARD_ERROR_CODES.REWARDS_DISABLED)) {
+            setView(targetUserId, {
+              status: 'unavailable',
+              message: t('rewards.unavailableBody'),
+            });
+
+            return;
+          }
+
+          setNotice({ tone: 'error', message: describeMissionError(error, task) });
+        } finally {
+          releaseMutation(mutation);
+        }
+      })();
+    },
+    [
+      acquireMutation,
+      describeMissionError,
+      isForActiveUser,
+      releaseMutation,
+      setSocialStage,
+      setView,
+      t,
+    ]
+  );
+
+  /**
+   * Step two of the social flow, and the whole of a watch-milestone claim.
+   *
+   * NOTHING IS ADDED TO THE BALANCE HERE. The response carries the
+   * authoritative wallet and the refreshed tile, and both are adopted
+   * wholesale; `awardedPoints` is reported as what happened and never used as
+   * an operand. A replay comes back `alreadyClaimed: true` with
+   * `awardedPoints: 0`, which is shown as the truthful no-op it is rather
+   * than as a failure.
+   *
+   * WHAT THE SUCCESS MESSAGE MAY SAY. The coins are real and the mission is
+   * named, but nothing here reports a follow as verified: the server recorded
+   * that this account confirmed an external action, and the ledger row it
+   * writes says exactly that.
+   */
+  const claimMissionReward = useCallback(
+    (task: RewardTask) => {
+      const targetUserId = activeUserIdRef.current;
+
+      if (!targetUserId) {
+        return;
+      }
+
+      const mutation = acquireMutation(targetUserId, task.id);
+
+      if (!mutation) {
+        return;
+      }
+
+      setNotice(null);
+
+      (async () => {
+        try {
+          // NO BODY. The amount, the reward day and the idempotency key are
+          // all the server's, derived from the mission id in the path.
+          const response = await claimMission(task.id);
+
+          if (!isForActiveUser(targetUserId)) {
+            return;
+          }
+
+          socialStagesRef.current = { ...socialStagesRef.current, [task.id]: 'claimed' };
+
+          if (response.wallet.version >= walletVersionRef.current) {
+            walletVersionRef.current = response.wallet.version;
+            updateSnapshot(targetUserId, (snapshot) =>
+              applyMissionClaimResponse(snapshot, response, t)
+            );
+          }
+
+          setNotice(
+            response.alreadyClaimed
+              ? { tone: 'info', message: t('rewards.missionClaimAlready', { title: task.title }) }
+              : {
+                  tone: 'success',
+                  message: t('rewards.missionClaimSuccess', {
+                    points: response.awardedPoints,
+                    title: task.title,
+                  }),
+                }
+          );
+
+          await refreshLedgerHead(targetUserId);
+        } catch (error) {
+          if (!isForActiveUser(targetUserId)) {
+            return;
+          }
+
+          if (isApiErrorWithCode(error, REWARD_ERROR_CODES.REWARDS_DISABLED)) {
+            setView(targetUserId, {
+              status: 'unavailable',
+              message: t('rewards.unavailableBody'),
+            });
+
+            return;
+          }
+
+          // A claim the server refuses because it has no record of an open
+          // puts the tile BACK to its first step, so the CTA the viewer sees
+          // next is the one that would actually help. Leaving it on "I've
+          // followed" would offer the same refusal again.
+          if (isApiErrorWithCode(error, REWARD_ERROR_CODES.REWARD_MISSION_NOT_STARTED)) {
+            setSocialStage(targetUserId, task.id, 'idle');
+          }
+
+          setNotice({ tone: 'error', message: describeMissionError(error, task) });
+        } finally {
+          releaseMutation(mutation);
+        }
+      })();
+    },
+    [
+      acquireMutation,
+      describeMissionError,
+      isForActiveUser,
+      refreshLedgerHead,
+      releaseMutation,
+      setSocialStage,
+      setView,
+      t,
+      updateSnapshot,
+    ]
+  );
+
+  /**
+   * The screen's single task-press entry point.
+   *
+   * THREE REFUSALS BEFORE ANY NETWORK, all reading SERVER state:
+   *
+   *  - a task the server marked unsupported never reaches the network, and is
+   *    acknowledged by the screen instead (`REWARDED_AD`, `CAMPAIGN`);
+   *  - a mission the server reports CLAIMED offers nothing to press, so a
+   *    second claim can never be sent - this is what keeps a duplicate claim
+   *    out of the UI rather than relying on the backend to no-op it;
+   *  - a watch milestone that has not reached its target is not claimed
+   *    early. The server would refuse it anyway; refusing here means the
+   *    viewer gets the progress bar as the answer instead of an error.
+   */
+  const pressTask = useCallback(
+    (task: RewardTask) => {
+      if (!task.isClaimSupported || task.isClaimed) {
+        return;
+      }
+
+      if (task.socialPlatform) {
+        if (socialStagesRef.current[task.id] === 'opened') {
+          claimMissionReward(task);
+
+          return;
+        }
+
+        openMission(task);
+
+        return;
+      }
+
+      // A counted mission that has not finished. `status` is the server's own
+      // verdict and is checked first; the progress pair is the same fact in
+      // numbers, kept as the second read so a backend that has not filled in
+      // `status` yet still cannot be claimed early.
+      if (task.progress && task.progress.current < task.progress.target) {
+        setNotice({ tone: 'info', message: t('rewards.missionNotComplete', { title: task.title }) });
+
+        return;
+      }
+
+      claimMissionReward(task);
+    },
+    [claimMissionReward, openMission, t]
+  );
+
   const dismissNotice = useCallback(() => setNotice(null), []);
 
   /**
@@ -1029,6 +1356,7 @@ export function useRewardsCenter(): RewardsCenterController {
     reload,
     checkIn,
     redeem,
+    pressTask,
     retryLedger,
     loadMoreLedger,
   };

@@ -14,6 +14,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { ActivePerksCard } from '@/features/rewards/components/active-perks-card';
 import { DailyCheckInCard } from '@/features/rewards/components/daily-check-in-card';
 import { EarnPanel } from '@/features/rewards/components/earn-panel';
 import { PointsBalanceCard } from '@/features/rewards/components/points-balance-card';
@@ -34,6 +35,7 @@ import { useTranslation, type Translate } from '@/stores/language';
 import type {
   DailyCheckIn,
   RewardRedemption,
+  RewardTask,
   RewardsLedgerState,
   RewardsNotice,
   RewardsSnapshot,
@@ -170,6 +172,11 @@ export type RewardsCenterScreenProps = {
   readonly onRetry?: () => void;
   readonly onCheckIn?: () => void;
   readonly onRedeem?: (redemption: RewardRedemption) => void;
+  /**
+   * A press on a task the SERVER says it can pay. The container decides which
+   * of the two social calls it becomes; this screen only forwards the press.
+   */
+  readonly onPressTask?: (task: RewardTask) => void;
   readonly onDismissNotice?: () => void;
   readonly onRetryLedger?: () => void;
   readonly onLoadMoreLedger?: () => void;
@@ -187,6 +194,7 @@ export function RewardsCenterScreen({
   onRetry,
   onCheckIn,
   onRedeem,
+  onPressTask,
   onDismissNotice,
   onRetryLedger,
   onLoadMoreLedger,
@@ -403,6 +411,7 @@ export function RewardsCenterScreen({
           isHistoryOpen={isHistoryOpen}
           onCheckIn={handleCheckIn}
           onDismissNotice={handleDismissNotice}
+          onPressTask={onPressTask}
           onRedeem={handleRedeem}
           onRedeemSectionLayout={handleRedeemSectionLayout}
           onScrollToRedeem={scrollToRedeem}
@@ -434,6 +443,7 @@ type RewardsScrollProps = {
   readonly onRedeem: (redemption: RewardRedemption) => void;
   readonly onUnavailableAction: (action: RewardsUnavailableAction) => void;
   readonly onDismissNotice: () => void;
+  readonly onPressTask?: (task: RewardTask) => void;
   readonly onRedeemSectionLayout: (event: LayoutChangeEvent) => void;
   readonly onScrollToRedeem: () => void;
 };
@@ -455,6 +465,7 @@ function RewardsScroll({
   onRedeem,
   onUnavailableAction,
   onDismissNotice,
+  onPressTask,
   onRedeemSectionLayout,
   onScrollToRedeem,
 }: RewardsScrollProps) {
@@ -522,7 +533,11 @@ function RewardsScroll({
             </Text>
           ) : null
         }>
-        <EarnPanel onAction={onUnavailableAction} tasks={snapshot.tasks} />
+        <EarnPanel
+          onAction={onUnavailableAction}
+          onTaskAction={onPressTask}
+          tasks={snapshot.tasks}
+        />
       </RewardsSection>
 
       <RewardsSection testID="rewards-section-watch" title={t('rewards.sectionWatch')}>
@@ -556,6 +571,13 @@ function RewardsScroll({
         onLayout={onRedeemSectionLayout}
         testID="rewards-section-redeem"
         title={t('rewards.sectionRedeem')}>
+        {/* WHAT YOU ALREADY HOLD, above what is for sale. A viewer deciding
+            whether to spend 150 coins on an ad skip needs to know they are
+            already holding one - and putting that fact anywhere else on the
+            page makes them carry it down the scroll. Renders nothing when
+            there is nothing to show, so the section keeps its old shape for
+            an account with no perks. */}
+        <ActivePerksCard activePerks={snapshot.activePerks} />
         <RedeemPanel
           onRedeem={onRedeem}
           pendingRedemptionId={pendingActionId}

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 
 import { useInterstitialAd } from '@/hooks/use-interstitial-ad';
+import { useRewardAdPerks } from '@/hooks/use-reward-ad-perks';
 import { fetchAdsConfig } from '@/services/ads/ads-config-service';
 import { useAdsStore } from '@/stores/ads-store';
 import { useEntitlement } from '@/stores/entitlement';
@@ -38,6 +39,14 @@ export function AdsBridge() {
   useEffect(() => {
     setPremium(isPremium);
   }, [isPremium, setPremium]);
+
+  // Mirrors the account's SERVER-held reward perks (a single-use ad skip, a
+  // temporary ad-free pass) into the same store, so the module-level ad
+  // controller can read them synchronously when an interstitial is due. Same
+  // shape as the `isPremium` mirror above, and for the same reason: the ad
+  // path cannot await a request. It also clears them on sign-out and on an
+  // account switch, so one viewer's perk never suppresses another's ad.
+  useRewardAdPerks();
 
   useInterstitialAd();
 

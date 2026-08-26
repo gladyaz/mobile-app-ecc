@@ -19,6 +19,7 @@ function offer(overrides: Partial<RewardRedemption> = {}): RewardRedemption {
     availability: 'AVAILABLE',
     ctaLabel: 'Tukar Uji',
     isRedeemSupported: true,
+    kind: 'PREMIUM_DAYS' as const,
     ...overrides,
   };
 }

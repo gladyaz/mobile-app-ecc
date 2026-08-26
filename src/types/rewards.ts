@@ -90,12 +90,50 @@ export type DailyCheckIn = {
 // Tasks
 // ---------------------------------------------------------------------------
 
+/**
+ * `WATCH_EPISODES` counts DISTINCT EPISODES the server authorised playback
+ * for within one reward day. It is a separate member from `WATCH_TIME`
+ * because it is a separate UNIT: the backend cannot measure watch duration
+ * and never claims to, so rendering an episode count under a "watch time"
+ * label would be a wrong unit shown to a viewer.
+ *
+ * A TASK TYPE THIS BUILD DOES NOT KNOW IS DROPPED BY THE MAPPER, never
+ * rendered and never crashed on. See `rewards-mapper.ts`.
+ */
 export type RewardTaskType =
   | 'DAILY_CHECK_IN'
   | 'SOCIAL_FOLLOW'
   | 'REWARDED_AD'
   | 'WATCH_TIME'
+  | 'WATCH_EPISODES'
   | 'CAMPAIGN';
+
+/**
+ * How strong the evidence behind a claimable task is, carried into the view
+ * model so the UI cannot accidentally overstate it.
+ *
+ * `USER_CONFIRMED` means the viewer said they did something the server could
+ * not observe. THE UI MUST NOT CALL THIS A VERIFIED FOLLOW - no social
+ * platform exposes an API that would let the backend check, and a label
+ * claiming otherwise would be a lie the app tells on the server's behalf.
+ * "Follow Instagram" as a CTA is fine; "Verified" beside it is not.
+ */
+export type RewardTaskVerification = 'USER_CONFIRMED' | 'SERVER_OBSERVED';
+
+/**
+ * Where a social mission has got to IN THIS SESSION.
+ *
+ * The two-step flow (`open` -> external profile -> come back -> `claim`) has
+ * a middle state that exists only on the device: the server has recorded the
+ * open and is waiting to be told the viewer came back. It is deliberately
+ * NOT persisted - a claim is only offered to someone who opened the profile
+ * in this sitting, and a restarted app correctly starts from "open" again.
+ *
+ * - `idle` - not started; the CTA opens the profile.
+ * - `opened` - the server recorded the open; the CTA becomes a confirm.
+ * - `claimed` - the server has paid it; there is no CTA left to press.
+ */
+export type SocialMissionStage = 'idle' | 'opened' | 'claimed';
 
 export type RewardTaskStatus =
   | 'LOCKED'
@@ -104,6 +142,14 @@ export type RewardTaskStatus =
   | 'CLAIMABLE'
   | 'COMPLETED';
 
+/**
+ * SERVER-COMPUTED progress toward a counted mission.
+ *
+ * `target` is the wire's `required`, renamed only because the rest of this
+ * view model already says "target". Neither number is ever derived on the
+ * device: a locally-counted "2 of 5 episodes" would be a client number
+ * dressed as progress toward a reward only the server can pay.
+ */
 export type RewardTaskProgress = {
   readonly current: number;
   readonly target: number;
@@ -131,14 +177,42 @@ export type RewardTask = {
   /** Set only when `type` is `SOCIAL_FOLLOW`. */
   readonly socialPlatform?: SocialPlatform;
   /**
-   * SERVER-OWNED. False until a server-verified claim exists for this task.
-   * For social follows specifically this stays false until the platform
-   * actually exposes a verifiable signal - "user tapped our link" is not
-   * proof that anyone followed anything. The client must never flip it.
+   * SERVER-OWNED. True for the missions the backend can actually pay. The
+   * client reads it and never flips it - a task the server will not pay must
+   * not be offered as if it would.
    */
   readonly isClaimSupported: boolean;
   /** Why `isClaimSupported` is false, when the server says. */
   readonly unsupportedReason?: RewardTaskUnsupportedReason;
+  /**
+   * The evidence class behind a claim, present exactly when
+   * `isClaimSupported` is true. Rendered as an honest caption on social
+   * tiles; never as a verification badge.
+   */
+  readonly verification?: RewardTaskVerification;
+  /**
+   * The Red Panda handle to show beside a social tile (`"@redpanda"`),
+   * derived SERVER-side from the destination URL. Absent when the URL shape
+   * carries no handle - fall back to the platform name, never invent one.
+   */
+  readonly accountHandle?: string;
+  /**
+   * Whether this mission has already been paid, straight from the server's
+   * `claimedAt`. The claim CTA is withdrawn once this is true, so a viewer
+   * cannot press a control the backend would answer `alreadyClaimed` to.
+   */
+  readonly isClaimed: boolean;
+  /**
+   * Human-readable "resets at ..." for a DAILY-resetting mission, built by
+   * the mapper. Absent for one-time missions, whose completion is permanent.
+   */
+  readonly resetsAtLabel?: string;
+  /**
+   * Which step of the two-call social flow this tile is on, for THIS session.
+   * `ctaLabel` already reflects it - this is here so the card can render the
+   * matching hint without re-deriving the step from the label text.
+   */
+  readonly socialStage?: SocialMissionStage;
 };
 
 // ---------------------------------------------------------------------------
@@ -180,6 +254,56 @@ export type WatchTimeProgress = {
 
 export type RewardRedemptionAvailability = 'AVAILABLE' | 'INSUFFICIENT_POINTS' | 'COMING_SOON';
 
+/**
+ * What an offer hands over. V1 sells `AD_PERK` only: `PREMIUM_DAYS` offers
+ * are withheld because every episode is already free, so charging coins to
+ * "unlock premium" would take the coins and change nothing.
+ */
+export type RewardOfferKind = 'PREMIUM_DAYS' | 'AD_PERK';
+
+export type RewardPerkType = 'SKIP_NEXT_INTERSTITIAL' | 'TEMPORARY_AD_PASS';
+
+/** What an `AD_PERK` offer will issue. Every value here is the server's. */
+export type RewardOfferPerk = {
+  readonly type: RewardPerkType;
+  /** `1` for a single-use skip; `null` for a duration pass. */
+  readonly uses: number | null;
+  readonly durationMinutes: number;
+};
+
+/**
+ * One perk the account currently HOLDS, for the "you have 1 ad skip" line
+ * beside the offer that sells one.
+ *
+ * Presentational only. The ad gate never reads this list - it reads the two
+ * server-derived signals on `ActivePerks`, because deciding "is this perk
+ * live?" from an array is exactly the rule duplication that drifts into
+ * showing an ad to someone who spent coins not to see one.
+ */
+export type RewardPerk = {
+  readonly id: string;
+  readonly type: RewardPerkType;
+  readonly title: string;
+  readonly detail: string;
+  /** Raw ISO-8601, kept so the caller can compare instants if it must. */
+  readonly expiresAt: string;
+  readonly expiresAtLabel: string;
+  readonly remainingUses: number | null;
+};
+
+/**
+ * What the viewer holds right now.
+ *
+ * `skipNextInterstitial` and `adFreeUntil` are SERVER-DERIVED and are the
+ * only two values the ad layer may act on. `perks` is for display.
+ */
+export type ActivePerks = {
+  readonly perks: readonly RewardPerk[];
+  readonly skipNextInterstitial: boolean;
+  /** ISO-8601 UTC, or `null` when no temporary pass is running. */
+  readonly adFreeUntil: string | null;
+};
+
 export type RewardRedemption = {
   readonly id: string;
   readonly title: string;
@@ -200,6 +324,14 @@ export type RewardRedemption = {
    * one transaction, and this app only re-reads the result.
    */
   readonly isRedeemSupported: boolean;
+  /**
+   * What this offer hands over. V1 renders only `AD_PERK`; the mapper drops
+   * `PREMIUM_DAYS` offers outright rather than showing a purchase the app
+   * has nothing to deliver for.
+   */
+  readonly kind: RewardOfferKind;
+  /** Present exactly when `kind` is `AD_PERK`. */
+  readonly perk?: RewardOfferPerk;
 };
 
 // ---------------------------------------------------------------------------
@@ -215,6 +347,15 @@ export type RewardRedemption = {
 export type RewardLedgerReason =
   | 'DAILY_CHECK_IN'
   | 'VIP_REDEMPTION'
+  /**
+   * A social mission payout. Named for what the server actually recorded -
+   * an EXTERNAL SOCIAL ACTION the account holder confirmed - and
+   * deliberately not `VERIFIED_FOLLOW`, which is a fact nothing in this
+   * system can establish.
+   */
+  | 'EXTERNAL_SOCIAL_ACTION'
+  | 'WATCH_MILESTONE'
+  | 'AD_PERK_REDEMPTION'
   | 'ADJUSTMENT'
   | 'REVERSAL'
   | 'OTHER';
@@ -268,6 +409,8 @@ export type RewardsSnapshot = {
   readonly watchTime: WatchTimeProgress | null;
   readonly tasks: readonly RewardTask[];
   readonly redemptions: readonly RewardRedemption[];
+  /** What the viewer already holds, rendered beside the offers that sell it. */
+  readonly activePerks: ActivePerks;
 };
 
 /**

@@ -74,11 +74,27 @@ export type AdGateHoldReason =
   | 'not-due'
   | 'cooldown'
   | 'ad-not-ready'
-  | 'ad-visible';
+  | 'ad-visible'
+  /** A `TEMPORARY_AD_PASS` is running. Spent by the clock; nothing consumed. */
+  | 'ad-pass'
+  /** A `SKIP_NEXT_INTERSTITIAL` was spent on THIS interruption. */
+  | 'perk-skip';
 
 export type AdGateTransitionResult = {
   readonly show: boolean;
   readonly holdReason?: AdGateHoldReason;
+  /**
+   * The caller must record the single-use skip as spent - server-side, and in
+   * the local pacing.
+   *
+   * `true` on EXACTLY the transition where an interstitial would otherwise
+   * have been presented and a skip suppressed it. It is never `true` for a
+   * hold that had another cause: a perk the app "uses" on a transition where
+   * no ad was due would take something the viewer paid for and give nothing
+   * back, which is why the skip check sits below every eligibility check
+   * rather than beside `isPremium`.
+   */
+  readonly consumeSkip?: boolean;
 };
 
 /**
@@ -100,10 +116,14 @@ export type AdGateTransitionResult = {
  * `features/rewards/__tests__/rewards-economics-boundary.test.ts` exists to
  * prevent for the points balance.
  *
- * V1 SHIPS NO SUCH PERK. `isPremium` is the only suppression input today, no
- * redemption in V1 grants it (`features/rewards/rewards-mapper.ts` filters
- * premium-granting offers out of the V1 catalog), and nothing here should be
- * read as a partially-built skip feature.
+ * V1 NOW SHIPS THAT PERK, and it arrived exactly as described: two added
+ * flags, decided in this pure function and nowhere else. Both are SERVER
+ * state, mirrored into the ads store by `components/ads-bridge.tsx` from
+ * `GET /rewards/perks` in the same way `isPremium` is mirrored from
+ * `useEntitlement()`, and neither is persisted - a cold start re-reads them
+ * from the backend. Nothing in this app can set either locally, which is what
+ * keeps "I have a free ad skip" a fact the server established rather than one
+ * a client asserted.
  */
 export type AdGateTransitionOptions = {
   /**
@@ -114,6 +134,27 @@ export type AdGateTransitionOptions = {
   readonly adReady: boolean;
   readonly adVisible: boolean;
   readonly now: number;
+  /**
+   * The viewer holds an unexpired, unconsumed `SKIP_NEXT_INTERSTITIAL`.
+   *
+   * SERVER-DERIVED, copied from `GET /rewards/perks`. The client does NOT
+   * re-derive it by inspecting the perk array - that rule belongs to the
+   * backend, and a second implementation would drift on the one code path
+   * where drift means showing an ad to someone who spent coins not to see one.
+   *
+   * Defaults to `false` when omitted, which is the SAFE direction: an
+   * unavailable rewards API suppresses nothing and grants nothing.
+   */
+  readonly skipNextInterstitial?: boolean;
+  /**
+   * Epoch milliseconds until which no interstitial may be shown at all, from
+   * the furthest-out active `TEMPORARY_AD_PASS`, or `null` when none is
+   * running. Compared against `now` rather than read from a stored "active"
+   * flag, so a pass stops working at exactly its expiry with no sweeper
+   * involved - the failure that avoids is a two-hour pass still suppressing
+   * ads a week later because nothing ran to mark it over.
+   */
+  readonly adFreeUntil?: number | null;
 };
 
 /**
@@ -204,7 +245,63 @@ export function evaluateTransition(
     return { show: false, holdReason: 'cooldown' };
   }
 
+  // ---------------------------------------------------------------------
+  // EVERY CHECK ABOVE THIS LINE ANSWERS "WOULD AN AD HAVE BEEN SHOWN?".
+  // Only past it is the answer yes - which is why the two perk checks live
+  // here and not beside `isPremium`. A skip spent on a transition that was
+  // already going to be quiet is a perk the viewer bought and never received.
+  // ---------------------------------------------------------------------
+
+  // The PASS is checked before the SKIP, and the order is load-bearing for a
+  // viewer holding both: the pass covers this interruption by the clock and
+  // costs nothing to use, so spending the single-use skip on the same
+  // interruption would destroy the one that cannot be replaced.
+  if (opts.adFreeUntil != null && opts.adFreeUntil > opts.now) {
+    // Nothing is consumed. A duration pass is spent by time passing;
+    // "consuming" one could only destroy time the viewer paid for.
+    return { show: false, holdReason: 'ad-pass' };
+  }
+
+  if (opts.skipNextInterstitial === true) {
+    // EXACTLY the next eligible interstitial, and the caller is told to spend
+    // it. A skip the app honours without recording leaves the server still
+    // believing the perk is held, so the next ad break would skip again for
+    // free and the receipt would stop describing what happened.
+    return { show: false, holdReason: 'perk-skip', consumeSkip: true };
+  }
+
   return { show: true };
+}
+
+/**
+ * Commits a SKIPPED interstitial to the pacing state.
+ *
+ * IT RESETS PACING EXACTLY AS A SHOWN AD WOULD, and that is the point rather
+ * than an oversight: "skip the next interstitial" means this ad break is over,
+ * so the next one is due after the normal interval. Leaving the counter alone
+ * would mean the very next video transition is due again and shows an ad - the
+ * viewer would have spent 150 coins to defer one interruption by a single
+ * episode, which is not what the offer says.
+ *
+ * IT DOES NOT SPEND A SESSION SLOT. `adsShownThisSession` bounds how many
+ * full-screen INTERRUPTIONS one sitting may contain, and a skipped ad is not
+ * one. Charging the skip against that ceiling would let a viewer who bought
+ * ad skips reach the cap sooner and, past it, see nothing at all - which
+ * sounds like a win until it is the reason the ceiling stops protecting the
+ * viewers it was written for.
+ */
+export function markInterstitialSkipped(
+  state: AdGateState,
+  cfg: AdsConfig,
+  now: number,
+  rng: () => number
+): AdGateState {
+  return {
+    ...state,
+    watchedSinceLastAd: 0,
+    lastAdShownAt: now,
+    activeThreshold: rollThreshold(cfg, rng),
+  };
 }
 
 /**

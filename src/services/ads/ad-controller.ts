@@ -1,4 +1,5 @@
 import { evaluateTransition } from '@/services/ads/ad-gate';
+import { getPerkConsumer } from '@/services/ads/ad-perk-registry';
 import { getPresenter } from '@/services/ads/ad-presenter-registry';
 import { useAdsStore } from '@/stores/ads-store';
 
@@ -93,8 +94,40 @@ export function onVideoTransition(): void {
       adReady: presenter?.isReady() ?? false,
       adVisible: state.adVisible || isShowInFlight(now),
       now,
+      // Both mirrored from `GET /rewards/perks`. They default to
+      // false/null, so a rewards backend that is down or disabled simply
+      // suppresses nothing - the existing ad policy runs unchanged, and no
+      // free skip is invented from a failed request.
+      skipNextInterstitial: state.skipNextInterstitial,
+      adFreeUntil: state.adFreeUntil,
     }
   );
+
+  if (result.consumeSkip) {
+    // ORDER MATTERS, and this is the whole double-spend defence.
+    //
+    // `consumeSkipPerk()` clears the local flag SYNCHRONOUSLY and hands back
+    // the id to report. A second transition arriving before the network call
+    // resolves therefore sees `skipNextInterstitial: false` and gets a real
+    // ad, instead of riding the same perk twice. The server's idempotent
+    // `alreadyConsumed: true` is the second layer, not the first.
+    const perkId = useAdsStore.getState().consumeSkipPerk();
+
+    // The ad break itself is over, so pacing resets exactly as a shown ad
+    // would reset it. Without this, the next transition would be due again
+    // immediately and show an ad - one skipped interruption deferred by a
+    // single video, which is not what the offer sells.
+    useAdsStore.getState().markInterstitialSkipped(now);
+
+    if (perkId) {
+      // Fire-and-forget by contract: the ad path must not await a request
+      // before deciding what to do with a video transition. Reconciling the
+      // answer is the consumer's job.
+      getPerkConsumer()?.consumeSkip(perkId);
+    }
+
+    return;
+  }
 
   if (result.show && presenter) {
     // STAMPED BEFORE `show()`, not after.

@@ -14,6 +14,19 @@ import type { RewardTask, RewardTaskType, SocialPlatform } from '@/types/rewards
 /**
  * One task row: mark, what it is, what it pays, and one control.
  *
+ * A SOCIAL ROW IS A TWO-STEP FLOW, and the row shows which step it is on.
+ * `Follow` opens the Red Panda profile (and records the open server-side);
+ * the CTA then becomes `I've followed`, which is the viewer CONFIRMING an
+ * action nobody observed. The row says so in as many words
+ * (`userConfirmedNote`) rather than implying the app checked - no social
+ * platform exposes an API that would let it, so a "verified" badge here
+ * would be a claim with nothing behind it.
+ *
+ * A CLAIMED ROW OFFERS NOTHING TO PRESS. Once the server reports the mission
+ * paid, the CTA reads "claimed" and is inert: leaving it live would invite a
+ * second press the backend answers as an already-claimed no-op, which reads
+ * to a viewer as a reward that silently failed.
+ *
  * Every task type renders through this single path - a social follow, a
  * rewarded ad and a future campaign differ only in their data.
  *
@@ -75,6 +88,15 @@ const TYPE_MARK: Record<RewardTaskType, TaskMark> = {
     border: RewardSurface.chipBorder,
     color: Palette.text,
   },
+  // A play glyph, not a clock: this mission counts EPISODES the server
+  // authorised, not minutes watched, and a clock beside "2/3" would name the
+  // wrong unit before the viewer even reads the row.
+  WATCH_EPISODES: {
+    glyph: '▶',
+    background: RewardSurface.chip,
+    border: RewardSurface.chipBorder,
+    color: Palette.text,
+  },
   // Language-neutral on purpose. These marks are NOT localized, so an
   // Indonesian word like "MISI" would appear verbatim in the English and
   // Chinese UI.
@@ -100,7 +122,21 @@ type RewardTaskCardProps = {
 export function RewardTaskCard({ task, onPressCta }: RewardTaskCardProps) {
   const { t } = useTranslation();
   const formatPoints = useFormatPoints();
-  const mark = task.socialPlatform ? PLATFORM_MARK[task.socialPlatform] : TYPE_MARK[task.type];
+  // `?? TYPE_MARK.CAMPAIGN` is a real guard, not defensive noise: both lookups
+  // are `Record`s over closed unions, and a value from outside either union
+  // resolves to `undefined` and then crashes on `mark.background`. The mapper
+  // already drops unknown task types, so this is the second layer - and the
+  // one that survives someone widening the union without revisiting this file.
+  const mark =
+    (task.socialPlatform ? PLATFORM_MARK[task.socialPlatform] : TYPE_MARK[task.type]) ??
+    TYPE_MARK.CAMPAIGN;
+  const isSocial = Boolean(task.socialPlatform);
+  const hint =
+    !isSocial || task.isClaimed || !task.isClaimSupported
+      ? null
+      : task.socialStage === 'opened'
+        ? t('rewards.socialConfirmHint')
+        : t('rewards.socialOpenHint');
 
   return (
     <View style={styles.row} testID={`rewards-task-${task.id}`}>
@@ -125,7 +161,18 @@ export function RewardTaskCard({ task, onPressCta }: RewardTaskCardProps) {
           <Text style={styles.title}>{task.title}</Text>
           <PointsPill points={task.rewardPoints} testID={`rewards-task-points-${task.id}`} />
         </View>
-        <Text style={styles.description}>{task.description}</Text>
+        <Text style={styles.description}>
+          {task.description}
+          {/* The handle is SERVER-derived from the configured profile URL.
+              Shown so the viewer can see WHICH account they are being sent
+              to before they leave the app - the one fact that makes an
+              external hand-off checkable by the person taking it. */}
+          {task.accountHandle ? (
+            <Text style={styles.handle} testID={`rewards-task-handle-${task.id}`}>
+              {` ${task.accountHandle}`}
+            </Text>
+          ) : null}
+        </Text>
 
         {task.progress ? (
           <View style={styles.progressBlock}>
@@ -136,12 +183,44 @@ export function RewardTaskCard({ task, onPressCta }: RewardTaskCardProps) {
               testID={`rewards-task-progress-bar-${task.id}`}
             />
             <Text style={styles.progressValue} testID={`rewards-task-progress-${task.id}`}>
-              {t('rewards.progressShort', {
-                current: formatPoints(task.progress.current),
-                target: formatPoints(task.progress.target),
-              })}
+              {/* Episode missions carry their UNIT in the label. "2/3" alone
+                  is ambiguous next to a coin value; "2/3 episodes" is the
+                  quantity the server actually counted. */}
+              {task.type === 'WATCH_EPISODES'
+                ? t('rewards.progressEpisodes', {
+                    current: formatPoints(task.progress.current),
+                    target: formatPoints(task.progress.target),
+                  })
+                : t('rewards.progressShort', {
+                    current: formatPoints(task.progress.current),
+                    target: formatPoints(task.progress.target),
+                  })}
             </Text>
           </View>
+        ) : null}
+
+        {/* One short line of guidance, only while there is a step to take.
+            A first-time viewer otherwise has no way to know that "Follow"
+            leaves the app and that coming back is part of the deal. */}
+        {hint ? (
+          <Text style={styles.hint} testID={`rewards-task-hint-${task.id}`}>
+            {hint}
+          </Text>
+        ) : null}
+
+        {/* THE HONESTY LINE. Rendered whenever the server called the evidence
+            USER_CONFIRMED, so the claim's strength travels with the tile
+            instead of depending on how someone worded the CTA. */}
+        {task.verification === 'USER_CONFIRMED' && !task.isClaimed ? (
+          <Text style={styles.verificationNote} testID={`rewards-task-verification-${task.id}`}>
+            {t('rewards.userConfirmedNote')}
+          </Text>
+        ) : null}
+
+        {task.isClaimed && task.resetsAtLabel ? (
+          <Text style={styles.hint} testID={`rewards-task-resets-${task.id}`}>
+            {task.resetsAtLabel}
+          </Text>
         ) : null}
       </View>
 
@@ -150,7 +229,11 @@ export function RewardTaskCard({ task, onPressCta }: RewardTaskCardProps) {
         // name carries the task it belongs to ("Follow: TikTok").
         accessibilityLabel={t('rewards.ctaA11y', { label: task.ctaLabel, title: task.title })}
         compact
-        isSupported={task.isClaimSupported}
+        // A CLAIMED mission is styled and announced as unsupported: there is
+        // genuinely nothing left it can do, and `RewardCta`'s "pressing this
+        // does not add points" hint is exactly the right thing for a screen
+        // reader to say about it.
+        isSupported={task.isClaimSupported && !task.isClaimed}
         label={task.ctaLabel}
         onPress={() => onPressCta(task)}
         testID={`rewards-task-cta-${task.id}`}
@@ -217,5 +300,26 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: FontFamily.bold,
     color: Palette.textSecondary,
+  },
+  handle: {
+    fontFamily: FontFamily.semiBold,
+    color: Palette.textSecondary,
+  },
+  hint: {
+    marginTop: 4,
+    fontSize: 11,
+    lineHeight: scaledLineHeight(11),
+    fontFamily: FontFamily.regular,
+    color: Palette.textSecondary,
+  },
+  verificationNote: {
+    marginTop: 3,
+    fontSize: 10.5,
+    lineHeight: scaledLineHeight(10.5),
+    fontFamily: FontFamily.regular,
+    // Deliberately quiet. It is a caveat the viewer should be able to read,
+    // not a warning that makes an ordinary reward look suspect.
+    color: Palette.textSecondary,
+    opacity: 0.85,
   },
 });

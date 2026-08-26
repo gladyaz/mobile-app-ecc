@@ -34,6 +34,12 @@ import type { RewardLedgerEntry, RewardLedgerReason, RewardsLedgerState } from '
 const REASON_LABEL_KEY: Record<RewardLedgerReason, TranslationKey> = {
   DAILY_CHECK_IN: 'rewards.reasonCheckIn',
   VIP_REDEMPTION: 'rewards.reasonRedemption',
+  // Named for what the server RECORDED. The ledger reason is
+  // `EXTERNAL_SOCIAL_ACTION`, never a verified follow, and the history row a
+  // viewer reads to reconcile their own balance must not upgrade it.
+  EXTERNAL_SOCIAL_ACTION: 'rewards.reasonSocialAction',
+  WATCH_MILESTONE: 'rewards.reasonWatchMilestone',
+  AD_PERK_REDEMPTION: 'rewards.reasonAdPerk',
   ADJUSTMENT: 'rewards.reasonAdjustment',
   REVERSAL: 'rewards.reasonReversal',
   // A reason this build does not know still renders as a real movement with

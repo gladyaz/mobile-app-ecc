@@ -224,8 +224,15 @@ means starting over; losing it after means an upload-key reset request.
 
 ## 7. Physical-device QA
 
-**Zero device testing has been performed.** Everything verified so far is source
-analysis, Jest, a real production export, and a real merged release manifest.
+**No device is connected as of 2026-08-26, and no RELEASE build has ever run on
+one.** Everything verified so far is source analysis, Jest, a real production
+export, and a real merged release manifest.
+
+One narrow exception: a debug build against the LAN backend ran on a handset on
+2026-08-25 (`25078RA3EY`, Android 15) to verify **Auto / adaptive** HLS
+switching. That session requested `auto` throughout, so it establishes nothing
+about manual rendition selection — see
+[`playback-quality.md` §5](./playback-quality.md).
 
 ### MUST PASS BEFORE the first Internal Testing upload
 
@@ -246,6 +253,7 @@ upload worthless or unshippable.
 | 10 | Delete a **disposable** test account end to end | irreversible; must be a throwaway account |
 | 11 | `mobileappecc://_sitemap` and `mobileappecc://processing` are unreachable | internal surfaces, proven closed only at config/source level |
 | 12 | Airplane mode: honest error states with Retry, no infinite spinner | the 20s timeout has never been exercised on a real radio |
+| 13 | Playback Settings → pick **720p** on an HLS episode: the decoder holds 720&times;1280 and does not drift, and the position/speed/pause state survive the switch | the one claim of the quality feature that no test can make — a variant playlist really constraining a real decoder. Read it off the `__DEV__` `[PlaybackDecision]` / video-track log in a debug build |
 
 ### CAN VERIFY DURING Internal Testing
 

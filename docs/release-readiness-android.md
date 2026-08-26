@@ -249,7 +249,7 @@ enters the process and none can appear in any message it prints.
 | **Release manifest flags** | Merged release manifest: `android:allowBackup="false"`, **no** `android:debuggable`, **no** app-wide `android:usesCleartextTraffic`. |
 | **No demo media in a production build, structurally** | `metro/bundled-demo-media.js` keys the exclusion on the build's declared intent rather than on disk state. Measured on a machine that HAS the media: production export 6.8 MB / 43 assets / **zero** `.mp4`; showcase export 65 MB / 11 `.mp4`. |
 | **No payment remnant in the shipped bundle** | `strings` over the release Hermes bundle: `midtrans`, `Segera Hadir`, `billing`, `Play Billing`, `in-app purchase`, `pricing` and `Rp ` are all absent. The only `checkout`/`subscription` hits are the Material Symbols icon name `add_shopping_cart_checkout` and React Native's own `Must pass in a valid subscription`. |
-| **No cleartext exemption in a default build** | `plugins/with-lan-cleartext-demo.js` keys off the scheme of `EXPO_PUBLIC_API_BASE_URL`, so an `https://` backend makes it a no-op with nothing to remember to switch off. `usesCleartextTraffic="true"` exists only in the `debug` / `debugOptimized` manifests. |
+| **No cleartext exemption in a default build** | `plugins/with-lan-cleartext-demo.js` keys off the scheme of `EXPO_PUBLIC_API_BASE_URL`, so an `https://` backend makes it grant nothing, with nothing to remember to switch off. It also **actively removes** a resource and manifest attribute left by an earlier LAN prebuild — `expo prebuild` without `--clean` regenerates `android/` in place, so returning early would let the tree that built the internal demo ship a production APK still carrying a LAN cleartext exemption. Removal is narrow: only a file bearing the plugin's own generated marker, and only an attribute pointing at its own resource. `usesCleartextTraffic="true"` exists only in the `debug` / `debugOptimized` manifests. See [`playback-quality.md` §4](./playback-quality.md). |
 | **No certificate pinning bypass, no trust-manager override** | None present anywhere in the repo. |
 | **No secrets in committed source** | The only committed credential-shaped values are Google's *published sample* AdMob ids (see B3) and the Android template debug keystore password, which is public by definition. `.gitignore` covers `*.jks`, `*.keystore`, `*.p12`, `*.key`, `keystore.properties`, `upload-keystore.properties`, `google-services.json`, `play-service-account*.json`. |
 
@@ -605,10 +605,17 @@ processing modules outright.
 
 Stated plainly so this document is not mistaken for a sign-off:
 
-- **No physical Android device was available.** `adb devices` reports none, so
-  nothing below §6 has been executed. Every playback, orientation, ad-pacing,
-  consent-form, deep-link and install-size claim in this document is derived
-  from source and from Jest, not from a handset.
+- **No physical Android device is connected** (as of 2026-08-26), so nothing
+  below §6 has been executed. Every orientation, ad-pacing, consent-form,
+  deep-link and install-size claim in this document is derived from source and
+  from Jest, not from a handset.
+- **One exception, recorded for accuracy:** a device *was* attached on
+  2026-08-25 (`25078RA3EY`, Android 15) for HLS runtime verification, using a
+  debug build against the LAN backend. That session confirmed **Auto /
+  adaptive** switching only — it ran with `requested=auto` throughout.
+  **Manual rendition pinning has never been observed on a handset.** See
+  [`playback-quality.md` §5](./playback-quality.md) for exactly what that
+  session did and did not establish.
 - **No AAB has ever been produced from this repository.** `expo prebuild
   --platform android --clean` HAS now been run and its output verified (see
   §2), and `:app:processReleaseManifest` HAS been run to produce and inspect a
@@ -633,7 +640,7 @@ dependency. Record pass/fail per line.
 | 1 | **Signature check before install** | `apksigner verify --print-certs` (APK) or `jarsigner -verify -certs` (AAB) does **not** report `CN=Android Debug` |
 | 2 | **Permissions check** | `aapt2 dump badging` lists **no** `SYSTEM_ALERT_WINDOW`, **no** `READ_/WRITE_EXTERNAL_STORAGE`. `INTERNET`, `ACCESS_NETWORK_STATE`, `WAKE_LOCK`, `VIBRATE` and the AdMob `AD_ID` set are present |
 | 3 | **Backup flag check** | `aapt2 dump xmltree --file AndroidManifest.xml <artifact>` shows `allowBackup=false` |
-| 4 | **Cleartext check** | Same dump shows no `usesCleartextTraffic` and no `networkSecurityConfig` |
+| 4 | **Cleartext check** | Same dump shows no `usesCleartextTraffic` and no `networkSecurityConfig`. This is the check that catches a stale LAN exemption surviving a non-`--clean` prebuild |
 | 5 | **Fresh install** | Installs; launcher and adaptive icon render; label is the intended product name |
 | 6 | **Cold start with the build machine off-network** | Splash → Home. No Metro, no "unable to connect to development server" |
 | 7 | **Guest playback** | A free episode plays without signing in. No sign-in wall on free content |
@@ -650,7 +657,9 @@ dependency. Record pass/fail per line.
 | 18 | **Network off → on** | Airplane mode: a truthful error state with Retry, never stale mock content, never a crash. Restoring network plus Retry recovers |
 | 19 | **Dead network, not just absent** | A request into a black hole resolves as an error within ~20 s (`ApiError` `TIMEOUT`), not an endless spinner |
 | 20 | **Logout → login** | Logout clears the session; the next Google sign-in shows the account chooser rather than silently reusing the last account |
-| 21 | **HLS playback** | An HLS-backed episode plays and adapts quality |
+| 21 | **HLS playback — Auto** | An HLS-backed episode plays and adapts quality on its own |
+| 21a | **HLS playback — manual rendition** | Playback Settings lists Auto plus only the rungs this video really has. Selecting `720p` pins the decoder at 720&times;1280 and it does **not** drift; `1080p HD` appears only for a video whose ladder contains it. **Never verified on a device — see §5.5** |
+| 21b | **Quality change preserves state** | Switching rungs keeps the position, the play/pause intent and the chosen speed; audio never doubles |
 | 22 | **MP4 playback** | A legacy/MP4-backed episode plays. This is *not* a fallback for a failed HLS stream — it is a separate storage shape |
 | 23 | **Ads** | Interstitials appear at the counter-based cadence. If they read "Test Ad", B3 is unresolved |
 | 24 | **No mock or internal surfaces** | Profile shows no "Processing History / INTERNAL" entry; the catalog has no "QA 16:9 FIXTURE" card and no `pewaris` / `nona-shen` clips |

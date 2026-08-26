@@ -43,13 +43,21 @@ exemption plugin is scoped to the internal demo only.
 `/rewards/ledger`, `/rewards/redeem`, `/analytics/events`.
 
 **Deployment flags that change what users see:**
-- `REWARDS_ENABLED=true` plus at least one redeemable VIP offer, or the Rewards
-  tab has nothing to spend points on — and the premium gate's "redeem it with
-  points" promise becomes false.
+- `CONTENT_ACCESS_MODE=free` — the backend half of the V1 scope decision
+  (2026-08-26). The app ships with its premium/paywall UI switched off
+  (`docs/v1-product-scope.md`), so a backend still marking episodes premium
+  would refuse playback the app can only report as "cannot be played".
+- `REWARDS_ENABLED=true`. V1's Redeem panel shows its empty state until a
+  redemption exists that grants **no** premium days (`grantsDays: 0`) — the
+  coin-priced VIP offers are filtered out of V1, so they are not what fills it.
 - `GOOGLE_AUTH_ENABLED=true` with the web client id in `GOOGLE_OAUTH_CLIENT_IDS`,
   or Google sign-in answers `503` (see §5).
-- WhatsApp **cannot** be enabled in production — only a `fake` driver exists and
-  the process refuses to boot with it enabled outside development/test.
+- WhatsApp cannot yet be enabled in production — only a `fake` driver exists and
+  the process refuses to boot with it enabled outside development/test. The
+  **button ships visible anyway**: WhatsApp Login is a confirmed V1 feature and
+  its backend is being built on a parallel branch. Until that lands, a viewer
+  who tries it gets the app's specific "not active on this server yet" message
+  — an honest refusal, never a fake sign-in.
 
 ---
 

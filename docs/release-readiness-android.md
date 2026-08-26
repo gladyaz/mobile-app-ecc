@@ -215,8 +215,16 @@ transform, the fallback, prebuild idempotence, and the throw on template drift.
 - `EXPO_PUBLIC_ADMOB_INTERSTITIAL_AD_UNIT_ANDROID` unset — a store build would
   otherwise serve Google's TEST interstitial, a watermarked sample ad presented
   as the app's own monetization (was a warning);
-- `EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=true` — the backend cannot serve that
-  method in production, so offering it is a guaranteed dead end.
+- ~~`EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=true`~~ — **withdrawn 2026-08-26.**
+  WhatsApp Login is a confirmed V1 feature and is now offered by default, so
+  this is a WARNING rather than a blocker: until the parallel WhatsApp backend
+  ships, a deployed server answers `503 WHATSAPP_AUTH_DISABLED` and the app
+  shows its specific "not active on this server yet" message. An honest
+  unavailable state, not a fake success. See `docs/v1-product-scope.md`;
+- `EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED=true` — **added 2026-08-26.** V1 is
+  free content + ads; this flag restores the premium/paywall UI against a
+  backend running `CONTENT_ACCESS_MODE=free`, so every lock it brings back is
+  one no viewer could clear or pay to clear. See `docs/v1-product-scope.md`.
 
 alongside what it already blocked: a missing / non-HTTPS / localhost / LAN API
 base URL, the three release-unsafe flags, bundled demo media on disk, a
@@ -240,7 +248,8 @@ enters the process and none can appear in any message it prints.
 | **Missing API base URL fails truthfully** | `getBaseUrl()` returns `''`; `request()` throws `ApiError(0, 'MISSING_BASE_URL')`. It never falls back to a local address and never substitutes mock data. |
 | **Mock mode cannot activate by accident** | `shouldUseMockData()` requires the exact string `'true'` or demo mode. Real API errors are never replaced with mock data — the feed shows an error state with Retry. |
 | **QA fixtures are opt-in** | `shouldIncludeQaFixtures()` requires `'true'`, and `selectUserFacingCatalog()` additionally drops `contentKind: 'qa_fixture'` rows from the backend feed. |
-| **Premium gate fails closed** | `stores/entitlement.tsx` reports `isPremium: false` while logged out, while hydrating, and for any user it has never had an answer for. `GET /videos/:id/playback` is the only real authority. A malformed `accessTier` degrades to `premium`, never `free`. |
+| **No paywall in a V1 build** | The premium/paywall UI is switched off by one policy module (`services/config/v1-scope.ts`, default OFF, and `EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED=true` is a preflight blocker). The entitlement architecture underneath is preserved, not deleted, and each gated surface has a test pinning both states. See `docs/v1-product-scope.md`. |
+| **Premium gate fails closed** (preserved, off in V1) | `stores/entitlement.tsx` reports `isPremium: false` while logged out, while hydrating, and for any user it has never had an answer for. `GET /videos/:id/playback` is the only real authority. A malformed `accessTier` degrades to `premium`, never `free`. |
 | **Rewards never fabricates numbers** | `src/services/rewards/rewards-service.ts` sends intent only, has no dev-tools route, and throws rather than falling back to fixtures. |
 | **Session survives restart; expiry handled; concurrent 401s are safe** | Tokens persist to AsyncStorage and rehydrate on mount. A `401 INVALID_ACCESS_TOKEN` refreshes once and retries once. The refresh is **single-flight**, so the three providers `_layout.tsx` mounts together cannot each spend the same (rotating) refresh token and force-log-out a valid session at launch. The retry is gated on an identity *generation*, not on the token string, so a sibling request's rotation is retried under the new token while a genuine account change is refused — a request issued by user A can never be committed to user B. Provider credentials (Google ID token, OTP) are consumed once and never persisted. |
 | **Debug diagnostics are stripped from the release bundle** | Confirmed by `strings` on the exported Hermes bundle: `[PlaybackDecision]`, `[api-client]`, `[media-url]` and the dev "Reset Local Data" button are all absent. `__DEV__` dead-code elimination works as the code assumes. |
@@ -451,6 +460,14 @@ is entirely `WHATSAPP_OTP_PROVIDER_DRIVER` on the backend; the local `fake`
 provider sends nothing. A real provider must be configured and verified
 server-side before WhatsApp login works for an external user.
 
+**Since 2026-08-26 the button ships visible** — WhatsApp Login is in the V1
+scope and is not withdrawn while its backend is built on a parallel branch. So
+an external user on a build cut today reaches a real phone-number form, and the
+server refuses it with `503`, which the app reports as "not active on this
+server yet". Nothing is faked: no build hardcodes an OTP or mints a session the
+server did not grant. `EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false` withdraws the
+entry point if that trade is not wanted for a given build.
+
 ### B8 — Backend reachable from the public internet. NOT VERIFIED.
 
 Every feature except guest browsing depends on it. Not inspectable from here.
@@ -645,12 +662,12 @@ dependency. Record pass/fail per line.
 | 6 | **Cold start with the build machine off-network** | Splash → Home. No Metro, no "unable to connect to development server" |
 | 7 | **Guest playback** | A free episode plays without signing in. No sign-in wall on free content |
 | 8 | **Google login** | Account chooser appears and sign-in completes. `DEVELOPER_ERROR` means the release SHA-1 is not registered (B1/B4) |
-| 9 | **WhatsApp login / OTP** | The code actually arrives on WhatsApp. If nothing arrives, the backend provider is not real (B7) |
+| 9 | **WhatsApp login / OTP** | The button is present and opens a real phone-number form. On a build cut before the WhatsApp backend ships, sending a code must show "belum aktif di server ini" — an honest refusal. It must NEVER sign anyone in. Once the backend is live, the code actually arrives on WhatsApp (B7) |
 | 10 | **Restart persistence** | Force-stop, reopen: still signed in, Saved and Progress intact |
 | 11 | **Reinstall does NOT restore the session** | After `allowBackup=false`, a reinstall lands on the signed-out state. This is the intended trade (§1.4), not a defect |
 | 12 | **Rewards** | Balance, streak and tasks load from the server. Daily check-in credits once; a second tap reports "already checked in" and does not move the balance |
-| 13 | **Premium entitlement gate** | A premium episode shows the upsell for a non-entitled account and plays for an entitled one |
-| 14 | **Redeem flow** | Redemption debits points and unlocks Premium; the gate in 13 opens without a relaunch |
+| 13 | **No paywall anywhere** | V1 scope check (`docs/v1-product-scope.md`): no "Premium" badge on Discover, no access chip on an episode row, no lock or modal on Series Detail or the feed's Next Episode, and no "activate Premium" gate. Every published episode opens |
+| 14 | **Redeem panel** | V1 shows the Redeem section with its empty state — the coin-priced VIP offers are filtered out of scope. It must not offer a way to buy premium, buy coins, or pay for anything |
 | 15 | **Series episode selection** | Opening episode N from Series Detail lands on exactly episode N in the feed |
 | 16 | **Progress persistence** | Watch partway, leave, return: resumes at the same position. Survives a restart |
 | 17 | **Like / Save** | Both persist across a restart and are scoped to the signed-in account |

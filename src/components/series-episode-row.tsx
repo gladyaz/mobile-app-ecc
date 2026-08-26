@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { isPremiumExperienceEnabled } from '@/services/config/v1-scope';
 import { useTranslation } from '@/stores/language';
 import type { Episode } from '@/types/series';
 
@@ -107,15 +108,23 @@ export function SeriesEpisodeRow({
       <View style={styles.details}>
         <View style={styles.metaRow}>
           <Text style={styles.episodeNumber}>Episode {episode.episodeNumber}</Text>
-          <View
-            style={[
-              styles.accessBadge,
-              episode.accessType === 'premium' ? styles.premiumBadge : styles.freeBadge,
-            ]}>
-            <Text style={styles.accessBadgeText}>
-              {episode.accessType === 'premium' ? t('series.premium') : t('series.free')}
-            </Text>
-          </View>
+          {/* V1 IS FREE + ADS: every episode is free, so an access chip on
+              each row states a distinction that does not exist and spends the
+              row's most scannable space saying nothing. "Premium" would be
+              worse than noise - it reads as "this one costs something" in an
+              app with no way to pay. `episode.accessType` itself is untouched;
+              only the chip is gated. See services/config/v1-scope.ts. */}
+          {isPremiumExperienceEnabled() ? (
+            <View
+              style={[
+                styles.accessBadge,
+                episode.accessType === 'premium' ? styles.premiumBadge : styles.freeBadge,
+              ]}>
+              <Text style={styles.accessBadgeText}>
+                {episode.accessType === 'premium' ? t('series.premium') : t('series.free')}
+              </Text>
+            </View>
+          ) : null}
         </View>
         {!episode.isAvailable ? (
           <Text style={styles.unavailableText}>{t('series.unavailable')}</Text>

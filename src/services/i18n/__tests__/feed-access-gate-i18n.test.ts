@@ -18,6 +18,12 @@ const ACCESS_GATE_KEYS = [
   'feed.premiumRequiredHint',
   'feed.openRewards',
   'feed.premiumRequiredActionHint',
+  // V1 (free + ads): the gate a viewer actually reaches on an entitlement
+  // refusal, since the premium copy above is configuration-gated out. It has
+  // the same localization obligation - it is still the only explanation for
+  // why an episode will not play.
+  'feed.episodeUnavailable',
+  'feed.episodeUnavailableHint',
 ] as const satisfies readonly CopyKey[];
 
 describe('feed access-gate localization', () => {

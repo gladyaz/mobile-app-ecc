@@ -40,6 +40,7 @@ import { trackEvent } from '@/services/analytics/analytics-queue';
 import { recordVideoWatched } from '@/services/ads/ad-controller';
 import { ApiError } from '@/services/api/client';
 import { getTokens } from '@/services/auth/token-store';
+import { isPremiumExperienceEnabled } from '@/services/config/v1-scope';
 import { isHlsPlaybackEnabled } from '@/services/videos/hls-playback-flag';
 import { getPlaybackAuthorization, resolvePlaybackSource } from '@/services/videos/video-service';
 import { useAdsStore } from '@/stores/ads-store';
@@ -196,12 +197,17 @@ const HTTP_FORBIDDEN = 403;
  * - `'sign-in'`: there is no usable session. Signing in is the next step.
  * - `'premium'`: there IS a session, and the backend refused it for want of
  *   an entitlement. Acquiring Premium is the next step.
+ * - `'unavailable'`: the same entitlement refusal, met by a build whose
+ *   premium experience is OFF (V1 = free + ads). There is no next step the
+ *   viewer can take, so the copy says the episode cannot be played and stops
+ *   - it never names a tier this build cannot sell. See
+ *   `services/config/v1-scope.ts`.
  *
  * `null` (see `classifyPlaybackAccessRequirement` below) means the refusal
  * is NOT an access problem at all - a network failure, a 409 with no usable
  * media, an unparseable 200 - and keeps the generic unavailable copy.
  */
-type PlaybackAccessRequirement = 'sign-in' | 'premium';
+type PlaybackAccessRequirement = 'sign-in' | 'premium' | 'unavailable';
 
 /**
  * Guest-first feed (2026-08-22) / ANONYMOUS FREE-EPISODE PLAYBACK, extended
@@ -260,7 +266,18 @@ function classifyPlaybackAccessRequirement(
   }
 
   if (error.status === HTTP_FORBIDDEN && error.code === ENTITLEMENT_REQUIRED_ERROR_CODE) {
-    return accessToken ? 'premium' : 'sign-in';
+    if (!accessToken) {
+      return 'sign-in';
+    }
+
+    // V1 IS FREE + ADS. With `CONTENT_ACCESS_MODE=free` on the backend this
+    // refusal should not arrive at all; if it does, it is a server-side
+    // misconfiguration, and the one thing that must NOT happen is telling the
+    // viewer to "activate Premium" and sending them to Rewards to redeem a
+    // tier this build does not sell. `'unavailable'` is the truthful reading
+    // of the same refusal for a build with no premium experience: we cannot
+    // play it, and there is nothing for you to do about it.
+    return isPremiumExperienceEnabled() ? 'premium' : 'unavailable';
   }
 
   return null;
@@ -1203,6 +1220,13 @@ export function DramaFeedItem({
   const accessRequirement = hasPlaybackError ? playbackAccessRequirement : null;
   const isPlaybackAccessGated = accessRequirement !== null;
   const isSignInRequiredForPlayback = accessRequirement === 'sign-in';
+  /**
+   * The V1 (free + ads) reading of an entitlement refusal: a real refusal with
+   * no action attached, because this build sells nothing. Rendered as a plain
+   * statement with no call to action - offering a button that cannot help is
+   * the dead end this replaces.
+   */
+  const isPlaybackUnavailableWithoutRecourse = accessRequirement === 'unavailable';
   const hasLoggedErrorRef = useRef(false);
 
   // Prefer backend-provided dimensions (instant); fall back to the actual
@@ -1847,7 +1871,11 @@ export function DramaFeedItem({
       return;
     }
 
-    if (nextEpisode.accessType === 'premium' && !isPremium) {
+    // V1 IS FREE + ADS: the client-side lock is gated off, for the same
+    // reason as the one on Series Detail - it can only produce a dialog about
+    // a tier this build cannot sell. The tap falls through to the series page
+    // exactly as a free episode's does. See services/config/v1-scope.ts.
+    if (isPremiumExperienceEnabled() && nextEpisode.accessType === 'premium' && !isPremium) {
       trackEvent('premium_gate_hit', {
         videoId: nextEpisode.videoId,
         seriesId: nextEpisode.seriesId,
@@ -2135,14 +2163,32 @@ export function DramaFeedItem({
           so the existing "tap anywhere to bring the chrome back" behaviour
           for other chrome is untouched - only the gate itself is carved out.
 
-          Both gates live here because both are the same kind of state: the
-          backend refused THIS viewer, and there is one truthful next step.
-          Which one renders is decided by `classifyPlaybackAccessRequirement`
-          from the backend's own answer - never by the client's entitlement
-          flag, and never by `accessTier`/`episodeNumber`. */}
+          All three gates live here because all three are the same kind of
+          state: the backend refused THIS viewer. Which one renders is decided
+          by `classifyPlaybackAccessRequirement` from the backend's own answer
+          - never by the client's entitlement flag, and never by
+          `accessTier`/`episodeNumber`. Two of them name a next step; the V1
+          one deliberately names none, because in a free + ads build there
+          isn't one. */}
       {isPlaybackAccessGated ? (
         <View pointerEvents="box-none" style={styles.accessGateLayer}>
-          {isSignInRequiredForPlayback ? (
+          {isPlaybackUnavailableWithoutRecourse ? (
+            // V1 (FREE + ADS): the backend refused on entitlement grounds in a
+            // build that sells no entitlement. Everything here is true and
+            // nothing is offered: no "activate Premium", no Rewards button, no
+            // "check your connection" (the network is fine - the server
+            // answered). A control that cannot change the outcome is what made
+            // the premium gate a dead end, so this state has none.
+            <View testID="feed-item-episode-unavailable-gate" style={styles.errorState}>
+              <Text
+                testID="feed-item-episode-unavailable-title"
+                accessibilityRole="header"
+                style={styles.errorTitle}>
+                {t('feed.episodeUnavailable')}
+              </Text>
+              <Text style={styles.errorHint}>{t('feed.episodeUnavailableHint')}</Text>
+            </View>
+          ) : isSignInRequiredForPlayback ? (
             // ANONYMOUS FREE-EPISODE PLAYBACK (2026-08-22): a signed-out
             // viewer now reaches the feed, the metadata, the poster, the
             // whole action rail AND free playback itself - so this gate is

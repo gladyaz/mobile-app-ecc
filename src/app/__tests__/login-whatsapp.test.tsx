@@ -50,11 +50,12 @@ function buildChallenge(overrides?: Partial<OtpChallenge>): OtpChallenge {
   };
 }
 
-// The WhatsApp entry point is gated OFF by default for V1 - the backend cannot
-// serve it - and the screen itself redirects when it is not offered, so a deep
-// link cannot reach the form. Every case here is about the form's behaviour
-// once the method IS offered, so the flag is on for the suite; the dedicated
-// case below pins the default.
+// WhatsApp Login is a confirmed V1 feature and the entry point is offered by
+// default; the screen still redirects when a build withdraws the method, so a
+// deep link cannot reach the form then. Every case here is about the form's
+// behaviour while the method is offered, so the flag is pinned on for the suite
+// rather than left to the default - the availability block at the bottom
+// exercises the default and the kill switch explicitly.
 const ORIGINAL_WHATSAPP_FLAG = process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
 
 afterAll(() => {
@@ -517,14 +518,27 @@ describe('changing the number', () => {
   });
 });
 
-describe('WhatsApp screen is unreachable when the method is not offered', () => {
-  it('redirects to /login instead of rendering the form', async () => {
+describe('WhatsApp screen availability (V1: WhatsApp Login is in scope)', () => {
+  it('renders the real phone form by default, because the method is offered', async () => {
+    // WhatsApp Login is a confirmed V1 feature, so the screen is reachable with
+    // no flag set. What it renders is the REAL form - the same one that calls
+    // `startWhatsAppOtp` - not a placeholder and not a stubbed success.
+    delete process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
+
+    const { getByTestId, queryByTestId } = await render(<WhatsAppLoginScreen />);
+
+    expect(getByTestId('whatsapp-phone-input')).toBeTruthy();
+    expect(getByTestId('whatsapp-send-code')).toBeTruthy();
+    expect(queryByTestId('whatsapp-redirect')).toBeNull();
+  });
+
+  it('redirects to /login when the build withdraws the method', async () => {
     // `_layout.tsx` registers this as a real route and app.json declares the
     // mobileappecc scheme, so mobileappecc://login-whatsapp reaches this screen
-    // whatever the login screen rendered. Without this guard a store build
-    // would show a working phone-number form for a method whose backend
-    // answers every request with 503.
-    delete process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
+    // whatever the login screen rendered. The kill switch therefore has to hold
+    // HERE too - hiding only the button would leave a working phone-number form
+    // one deep link away.
+    process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = 'false';
 
     const { getByTestId, queryByTestId } = await render(<WhatsAppLoginScreen />);
 

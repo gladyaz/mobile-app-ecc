@@ -339,6 +339,11 @@ const id = {
     'Aktifkan Premium untuk menonton episode ini. Kamu bisa menukarnya dengan poin di Rewards.',
   'feed.openRewards': 'Buka Rewards',
   'feed.premiumRequiredActionHint': 'Membuka halaman Rewards. Poin kamu tidak langsung terpakai.',
+  // V1 (gratis + iklan): server menolak episode ini dan tidak ada yang bisa
+  // dilakukan penonton - jadi tidak ada tombol, tidak ada Premium, dan tidak
+  // ada saran "periksa koneksi" (koneksinya baik, server sudah menjawab).
+  'feed.episodeUnavailable': 'Episode ini belum bisa diputar',
+  'feed.episodeUnavailableHint': 'Coba episode lain dulu, ya.',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Episode Berikutnya',
   'feed.clearDisplay': 'Tampilan bersih',
@@ -742,6 +747,8 @@ const en: Copy = {
     'Activate Premium to watch this episode. You can redeem it with points in Rewards.',
   'feed.openRewards': 'Open Rewards',
   'feed.premiumRequiredActionHint': 'Opens the Rewards page. No points are spent by opening it.',
+  'feed.episodeUnavailable': 'This episode cannot be played',
+  'feed.episodeUnavailableHint': 'Try another episode for now.',
   'feed.fullscreen': 'Fullscreen',
   'feed.nextEpisode': 'Next Episode',
   'feed.clearDisplay': 'Clear display',
@@ -1139,6 +1146,8 @@ const zh: Copy = {
   'feed.premiumRequiredHint': '开通会员后即可观看本集。你可以在奖励页用积分兑换。',
   'feed.openRewards': '打开奖励',
   'feed.premiumRequiredActionHint': '打开奖励页面。仅打开不会扣除积分。',
+  'feed.episodeUnavailable': '本集暂时无法播放',
+  'feed.episodeUnavailableHint': '请先观看其他剧集。',
   'feed.fullscreen': '全屏',
   'feed.nextEpisode': '下一集',
   'feed.clearDisplay': '清屏模式',

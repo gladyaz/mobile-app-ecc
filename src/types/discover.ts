@@ -20,6 +20,11 @@ export type DiscoverTabKey = 'home' | 'new' | 'rankings';
  *   "Premium" - not "VIP" - is the app's own existing user-facing word for
  *   that tier (`premium-preview-modal.tsx`), so Discover reuses it rather than
  *   introducing a second name for the same thing.
+ *   **NOT PRODUCED IN V1.** V1 is free + ads, so `buildDiscoverCards` never
+ *   pushes this badge - an access chip would tell a viewer some episodes cost
+ *   something in an app that sells nothing. The union member and the rule are
+ *   kept for V1.1/V2; see `services/config/v1-scope.ts`. `hasPremiumEpisodes`
+ *   itself is unaffected and still carries the backend's answer.
  *
  * There is deliberately no `New` badge: the mobile-visible video contract
  * (`BackendVideoDto`) carries no `createdAt`/`publishedAt`, so no truthful

@@ -17,28 +17,34 @@ import { isDemoMode } from '@/services/demo/demo-mode';
  */
 
 /**
- * WhatsApp OTP is gated OFF by default because the backend cannot serve it.
+ * WhatsApp OTP sign-in is OFFERED BY DEFAULT: it is a confirmed V1 feature.
  *
+ * THIS DEFAULT WAS INVERTED (2026-08-26) BY PRODUCT DECISION. It previously
+ * defaulted OFF, on the reasoning that the backend could not serve the method -
  * docs/api-contract.md ("Provider activation status") records that WhatsApp
  * auth "CANNOT be enabled in production. Only a `fake` driver exists and the
- * process refuses to boot with WhatsApp enabled outside development/test", and
- * that no real WhatsApp message has ever been sent by that code. A deployed
- * server therefore answers every request with `503 WHATSAPP_AUTH_DISABLED`.
+ * process refuses to boot with WhatsApp enabled outside development/test", so
+ * a deployed server answers `503 WHATSAPP_AUTH_DISABLED`. That reasoning was
+ * sound for a build shipping alone; it is not the decision that was made.
+ * WhatsApp Login is in the V1 scope, its production backend is being built on a
+ * parallel branch, and the button is not to be withdrawn while that lands.
  *
- * The client handles that 503 honestly - `provider-error-messages.ts` maps it
- * to its own specific message rather than a generic failure - but handling a
- * refusal well is not the same as being worth offering. Showing a viewer a
- * WhatsApp button, taking them to a phone-number screen, and only then telling
- * them the method is unavailable is a worse experience than not showing it,
- * and it is the kind of thing that reads as a broken app rather than an
- * unfinished feature.
+ * WHAT THIS DOES NOT DO, and must never be changed to do: it does not fake a
+ * session, stub a code, or treat a 503 as anything other than a failure. The
+ * client flow is REAL end to end - `startWhatsAppOtp` and `verifyWhatsAppOtp`
+ * (`provider-auth-service.ts`) call the canonical endpoints, validate the
+ * response shape, and propagate `ApiError` untouched. Until the backend serves
+ * the method, a viewer who tries it gets the specific, truthful message
+ * `provider-error-messages.ts` maps `WHATSAPP_AUTH_DISABLED` to
+ * ("Login WhatsApp belum aktif di server ini") - never a signed-in state the
+ * server did not grant. That trade - an honest "not active yet" over a hidden
+ * V1 feature - is the decision this default encodes.
  *
- * Set this to "true" once a real WhatsApp Business provider is wired up on the
- * backend AND the deployment has it enabled. Until then the honest V1 answer
- * is that this app signs you in with an email and a password.
+ * Set to "false" to withdraw the entry point (a kill switch, matching
+ * `services/videos/hls-playback-flag.ts`); anything else offers it.
  */
 export function isWhatsAppLoginOffered(): boolean {
-  return process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED === 'true';
+  return process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED !== 'false';
 }
 
 /**

@@ -23,28 +23,32 @@ const path = require('path') as {
 };
 
 /**
- * V1 is FREE + ADS. No money changes hands anywhere in this app.
+ * V1 is FREE CONTENT + ADS + REWARDS. No money changes hands anywhere in this
+ * app, and no paywall is presented to a viewer.
  *
- * Premium is not absent - it is an ACCESS TIER the backend decides, and the
- * only way a viewer obtains it today is by redeeming reward points
- * (`features/rewards/use-rewards-center.ts`, debited and granted server-side).
- * That is deliberately preserved: it is working, shipped functionality, not an
- * unfinished payment surface.
+ * TWO DIFFERENT GUARANTEES LIVE HERE, and they are enforced differently on
+ * purpose.
  *
- * What must never appear without a product decision is a way to SPEND MONEY: a
- * checkout, a subscription purchase, an in-app-purchase SDK, a card form. The
- * app has none, and the premium gate's only call to action opens Rewards (pinned
- * by `components/__tests__/drama-feed-item.test.tsx`, "F/K: routes the premium
- * CTA to the Rewards route by identity"), while `PremiumPreviewModal` has had
- * its "Segera Hadir" purchase promise removed (pinned by that component's own
- * test).
+ * 1. NO WAY TO SPEND MONEY - a structural, permanent boundary. A checkout, a
+ *    subscription purchase, an in-app-purchase SDK, a card form: the app has
+ *    none, and one cannot re-enter by adding a dependency or a route, because
+ *    doing either fails the cases below. This is a static, grep-style guard,
+ *    the way `services/demo/__tests__/production-boundary.test.ts` guards the
+ *    demo/mock boundary.
  *
- * Those tests each guard one surface. This one guards the BOUNDARY, the way
- * `services/demo/__tests__/production-boundary.test.ts` guards the demo/mock
- * boundary: a payment direction cannot re-enter V1 by adding a dependency or a
- * route, because doing either fails here. It is a static, grep-style guard -
- * the same idiom `video-service.test.ts` already uses to keep a hardcoded CDN
- * host out of the playback selector.
+ * 2. NO PREMIUM/PAYWALL EXPERIENCE IN V1 - a product-scope decision
+ *    (2026-08-26), enforced by configuration rather than by deletion. Premium
+ *    remains an ACCESS TIER the backend models and the client parses, and the
+ *    entitlement service, the reward-redemption catalog and every gate that
+ *    consumes them are preserved intact for V1.1/V2. What V1 turns off is what
+ *    a VIEWER can see: the access badges, the episode locks, the "activate
+ *    Premium" playback gate and the coin-priced VIP redemptions. That switch
+ *    is `services/config/v1-scope.ts`, its default is pinned by that module's
+ *    own test, and each gated surface is pinned where it renders.
+ *
+ * The distinction matters when reading the patterns below: they hunt for
+ * PAYMENT RAILS, which must never exist, not for the word "premium", which
+ * legitimately does.
  */
 const projectRoot = path.resolve(__dirname, '../../../..');
 
@@ -127,6 +131,34 @@ describe('V1 monetization boundary (free + ads, no payment)', () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+
+  it('ships with the premium experience OFF, so no committed env file restores the paywall', () => {
+    // The V1 scope switch defaults off in code (pinned by
+    // `services/config/__tests__/v1-scope.test.ts`), and neither committed env
+    // template may quietly turn it back on - `.env.production.example` is
+    // copied verbatim by whoever cuts a release build.
+    for (const file of ['.env.example', '.env.production.example']) {
+      const contents = fs.readFileSync(path.join(projectRoot, file), 'utf8');
+
+      expect(`${file}: ${contents}`).not.toMatch(
+        /^\s*EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED\s*=\s*true/m
+      );
+    }
+  });
+
+  it('blocks a release build that enables the premium experience', () => {
+    // The preflight is the last gate before an external build, so the V1 scope
+    // decision has to be enforceable there and not only in code review.
+    const preflight = fs.readFileSync(
+      path.join(projectRoot, 'scripts', 'check-release-android.js'),
+      'utf8'
+    );
+
+    expect(preflight).toContain('EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED');
+    expect(preflight).toMatch(
+      /blocker\(\s*\n?\s*'EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED=true'/
+    );
   });
 
   it('keeps premium acquisition on the points path: the entitlement service asks, never charges', () => {

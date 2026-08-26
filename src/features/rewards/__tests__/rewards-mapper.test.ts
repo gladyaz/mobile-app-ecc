@@ -309,6 +309,12 @@ describe('mapLedgerEntry', () => {
 });
 
 describe('applyCheckInResponse', () => {
+  const ORIGINAL_PREMIUM_FLAG = process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED;
+
+  afterEach(() => {
+    process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = ORIGINAL_PREMIUM_FLAG;
+  });
+
   const snapshotDto: RewardsSnapshotDto = {
     wallet: WALLET_DTO,
     dailyCheckIn: CHECK_IN_DTO,
@@ -346,6 +352,12 @@ describe('applyCheckInResponse', () => {
     // Availability is server-computed. Recomputing it here from a fresher
     // balance is exactly the client/server divergence this module prevents;
     // the caller re-reads the snapshot instead.
+    //
+    // Runs with the premium experience ON so the (VIP, premium-granting) offer
+    // survives the V1 scope filter and there is something to assert about. The
+    // invariant under test is the check-in patch, not the V1 catalog.
+    process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = 'true';
+
     const withOffer = mapRewardsSnapshot(
       {
         ...snapshotDto,
@@ -387,5 +399,77 @@ describe('mapRewardsSnapshot', () => {
     // `null` is the backend's ANSWER, not an omission - it has no
     // trustworthy watch-time signal, and nothing here back-fills one.
     expect(snapshot.watchTime).toBeNull();
+  });
+});
+
+/**
+ * V1 IS FREE + ADS. `grantsDays > 0` is how the backend says an offer buys
+ * premium access, so such an offer is a coin-priced unlock of episodes that are
+ * already free in V1 - it must not reach the Redeem panel. Keyed on the GRANT
+ * rather than an id blocklist, so the first genuinely non-premium offer (a Skip
+ * Next Ad perk, say) flows through with no client change.
+ */
+describe('mapRewardsSnapshot redemption scope (V1: free + ads)', () => {
+  const ORIGINAL_PREMIUM_FLAG = process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED;
+
+  afterEach(() => {
+    process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = ORIGINAL_PREMIUM_FLAG;
+  });
+
+  const vipOffer = {
+    id: 'redeem_vip_1d',
+    costPoints: 1000,
+    grantsDays: 1,
+    availability: 'AVAILABLE',
+    isRedeemSupported: true,
+  } as const;
+
+  /** The forward shape: a perk that grants no premium days. */
+  const perkOffer = {
+    id: 'redeem_skip_next_ad',
+    costPoints: 200,
+    grantsDays: 0,
+    availability: 'AVAILABLE',
+    isRedeemSupported: true,
+  } as const;
+
+  function snapshotWith(redemptions: readonly (typeof vipOffer | typeof perkOffer)[]) {
+    return mapRewardsSnapshot(
+      {
+        wallet: WALLET_DTO,
+        dailyCheckIn: CHECK_IN_DTO,
+        watchTime: null,
+        tasks: [],
+        redemptions: [...redemptions],
+      },
+      t
+    );
+  }
+
+  it('drops every premium-granting offer, so V1 advertises no paid unlock', () => {
+    expect(snapshotWith([vipOffer]).redemptions).toEqual([]);
+  });
+
+  it('keeps an offer that grants no premium days, so coin utility can still ship', () => {
+    expect(snapshotWith([perkOffer]).redemptions.map((offer) => offer.id)).toEqual([
+      'redeem_skip_next_ad',
+    ]);
+  });
+
+  it('filters the premium offer out of a mixed catalog without touching the rest', () => {
+    expect(snapshotWith([vipOffer, perkOffer]).redemptions.map((offer) => offer.id)).toEqual([
+      'redeem_skip_next_ad',
+    ]);
+  });
+
+  it('serves the premium offers again once the premium experience is on', () => {
+    // PRESERVED V1.1/V2 BEHAVIOUR: the offers, their copy and their mapping
+    // are intact - only the V1 filter stands between them and the panel.
+    process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = 'true';
+
+    expect(snapshotWith([vipOffer, perkOffer]).redemptions.map((offer) => offer.id)).toEqual([
+      'redeem_vip_1d',
+      'redeem_skip_next_ad',
+    ]);
   });
 });

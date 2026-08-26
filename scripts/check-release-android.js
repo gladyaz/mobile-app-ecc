@@ -183,15 +183,40 @@ if (!isUsableLegalUrl(process.env.EXPO_PUBLIC_TERMS_URL)) {
 
 // --- Provider availability -------------------------------------------------
 
-if (process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED === 'true') {
-  blocker(
-    'EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=true',
-    'This offers a WhatsApp sign-in button. docs/api-contract.md records that the backend ' +
+// WhatsApp sign-in is a CONFIRMED V1 FEATURE and is offered by default, so its
+// presence is no longer a blocker. It stays a warning because the dependency is
+// real and a release engineer should know what a viewer meets today: until the
+// parallel WhatsApp backend lands, the server answers 503 and the app shows its
+// specific "not active on this server yet" message. That is an honest
+// unavailable state, not a fake success - the client never fabricates a session
+// - but it is still a V1 feature that does not complete end to end yet.
+if (process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED !== 'false') {
+  warning(
+    'WhatsApp sign-in is offered (EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED is not "false")',
+    'Confirmed V1 feature, offered by default. docs/api-contract.md records that the backend ' +
       '"CANNOT be enabled in production - only a `fake` driver exists and the process refuses ' +
-      'to boot with WhatsApp enabled outside development/test", so a deployed server answers ' +
-      'every attempt with 503 WHATSAPP_AUTH_DISABLED. Set this only once a real WhatsApp ' +
-      'Business provider is live on the backend. See ' +
+      'to boot with WhatsApp enabled outside development/test", so until the parallel WhatsApp ' +
+      'backend ships, a deployed server answers 503 WHATSAPP_AUTH_DISABLED and the viewer sees ' +
+      'the truthful "not active on this server" message. Confirm that is the intended V1 state ' +
+      'for this build, or set the flag to "false" to withdraw the entry point. See ' +
       'src/services/auth/provider-availability.ts.'
+  );
+}
+
+// --- V1 product scope ------------------------------------------------------
+
+// V1 is FREE + ADS. Enabling the premium experience re-exposes the access
+// badges, the episode locks and the coin-priced VIP redemptions - a paywall in
+// a build whose backend runs CONTENT_ACCESS_MODE=free, so every lock is one the
+// viewer can neither clear nor pay to clear.
+if (process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED === 'true') {
+  blocker(
+    'EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED=true',
+    'V1 scope is free content + ads: no paywall, no subscription, no payment, no coin ' +
+      'purchase. This flag restores the premium/paywall UI (Discover access badge, per-episode ' +
+      'access chip, Series Detail and feed episode locks, the "activate Premium" playback gate ' +
+      'and the coin-priced VIP redemption offers). Leave it unset for V1. See ' +
+      'src/services/config/v1-scope.ts.'
   );
 }
 

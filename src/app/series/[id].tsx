@@ -9,6 +9,7 @@ import { FontFamily, Palette, Radius } from '@/constants/theme';
 import { useSeriesDetail } from '@/features/series/use-series-catalog';
 import { nextVideoRequestId } from '@/features/videos/video-request-id';
 import { trackEvent } from '@/services/analytics/analytics-queue';
+import { isPremiumExperienceEnabled } from '@/services/config/v1-scope';
 import { toEpisode } from '@/services/videos/series-service';
 import { useEntitlement } from '@/stores/entitlement';
 import { useTranslation } from '@/stores/language';
@@ -35,7 +36,15 @@ export default function SeriesDetailScreen() {
   const [failedCoverUrl, setFailedCoverUrl] = useState<string | null>(null);
 
   const handleSelectEpisode = (episode: Episode) => {
-    if (episode.accessType === 'premium' && !isPremium) {
+    // V1 IS FREE + ADS: no episode is locked from this screen. The premium
+    // branch below is the CLIENT-SIDE lock, and in a build with no way to
+    // obtain premium it can only ever be a dead end - a tap that opens a
+    // dialog explaining a tier the viewer cannot get. Gated, not deleted:
+    // playback authorization still belongs to the backend either way, so
+    // letting the tap through does not grant anything. It routes to the feed,
+    // which asks the server and renders the server's real answer.
+    // See services/config/v1-scope.ts.
+    if (isPremiumExperienceEnabled() && episode.accessType === 'premium' && !isPremium) {
       trackEvent('premium_gate_hit', {
         videoId: episode.videoId,
         seriesId: episode.seriesId,
@@ -110,8 +119,13 @@ export default function SeriesDetailScreen() {
   const firstFreeEpisode = episodes.find(
     (episode) => episode.accessType === 'free' && episode.isAvailable
   );
+  // The primary "Play" target. With the premium experience off, availability
+  // is the only condition - skipping premium episodes here would hide a
+  // playable episode behind a tier this build does not sell.
   const firstPlayableEpisode = episodes.find(
-    (episode) => episode.isAvailable && (episode.accessType === 'free' || isPremium)
+    (episode) =>
+      episode.isAvailable &&
+      (!isPremiumExperienceEnabled() || episode.accessType === 'free' || isPremium)
   );
   const progress = getProgress(series.id);
   const continueEpisode = progress

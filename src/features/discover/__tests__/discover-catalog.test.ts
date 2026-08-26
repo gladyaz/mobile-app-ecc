@@ -19,6 +19,17 @@ const t = ((key: string, params?: Record<string, string | number>) =>
 /** Canonical backend title - no "- Episode 1" suffix anywhere. */
 const CANONICAL_TITLE = 'Malapetaka Datang: Benteng Bergerakku';
 
+/**
+ * V1 scope is the DEFAULT here (premium experience off), so the flag is only
+ * ever set by the one test that pins the preserved V1.1/V2 badge rule - and is
+ * restored afterwards so it cannot leak into the rest of the file.
+ */
+const ORIGINAL_PREMIUM_FLAG = process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED;
+
+afterEach(() => {
+  process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = ORIGINAL_PREMIUM_FLAG;
+});
+
 function buildSeries(overrides: Partial<CatalogSeries> = {}): CatalogSeries {
   return {
     id: 'series-104',
@@ -96,7 +107,31 @@ describe('buildDiscoverCards', () => {
     expect(card.category).toBeNull();
   });
 
-  it('flags Premium from the backend aggregate alone', () => {
+  it('awards no Premium badge in V1, whatever the backend aggregate says', () => {
+    // V1 IS FREE + ADS. An access badge on a poster tells a viewer some
+    // episodes cost something; in V1 none do, and nothing in the app could
+    // take their money if they did.
+    expect(buildDiscoverCards([buildSeries()])[0].badges).not.toContain('Premium');
+    expect(
+      buildDiscoverCards([buildSeries({ hasPremiumEpisodes: false })])[0].badges
+    ).not.toContain('Premium');
+  });
+
+  it('keeps the backend aggregate on the card even though V1 does not badge it', () => {
+    // The RULE is gated, the DATA is not: `hasPremiumEpisodes` is the
+    // backend's own answer and stays on the card, so restoring the badge for
+    // V1.1/V2 is a config change rather than a re-plumbing exercise.
+    expect(buildDiscoverCards([buildSeries()])[0].hasPremiumEpisodes).toBe(true);
+    expect(buildDiscoverCards([buildSeries({ hasPremiumEpisodes: false })])[0].hasPremiumEpisodes)
+      .toBe(false);
+  });
+
+  it('flags Premium from the backend aggregate alone once the premium experience is on', () => {
+    // Pins the PRESERVED V1.1/V2 behaviour: the badge rule is intact and
+    // still reads the backend aggregate and nothing else, so re-enabling it
+    // needs no code change. See services/config/v1-scope.ts.
+    process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = 'true';
+
     expect(buildDiscoverCards([buildSeries()])[0].badges).toContain('Premium');
     expect(
       buildDiscoverCards([buildSeries({ hasPremiumEpisodes: false })])[0].badges

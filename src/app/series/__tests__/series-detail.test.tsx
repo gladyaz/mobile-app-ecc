@@ -99,6 +99,23 @@ beforeEach(() => {
   mockUseEntitlement.mockReturnValue({ isPremium: false, refresh: jest.fn() });
 });
 
+/**
+ * V1 IS FREE + ADS, so the DEFAULT for every test below is the premium
+ * experience OFF. The blocks that assert a lock, a modal or an access chip
+ * turn it on explicitly - they exist to prove that architecture is preserved
+ * and restorable by configuration, not to describe what a V1 viewer meets.
+ * See services/config/v1-scope.ts.
+ */
+const ORIGINAL_PREMIUM_FLAG = process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED;
+
+function enablePremiumExperience() {
+  process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = 'true';
+}
+
+afterEach(() => {
+  process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = ORIGINAL_PREMIUM_FLAG;
+});
+
 describe('SeriesDetailScreen', () => {
   it('navigates to Home with the videoId when a free episode is selected', async () => {
     const { getByText } = await render(<SeriesDetailScreen />);
@@ -111,15 +128,41 @@ describe('SeriesDetailScreen', () => {
     });
   });
 
-  it('blocks playback and shows the premium modal when a premium episode is selected', async () => {
+  it('V1: opens a backend-premium episode like any other, with no modal and no lock', async () => {
+    // V1 IS FREE + ADS. The client-side lock could only ever be a dead end
+    // here - a dialog about a tier the viewer cannot obtain - so the tap goes
+    // through to the feed, which asks the backend and renders its real answer.
+    // Letting the tap through grants nothing: authorization is still server-side.
     const { getByText, queryByText } = await render(<SeriesDetailScreen />);
-
-    expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
 
     await fireEvent.press(getByText('Episode 6'));
 
-    expect(router.push).not.toHaveBeenCalled();
-    expect(getByText('Episode ini termasuk konten premium.')).toBeTruthy();
+    expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/',
+      params: { videoId: 'series-x-ep-6', videoRequestId: expect.any(String) },
+    });
+  });
+
+  it('V1: emits episode_navigate, never premium_gate_hit, for a backend-premium episode', async () => {
+    const { getByText } = await render(<SeriesDetailScreen />);
+
+    await fireEvent.press(getByText('Episode 6'));
+
+    expect(mockTrackEvent).toHaveBeenCalledWith('episode_navigate', {
+      videoId: 'series-x-ep-6',
+      seriesId: 'series-x',
+      episodeNumber: 6,
+      source: 'series-detail',
+    });
+    expect(mockTrackEvent).not.toHaveBeenCalledWith('premium_gate_hit', expect.anything());
+  });
+
+  it('V1: shows no access chip on any row, premium or free', async () => {
+    const { queryByText, queryAllByText } = await render(<SeriesDetailScreen />);
+
+    expect(queryByText('Premium')).toBeNull();
+    expect(queryAllByText('Gratis')).toHaveLength(0);
   });
 
   it('emits an episode_navigate analytics event when a free episode is selected (Phase 11)', async () => {
@@ -135,7 +178,24 @@ describe('SeriesDetailScreen', () => {
     });
   });
 
+  it('blocks playback and shows the premium modal when a premium episode is selected', async () => {
+    // PRESERVED V1.1/V2 BEHAVIOUR: the lock is intact and reads the backend
+    // tier; only the V1 config keeps it out of a viewer's way.
+    enablePremiumExperience();
+
+    const { getByText, queryByText } = await render(<SeriesDetailScreen />);
+
+    expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
+
+    await fireEvent.press(getByText('Episode 6'));
+
+    expect(router.push).not.toHaveBeenCalled();
+    expect(getByText('Episode ini termasuk konten premium.')).toBeTruthy();
+  });
+
   it('emits a premium_gate_hit analytics event when a premium episode is blocked (Phase 11)', async () => {
+    enablePremiumExperience();
+
     const { getByText } = await render(<SeriesDetailScreen />);
 
     await fireEvent.press(getByText('Episode 6'));
@@ -149,6 +209,7 @@ describe('SeriesDetailScreen', () => {
   });
 
   it('plays a premium episode directly, without the modal, for an entitled user (Phase 10)', async () => {
+    enablePremiumExperience();
     mockUseEntitlement.mockReturnValue({ isPremium: true, refresh: jest.fn() });
 
     const { getByText, queryByText } = await render(<SeriesDetailScreen />);
@@ -224,7 +285,24 @@ describe('SeriesDetailScreen - authoritative access tier (Admin override)', () =
     });
   });
 
+  it('V1: opens episode 2 with no lock, even though the backend calls it premium', async () => {
+    // The tier PLUMBING is what this block exists to pin, and it is untouched:
+    // the backend's per-episode answer still arrives intact. V1 simply does not
+    // turn it into a lock.
+    const { getByText, queryByText } = await render(<SeriesDetailScreen />);
+
+    await fireEvent.press(getByText('Episode 2'));
+
+    expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/',
+      params: { videoId: 'series-x-ep-2', videoRequestId: expect.any(String) },
+    });
+  });
+
   it('CASE A: locks episode 2 and shows the premium modal when the backend says premium', async () => {
+    enablePremiumExperience();
+
     const { getByText, queryByText } = await render(<SeriesDetailScreen />);
 
     expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
@@ -250,6 +328,8 @@ describe('SeriesDetailScreen - authoritative access tier (Admin override)', () =
   });
 
   it('labels each row from the backend tier, so the badge cannot contradict the gate', async () => {
+    enablePremiumExperience();
+
     const { getAllByText } = await render(<SeriesDetailScreen />);
 
     // 3 premium (2, 9, 10) and 7 free - counted from the backend values, not
@@ -262,6 +342,8 @@ describe('SeriesDetailScreen - authoritative access tier (Admin override)', () =
   });
 
   it('emits premium_gate_hit for the overridden EARLY episode, not for a late free one', async () => {
+    enablePremiumExperience();
+
     const { getByText } = await render(<SeriesDetailScreen />);
 
     await fireEvent.press(getByText('Episode 2'));

@@ -45,6 +45,10 @@ const EDITORIAL_BADGES: readonly DiscoverBadge[] = ['Hot'];
  * its rank, or where a compact row poster has no width for a second chip
  * without wrapping it over the artwork.
  *
+ * In V1 (free + ads) the catalog produces no `Premium` badge at all, so this
+ * function only ever sees `Hot` - the precedence rule is preserved for
+ * V1.1/V2 rather than currently exercised. See `services/config/v1-scope.ts`.
+ *
  * The card's accessibility label is built from this same function, so a
  * screen reader is never told about a badge the card does not draw.
  */

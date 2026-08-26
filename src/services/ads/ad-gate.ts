@@ -81,7 +81,35 @@ export type AdGateTransitionResult = {
   readonly holdReason?: AdGateHoldReason;
 };
 
+/**
+ * Everything OUTSIDE the counter state that can hold an interstitial.
+ *
+ * THIS IS THE PERK SEAM, and it already has the shape a reward-granted ad perk
+ * needs. `evaluateTransition` asks one question - "show the next interstitial?"
+ * - and answers with a `holdReason` naming which input said no. A future
+ * "Skip Next Ad" reward is therefore an added FLAG here plus a matching
+ * `AdGateHoldReason`, decided in this pure function and nowhere else. Nothing
+ * about the presenter, the controller or the store has to move.
+ *
+ * WHAT THE FLAG MUST BE, when that reward exists: a value derived from state
+ * the SERVER granted, mirrored in the way `isPremium` already is
+ * (`components/ads-bridge.tsx` mirrors `useEntitlement()` into the ads store,
+ * and the store never persists it - it is re-derived from auth on every
+ * launch). A locally-set "I have a skip" boolean would be a client granting
+ * itself a paid perk, which is the same class of mistake
+ * `features/rewards/__tests__/rewards-economics-boundary.test.ts` exists to
+ * prevent for the points balance.
+ *
+ * V1 SHIPS NO SUCH PERK. `isPremium` is the only suppression input today, no
+ * redemption in V1 grants it (`features/rewards/rewards-mapper.ts` filters
+ * premium-granting offers out of the V1 catalog), and nothing here should be
+ * read as a partially-built skip feature.
+ */
 export type AdGateTransitionOptions = {
+  /**
+   * Server-granted entitlement, mirrored from `useEntitlement()`. Never a
+   * client-side assertion - see the note above.
+   */
   readonly isPremium: boolean;
   readonly adReady: boolean;
   readonly adVisible: boolean;

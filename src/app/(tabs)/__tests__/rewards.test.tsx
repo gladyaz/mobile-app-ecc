@@ -621,6 +621,29 @@ describe('Rewards tab - transaction history comes from the ledger', () => {
 // ===========================================================================
 
 describe('Rewards tab - redemption', () => {
+  /**
+   * V1 IS FREE + ADS, so the Redeem panel ships EMPTY: every offer the backend
+   * serves today grants premium days, and `mapRewardsSnapshot` filters those
+   * out (see rewards-mapper's "redemption scope" tests). The V1 assertion lives
+   * in the block below.
+   *
+   * This block exists to pin the redemption MACHINERY, which is preserved
+   * whole for V1.1/V2 - the canonical call, the idempotency key, the
+   * server-computed affordability, the entitlement refresh, and the rule that
+   * the client never grants anything itself. None of that is gated, and none of
+   * it can be exercised without an offer on screen, so the block runs with the
+   * premium experience on. See services/config/v1-scope.ts.
+   */
+  const ORIGINAL_PREMIUM_FLAG = process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED;
+
+  beforeEach(() => {
+    process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = 'true';
+  });
+
+  afterEach(() => {
+    process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = ORIGINAL_PREMIUM_FLAG;
+  });
+
   it('sends intent only to the canonical redemption call', async () => {
     const { findByTestId } = await render(<RewardsRoute />);
 

@@ -195,6 +195,39 @@ describe('SeriesEpisodeRow artwork', () => {
     expect(getByRole('button').props.accessibilityState.selected).toBe(true);
     expect(getByText('Episode 3')).toBeTruthy();
     expect(getByText('Sedang diputar')).toBeTruthy();
-    expect(getByText('Gratis')).toBeTruthy();
+  });
+});
+
+describe('SeriesEpisodeRow access chip (V1 scope: free + ads)', () => {
+  const ORIGINAL_PREMIUM_FLAG = process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED;
+
+  afterEach(() => {
+    process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = ORIGINAL_PREMIUM_FLAG;
+  });
+
+  it.each([
+    ['free' as const, 'Gratis'],
+    ['premium' as const, 'Premium'],
+  ])('renders no %s access chip in V1', async (accessType, label) => {
+    // V1 IS FREE + ADS: every episode is free, so the chip states a
+    // distinction that does not exist. "Premium" would be worse than noise -
+    // it reads as "this one costs something" in an app that sells nothing.
+    const { queryByText } = await renderRow(
+      <SeriesEpisodeRow episode={buildEpisode({ accessType })} isCurrentlyPlaying={false} />
+    );
+
+    expect(queryByText(label)).toBeNull();
+  });
+
+  it('still labels the row from the backend tier once the premium experience is on', async () => {
+    // Pins the PRESERVED V1.1/V2 behaviour: the chip reads `accessType`
+    // straight from the episode and is restored by a config change alone.
+    process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = 'true';
+
+    const { getByText } = await renderRow(
+      <SeriesEpisodeRow episode={buildEpisode({ accessType: 'premium' })} isCurrentlyPlaying={false} />
+    );
+
+    expect(getByText('Premium')).toBeTruthy();
   });
 });

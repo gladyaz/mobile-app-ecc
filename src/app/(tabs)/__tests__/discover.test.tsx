@@ -69,6 +69,22 @@ type CatalogOverrides = {
   readonly error?: Error | null;
 };
 
+/**
+ * V1 IS FREE + ADS, so the DEFAULT here is the premium experience OFF - no
+ * poster carries an access badge. The tests that turn it on are pinning either
+ * the preserved V1.1/V2 badge rule or a layout invariant that needs a badge to
+ * place. See services/config/v1-scope.ts.
+ */
+const ORIGINAL_PREMIUM_FLAG = process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED;
+
+function enablePremiumExperience() {
+  process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = 'true';
+}
+
+afterEach(() => {
+  process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = ORIGINAL_PREMIUM_FLAG;
+});
+
 function mockCatalog(overrides: CatalogOverrides = {}) {
   const refresh = jest.fn();
 
@@ -129,13 +145,28 @@ describe('DiscoverScreen home grid', () => {
     expect(getByText('6 EP')).toBeTruthy();
   });
 
+  it('V1: badges no series Premium, whatever the backend aggregate says', async () => {
+    // V1 IS FREE + ADS. A "Premium" chip on a poster is the first thing a
+    // first-time viewer reads as "some of this costs money", and nothing in
+    // this build could take their money if it did.
+    mockCatalog();
+
+    const { queryByText } = await render(<DiscoverScreen />);
+
+    expect(queryByText('Premium')).toBeNull();
+    // "VIP" would be a tier name that exists nowhere else in this product.
+    expect(queryByText('VIP')).toBeNull();
+  });
+
   it('marks a series that has premium episodes with the app’s own Premium wording', async () => {
+    // PRESERVED V1.1/V2 BEHAVIOUR: the badge rule and its copy are intact and
+    // still read the backend aggregate. See services/config/v1-scope.ts.
+    enablePremiumExperience();
     mockCatalog();
 
     const { getByText, queryByText } = await render(<DiscoverScreen />);
 
     expect(getByText('Premium')).toBeTruthy();
-    // "VIP" would be a tier name that exists nowhere else in this product.
     expect(queryByText('VIP')).toBeNull();
   });
 
@@ -235,6 +266,10 @@ function cardLabels(nodes: readonly { props: { accessibilityLabel?: string } }[]
  */
 describe('DiscoverScreen series card metadata (preserved from the previous Discover)', () => {
   it('shows the series title with category and episode-count metadata', async () => {
+    // Premium on: the accessibility label asserted below is the one that
+    // carries a badge, and the point of the assertion is that title, badge,
+    // episode count and category travel together in one label.
+    enablePremiumExperience();
     mockCatalog();
 
     const { getByText, getAllByText, getByLabelText } = await render(<DiscoverScreen />);
@@ -275,6 +310,10 @@ describe('DiscoverScreen new tab', () => {
 
 describe('DiscoverScreen New tab presentation', () => {
   it('keeps every badge inside the row poster, never over the row title', async () => {
+    // Needs a badge to place, so it runs with the premium experience on - the
+    // LAYOUT invariant it pins (badges belong to the poster, never the text
+    // column) is what matters and is unchanged by V1 scope.
+    enablePremiumExperience();
     mockCatalog();
 
     const { getByTestId, getByText, getAllByText } = await render(<DiscoverScreen />);

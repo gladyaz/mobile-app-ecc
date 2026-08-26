@@ -457,6 +457,23 @@ async function openPlaybackSettingsFor(
   }
 }
 
+/**
+ * V1 IS FREE + ADS, so the DEFAULT for every case in this file is the premium
+ * experience OFF. The blocks that turn it on are pinning PRESERVED V1.1/V2
+ * architecture - the episode lock, the modal, the "activate Premium" gate and
+ * its Rewards CTA - none of which a V1 viewer can reach.
+ * See services/config/v1-scope.ts.
+ */
+const ORIGINAL_PREMIUM_FLAG = process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED;
+
+function enablePremiumExperience() {
+  process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = 'true';
+}
+
+afterEach(() => {
+  process.env.EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED = ORIGINAL_PREMIUM_FLAG;
+});
+
 describe('DramaFeedItem', () => {
   beforeEach(() => {
     // The invariant registry is module-level state; without this a test that
@@ -1302,9 +1319,121 @@ describe('DramaFeedItem', () => {
   // copy instead - which blamed a perfectly healthy media server for a
   // missing entitlement. These cases pin the third truthful state: already
   // signed in, media fine, entitlement missing.
+  /**
+   * V1 (FREE + ADS): what a viewer meets when the backend refuses on
+   * entitlement grounds in a build that sells no entitlement.
+   *
+   * With `CONTENT_ACCESS_MODE=free` this refusal should not arrive at all, so
+   * reaching it means a server-side misconfiguration. The one thing that must
+   * NOT happen then is telling the viewer to activate Premium and sending them
+   * to Rewards to redeem a tier this build does not have - a dead end dressed
+   * as a next step. The V1 state says what is true and offers nothing.
+   */
+  describe('V1 entitlement refusal (free + ads: no premium to sell)', () => {
+    const ENTITLEMENT_REFUSAL = new ApiError(
+      403,
+      'ENTITLEMENT_REQUIRED',
+      'Entitlement required.'
+    );
+
+    it('shows the plain unavailable gate, never the premium one', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId, queryByTestId, getByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(getByTestId('feed-item-episode-unavailable-gate')).toBeTruthy();
+      expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+      expect(getByText('Episode ini belum bisa diputar')).toBeTruthy();
+    });
+
+    it('names no premium tier and offers no Rewards route out', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { queryByTestId, queryByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(queryByText('Episode Premium')).toBeNull();
+      expect(queryByText(/Aktifkan Premium/)).toBeNull();
+      expect(queryByTestId('feed-item-premium-required-action')).toBeNull();
+      expect(queryByText('Buka Rewards')).toBeNull();
+      expect(router.push).not.toHaveBeenCalledWith('/rewards');
+    });
+
+    it('does not blame the network for a refusal the server actually answered', async () => {
+      // "Check your internet connection" would be its own lie here: the
+      // request completed and the server said no.
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { queryByText } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(queryByText('Periksa koneksi internetmu, lalu coba lagi.')).toBeNull();
+    });
+
+    it('announces the state as a header, with no control to press', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId } = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      expect(getByTestId('feed-item-episode-unavailable-title').props.accessibilityRole).toBe(
+        'header'
+      );
+    });
+
+    it('still refuses to play the episode it was refused', async () => {
+      // Dropping the premium UPSELL must not be mistaken for dropping the
+      // refusal. No source is ever handed to the player.
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      await renderFeedItem(<DramaFeedItem video={video} {...baseProps} />);
+
+      expect((useVideoPlayer as jest.Mock).mock.calls.at(-1)?.[0]).toBeNull();
+    });
+
+    it('still sends a GUEST to sign in, which is a real and free next step', async () => {
+      // Signing in costs nothing and is not a paywall, so V1 keeps it. The
+      // guest branch is unchanged.
+      const { getTokens } = jest.requireMock<typeof import('@/services/auth/token-store')>(
+        '@/services/auth/token-store'
+      );
+
+      (getTokens as jest.Mock).mockReturnValue(null);
+      mockGetPlaybackAuthorization.mockRejectedValue(ENTITLEMENT_REFUSAL);
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const { getByTestId, queryByTestId } = await renderFeedItem(
+        <DramaFeedItem video={video} {...baseProps} />
+      );
+
+      expect(getByTestId('feed-item-signin-gate')).toBeTruthy();
+      expect(queryByTestId('feed-item-episode-unavailable-gate')).toBeNull();
+    });
+  });
+
   describe('premium entitlement gate (signed in, no entitlement)', () => {
     // `beforeEach` leaves a valid token in place, so every case in this block
     // is the SIGNED-IN viewer unless it says otherwise.
+    //
+    // THE WHOLE BLOCK RUNS WITH THE PREMIUM EXPERIENCE ON. It pins the
+    // preserved V1.1/V2 gate: the classifier's three-way reading of a backend
+    // refusal, the Rewards CTA, the Clear Display layering, and the rule that
+    // the gate follows the BACKEND's answer rather than the client's
+    // entitlement flag. None of that is deleted by V1 - only kept off screen.
+    // What a V1 viewer meets instead is pinned by the sibling block below.
+    beforeEach(() => {
+      enablePremiumExperience();
+    });
+
     const ENTITLEMENT_REFUSAL = new ApiError(
       403,
       'ENTITLEMENT_REQUIRED',
@@ -1823,7 +1952,51 @@ describe('DramaFeedItem', () => {
     expect(router.push).not.toHaveBeenCalled();
   });
 
+  it('V1: opens the series page for a premium next episode, with no modal', async () => {
+    // V1 IS FREE + ADS. The client-side lock could only produce a dialog about
+    // a tier the viewer cannot obtain, so the control behaves the same way it
+    // does for a free episode. Nothing is granted by letting the tap through -
+    // playback authorization is still the backend's.
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'premium', videoId: 'video-6' });
+    const { getByText, queryByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    await fireEvent.press(getByText('Episode Berikutnya'));
+
+    expect(queryByText('Episode ini termasuk konten premium.')).toBeNull();
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/series/[id]',
+      params: { id: video.seriesId },
+    });
+  });
+
+  it('V1: emits no premium_gate_hit for a premium next episode', async () => {
+    const { trackEvent } = jest.requireMock<
+      typeof import('@/services/analytics/analytics-queue')
+    >('@/services/analytics/analytics-queue');
+    const video = buildVideo();
+    const nextEpisode = buildEpisode({ accessType: 'premium', videoId: 'video-6' });
+    const { getByText } = await renderFeedItem(
+      <DramaFeedItem video={video} {...baseProps} nextEpisode={nextEpisode} />
+    );
+
+    await fireEvent.press(getByText('Episode Berikutnya'));
+
+    expect(trackEvent).not.toHaveBeenCalledWith('premium_gate_hit', expect.anything());
+    expect(trackEvent).toHaveBeenCalledWith('episode_navigate', {
+      videoId: 'video-6',
+      seriesId: nextEpisode.seriesId,
+      episodeNumber: nextEpisode.episodeNumber,
+      source: 'feed-next-episode',
+    });
+  });
+
   it('opens the premium modal instead of navigating for a premium next episode', async () => {
+    // PRESERVED V1.1/V2 BEHAVIOUR - see services/config/v1-scope.ts.
+    enablePremiumExperience();
+
     const video = buildVideo();
     const nextEpisode = buildEpisode({ accessType: 'premium', videoId: 'video-6' });
     const { getByText } = await renderFeedItem(
@@ -1837,6 +2010,8 @@ describe('DramaFeedItem', () => {
   });
 
   it('emits a premium_gate_hit analytics event when the premium modal blocks navigation (Phase 11)', async () => {
+    enablePremiumExperience();
+
     const { trackEvent } = jest.requireMock<
       typeof import('@/services/analytics/analytics-queue')
     >('@/services/analytics/analytics-queue');

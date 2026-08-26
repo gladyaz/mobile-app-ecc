@@ -1,3 +1,4 @@
+import { isPremiumExperienceEnabled } from '@/services/config/v1-scope';
 import type { TranslationKey } from '@/services/i18n/translations';
 import type { Translate } from '@/stores/language';
 import type { VideoCategoryFilter } from '@/services/videos/video-service';
@@ -93,7 +94,12 @@ function buildBadges(
   // the poster and is read out first. Hot follows as the editorial signal.
   const badges: DiscoverBadge[] = [];
 
-  if (card.hasPremiumEpisodes) {
+  // V1 IS FREE + ADS, so no poster carries an access badge: `Premium` on a
+  // poster tells a viewer some episodes cost something, and in V1 none do.
+  // The `hasPremiumEpisodes` FIELD is untouched on the card - it is the
+  // backend's own aggregate and the badge rule below is restored by a config
+  // change alone. See services/config/v1-scope.ts.
+  if (card.hasPremiumEpisodes && isPremiumExperienceEnabled()) {
     badges.push('Premium');
   }
 

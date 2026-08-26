@@ -634,22 +634,23 @@ describe('form input behaviour survives the focus treatment', () => {
   });
 
   describe('V1 provider gating', () => {
-    it('does not offer WhatsApp sign-in by default', async () => {
-      // The backend cannot enable WhatsApp in production (docs/api-contract.md,
-      // "Provider activation status"), so every attempt answers 503. Offering
-      // the method, walking the viewer to a phone-number screen, and only then
-      // refusing is worse than not offering it - and reads as a broken app
-      // rather than an unfinished feature.
+    it('OFFERS WhatsApp sign-in by default - it is a confirmed V1 feature', async () => {
+      // WhatsApp Login is in the V1 scope, so the entry point ships visible.
+      // Its production backend is being built on a parallel branch; until that
+      // lands the server answers 503 and the app says so specifically
+      // (`whatsapp.disabled`). An honest "not active on this server yet" is the
+      // accepted trade - what is NOT acceptable, and is pinned elsewhere, is
+      // faking a session the server never granted.
       delete process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
 
-      const { queryByTestId, getByTestId } = await render(<LoginScreen />);
+      const { getByTestId } = await render(<LoginScreen />);
 
-      expect(queryByTestId('login-whatsapp')).toBeNull();
-      // Email + password, the one method that works today, is untouched.
+      expect(getByTestId('login-whatsapp')).toBeTruthy();
+      // Email + password is untouched.
       expect(getByTestId('login-submit')).toBeTruthy();
     });
 
-    it('offers WhatsApp sign-in again once the build enables it, with no code change', async () => {
+    it('offers WhatsApp sign-in when the build sets the flag explicitly', async () => {
       process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = 'true';
 
       const { getByTestId } = await render(<LoginScreen />);
@@ -657,10 +658,21 @@ describe('form input behaviour survives the focus treatment', () => {
       expect(getByTestId('login-whatsapp')).toBeTruthy();
     });
 
+    it('withdraws the WhatsApp entry point only for the exact string "false"', async () => {
+      // The kill switch, kept so the method can be pulled by configuration
+      // without a code change. See services/auth/provider-availability.ts.
+      process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = 'false';
+
+      const { queryByTestId, getByTestId } = await render(<LoginScreen />);
+
+      expect(queryByTestId('login-whatsapp')).toBeNull();
+      expect(getByTestId('login-submit')).toBeTruthy();
+    });
+
     it('hides the whole provider block when no provider can be offered', async () => {
       // With nothing to put under it, the "or continue with" divider is just a
       // heading over empty space.
-      delete process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
+      process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = 'false';
       mockedIsSupported.mockReturnValue(false);
 
       const { queryByTestId } = await render(<LoginScreen />);

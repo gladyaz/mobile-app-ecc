@@ -8,6 +8,7 @@ import type {
   RewardWalletDto,
   RewardsSnapshotDto,
 } from '@/services/rewards/rewards-dto';
+import { isPremiumExperienceEnabled } from '@/services/config/v1-scope';
 import type { TranslationKey } from '@/services/i18n/translations';
 import type { Translate } from '@/stores/language';
 import type {
@@ -249,6 +250,30 @@ export function mapRedemption(dto: RewardRedemptionOfferDto, t: Translate): Rewa
   };
 }
 
+/**
+ * Which redemption offers a V1 build may show.
+ *
+ * V1 IS FREE + ADS. `grantsDays` is how the backend says "this offer buys
+ * premium access for N days", so an offer with `grantsDays > 0` IS the premium
+ * experience, sold for coins - a paid unlock of episodes that are already free
+ * in V1. Showing it would advertise a tier the app does not have and take
+ * coins for nothing.
+ *
+ * KEYED ON THE GRANT, NOT ON AN ID BLOCKLIST, on purpose. It states the actual
+ * rule ("V1 hides offers that grant premium"), so the first genuinely
+ * non-premium offer the backend adds - a Skip Next Ad perk, say, with
+ * `grantsDays: 0` - flows through to the Redeem panel with no client change.
+ * That is the forward boundary the coin-utility work plugs into; see
+ * services/config/v1-scope.ts.
+ *
+ * The offers themselves, their mapping, and the whole Redeem section are
+ * untouched: with every current offer filtered out, the panel renders its
+ * existing honest empty state rather than disappearing.
+ */
+function isOfferInV1Scope(dto: RewardRedemptionOfferDto): boolean {
+  return isPremiumExperienceEnabled() || dto.grantsDays <= 0;
+}
+
 export function mapRewardsSnapshot(dto: RewardsSnapshotDto, t: Translate): RewardsSnapshot {
   return {
     wallet: mapWallet(dto.wallet),
@@ -259,7 +284,9 @@ export function mapRewardsSnapshot(dto: RewardsSnapshotDto, t: Translate): Rewar
     // back-filled from anything on the device.
     watchTime: dto.watchTime ?? null,
     tasks: dto.tasks.map((task) => mapTask(task, t)),
-    redemptions: dto.redemptions.map((offer) => mapRedemption(offer, t)),
+    redemptions: dto.redemptions
+      .filter(isOfferInV1Scope)
+      .map((offer) => mapRedemption(offer, t)),
   };
 }
 

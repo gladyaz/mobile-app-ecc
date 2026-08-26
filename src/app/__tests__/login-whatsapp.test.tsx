@@ -170,6 +170,48 @@ describe('WhatsApp phone step', () => {
     );
   });
 
+  it('reports a WhatsApp DELIVERY outage separately from the provider being off', async () => {
+    // `WHATSAPP_PROVIDER_UNAVAILABLE` means the message definitively failed to
+    // go out - a transport error, an expired token, a paused template. The
+    // backend withdraws the challenge before answering, so nothing was spent
+    // and retrying immediately is honest advice. `WHATSAPP_AUTH_DISABLED` is
+    // the opposite: no configuration exists and retrying cannot help.
+    mockedStartWhatsAppOtp.mockRejectedValueOnce(
+      new ApiError(503, 'WHATSAPP_PROVIDER_UNAVAILABLE', 'Provider down.')
+    );
+
+    const { getByTestId, queryByTestId } = await render(<WhatsAppLoginScreen />);
+
+    await fireEvent.changeText(getByTestId('whatsapp-phone-input'), '81234567890');
+    await fireEvent.press(getByTestId('whatsapp-send-code'));
+
+    await waitFor(() =>
+      expect(getByTestId('whatsapp-error')).toHaveTextContent(/gagal dikirim lewat WhatsApp/)
+    );
+    // No code was sent, so there is nothing to type. Advancing here would
+    // strand the viewer on a code screen for a message that never left.
+    expect(queryByTestId('whatsapp-otp-input')).toBeNull();
+  });
+
+  it('leaves the send button usable after a delivery outage, because a retry can succeed', async () => {
+    mockedStartWhatsAppOtp
+      .mockRejectedValueOnce(new ApiError(503, 'WHATSAPP_PROVIDER_UNAVAILABLE', 'Down.'))
+      .mockResolvedValueOnce({ expiresInSeconds: 300, resendAvailableInSeconds: 30 });
+
+    const { getByTestId } = await render(<WhatsAppLoginScreen />);
+
+    await fireEvent.changeText(getByTestId('whatsapp-phone-input'), '81234567890');
+    await fireEvent.press(getByTestId('whatsapp-send-code'));
+    await waitFor(() => expect(getByTestId('whatsapp-error')).toBeTruthy());
+
+    // No cooldown was spent on a code that was never sent, so the second
+    // attempt is a normal first send rather than a rate-limited one.
+    await fireEvent.press(getByTestId('whatsapp-send-code'));
+
+    await waitFor(() => expect(getByTestId('whatsapp-otp-input')).toBeTruthy());
+    expect(mockedStartWhatsAppOtp).toHaveBeenCalledTimes(2);
+  });
+
   it('stays on the phone step when the code could not be sent', async () => {
     mockedStartWhatsAppOtp.mockRejectedValueOnce(new ApiError(0, 'NETWORK_ERROR', 'Offline.'));
 

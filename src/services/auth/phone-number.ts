@@ -65,11 +65,58 @@ function buildIndonesianResult(national: string): PhoneNormalizationResult {
 }
 
 /**
+ * An already-international digit string (the `+` or `00` prefix stripped),
+ * resolved to E.164.
+ *
+ * Shared by BOTH international spellings so the two cannot diverge: before
+ * this existed, `+62812...` was accepted and the identical number written
+ * `0062812...` was rejected, because the `00` fell into the Indonesian
+ * national branch below and came out as a "national number" starting `62`.
+ */
+function buildInternationalResult(digits: string): PhoneNormalizationResult {
+  if (digits.startsWith(INDONESIA_COUNTRY_CODE)) {
+    return buildIndonesianResult(digits.slice(INDONESIA_COUNTRY_CODE.length));
+  }
+
+  // Another country's number, typed deliberately with its own country
+  // code. Length is all this app can honestly check.
+  if (digits.length < MIN_E164_DIGITS || digits.length > MAX_E164_DIGITS) {
+    return { status: 'invalid' };
+  }
+
+  // A country calling code never begins with 0, so `+0...` / `000...` is not
+  // an international number however it was typed. Refused rather than
+  // silently trimmed: dropping an unexpected leading digit is how two
+  // different inputs quietly collapse onto one identity.
+  if (digits.startsWith('0')) {
+    return { status: 'invalid' };
+  }
+
+  return { status: 'valid', e164: `+${digits}` };
+}
+
+/**
  * Normalizes user-typed input to an E.164 number.
  *
  * Accepted, all resolving to the same `+62812...`:
- * `0812...`, `812...`, `62812...`, `+62812...`, and any of those with
- * spaces, dashes or parentheses.
+ * `0812...`, `812...`, `62812...`, `+62812...`, `0062812...`, and any of
+ * those with spaces, dashes or parentheses.
+ *
+ * AGREEING WITH THE BACKEND IS THE POINT, not matching it character for
+ * character. The server's `normalizePhoneToE164` is the single source of
+ * truth for what a number MEANS - it is what gets stored as the identity key
+ * - and it accepts `+`, the `00` international access prefix, and a leading
+ * `0` read as Indonesian. This function accepts all three and, additionally,
+ * a bare `812...`/`62812...` because that is how people type their own number
+ * into a field that already shows `+62`. That extra tolerance cannot
+ * disagree with the server, because the value SENT is always the canonical
+ * `+62812...` the server would itself have produced - the client resolves the
+ * spelling, it never invents an identity.
+ *
+ * The one place this is deliberately STRICTER is the Indonesian
+ * national-number check (`8` + 8-12 digits): a `+62` landline is a number
+ * WhatsApp cannot deliver to, and refusing it here costs a viewer nothing
+ * that the OTP round trip would not have refused a minute later.
  */
 export function normalizePhoneNumber(input: string): PhoneNormalizationResult {
   const cleaned = stripFormatting(input);
@@ -79,23 +126,19 @@ export function normalizePhoneNumber(input: string): PhoneNormalizationResult {
   }
 
   if (cleaned.startsWith('+')) {
-    const digits = cleaned.slice(1);
+    return buildInternationalResult(cleaned.slice(1));
+  }
 
-    if (digits.startsWith(INDONESIA_COUNTRY_CODE)) {
-      return buildIndonesianResult(digits.slice(INDONESIA_COUNTRY_CODE.length));
-    }
-
-    // Another country's number, typed deliberately with its own country
-    // code. Length is all this app can honestly check.
-    if (digits.length < MIN_E164_DIGITS || digits.length > MAX_E164_DIGITS) {
-      return { status: 'invalid' };
-    }
-
-    return { status: 'valid', e164: cleaned };
+  // `0062812...` - the ITU international access prefix written out. Checked
+  // BEFORE the single-leading-zero branch below, which would otherwise read
+  // it as an Indonesian national number and reject a form the backend
+  // accepts.
+  if (cleaned.startsWith('00')) {
+    return buildInternationalResult(cleaned.slice(2));
   }
 
   if (cleaned.startsWith('0')) {
-    return buildIndonesianResult(cleaned.replace(/^0+/, ''));
+    return buildIndonesianResult(cleaned.slice(1));
   }
 
   if (cleaned.startsWith(INDONESIA_COUNTRY_CODE)) {

@@ -5,6 +5,43 @@ import {
 } from '@/services/auth/phone-number';
 
 describe('normalizePhoneNumber', () => {
+  it('accepts the 00 international access prefix, which the backend also accepts', () => {
+    // The backend's `normalizePhoneToE164` treats `00` exactly like `+`. This
+    // client used to reject it: the `00` fell into the Indonesian national
+    // branch and came out as a "national number" starting 62. The same human
+    // number, written two legitimate ways, must not be accepted one way and
+    // refused the other.
+    expect(normalizePhoneNumber('006281234567890')).toEqual({
+      status: 'valid',
+      e164: '+6281234567890',
+    });
+  });
+
+  it('resolves every accepted Indonesian spelling to ONE identity', () => {
+    // Uniqueness of the E.164 value is what guarantees one phone number maps
+    // to at most one account. Four spellings, one identity.
+    const forms = ['081234567890', '81234567890', '6281234567890', '+62 812-3456-7890'];
+    const results = forms.map((form) => normalizePhoneNumber(form));
+
+    for (const result of results) {
+      expect(result).toEqual({ status: 'valid', e164: '+6281234567890' });
+    }
+  });
+
+  it('accepts another country written with 00, not only with +', () => {
+    expect(normalizePhoneNumber('001234567890')).toEqual({
+      status: 'valid',
+      e164: '+1234567890',
+    });
+  });
+
+  it('refuses a leading zero after the international prefix rather than trimming it', () => {
+    // A country calling code never begins with 0. Silently dropping the digit
+    // is how two different inputs quietly collapse onto one identity.
+    expect(normalizePhoneNumber('+01234567890').status).toBe('invalid');
+    expect(normalizePhoneNumber('0001234567890').status).toBe('invalid');
+  });
+
   it('normalizes every Indonesian form of the same number to one E.164 value', () => {
     // Arrange: the four ways a real person types the same phone number.
     const inputs = ['081234567890', '81234567890', '6281234567890', '+6281234567890'];

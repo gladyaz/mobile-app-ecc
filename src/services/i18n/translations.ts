@@ -424,6 +424,7 @@ const id = {
   'whatsapp.sendCode': 'Kirim Kode',
   'whatsapp.sending': 'Mengirim...',
   'whatsapp.sendFailed': 'Kode gagal dikirim. Periksa koneksi kamu dan coba lagi.',
+  'whatsapp.providerUnavailable': 'Kode gagal dikirim lewat WhatsApp. Coba kirim lagi.',
   'whatsapp.tooManyRequests': 'Terlalu banyak permintaan. Tunggu sebentar sebelum mencoba lagi.',
   'whatsapp.otpSubtitle': 'Masukkan 6 digit kode yang kami kirim ke {phone}.',
   'whatsapp.otpLabel': 'Kode Verifikasi',
@@ -482,6 +483,49 @@ const id = {
   'rewards.watchTarget': 'target {target} menit',
   'rewards.footnote': 'Koin hanya berlaku di aplikasi ini dan tidak dapat diuangkan.',
   'rewards.ctaInsufficient': 'Kurang',
+
+  // ---------------------------------------------------------------------
+  // REWARDS V1 EARN AND SPEND - social missions, watch milestones, ad perks.
+  //
+  // WORDING RULE, and it is not a style preference: a social mission is
+  // USER_CONFIRMED, never platform-verified. Instagram, TikTok and YouTube
+  // expose no API that answers "did user X follow page Y", so the backend
+  // cannot check and neither can this app. "Follow Instagram" is a fine CTA;
+  // any string here implying the app or the server CONFIRMED the follow
+  // happened would be a claim nothing in the system can support.
+  // ---------------------------------------------------------------------
+  'rewards.taskWatchEpisodesTitle': 'Tonton Episode',
+  'rewards.taskWatchEpisodesDesc': 'Mulai episode berbeda hari ini',
+  'rewards.ctaClaimed': 'Sudah diklaim',
+  'rewards.ctaConfirmFollow': 'Saya sudah follow',
+  'rewards.taskResetsAt': 'Reset {time}',
+  'rewards.progressEpisodes': '{current}/{target} episode',
+  // Says who confirmed, and stops there. It does not say "terverifikasi".
+  'rewards.userConfirmedNote': 'Dihitung dari konfirmasimu sendiri.',
+  'rewards.socialOpenHint': 'Buka profilnya, follow, lalu kembali dan konfirmasi.',
+  'rewards.socialConfirmHint': 'Sudah follow? Tekan konfirmasi untuk klaim koinnya.',
+  'rewards.sectionPerks': 'Perk aktif',
+  'rewards.perksEmpty': 'Belum ada perk aktif.',
+  'rewards.perkSkipTitle': 'Lewati iklan',
+  'rewards.perkPassTitle': 'Bebas iklan',
+  'rewards.perkSkipDetail': 'Sisa {uses} kali',
+  'rewards.perkPassDetail': 'Tanpa iklan sela sampai waktunya habis',
+  'rewards.perkExpiresAt': 'Berlaku sampai {time}',
+  'rewards.offerSkipAdTitle': 'Lewati 1 Iklan',
+  'rewards.offerAdPassTitle': 'Bebas Iklan',
+  'rewards.offerSkipAdDesc': 'Lewati {uses} iklan sela berikutnya.',
+  'rewards.offerAdPassDesc': 'Tanpa iklan sela selama {minutes} menit.',
+  'rewards.reasonSocialAction': 'Misi sosial',
+  'rewards.reasonWatchMilestone': 'Misi menonton',
+  'rewards.reasonAdPerk': 'Tukar perk iklan',
+  'rewards.missionOpenFailed': 'Profil tidak bisa dibuka. Coba lagi.',
+  'rewards.missionClaimSuccess': '+{points} koin dari {title}.',
+  'rewards.missionClaimAlready': '"{title}" sudah pernah diklaim.',
+  'rewards.missionNotStarted': 'Buka profilnya dulu, lalu konfirmasi.',
+  'rewards.missionTooSoon': 'Tunggu sebentar, lalu konfirmasi lagi.',
+  'rewards.missionNotComplete': '"{title}" belum selesai.',
+  'rewards.missionUnavailable': '"{title}" belum tersedia di sini.',
+  'rewards.missionNotFound': '"{title}" sudah tidak ada.',
 } as const;
 
 export type TranslationKey = keyof typeof id;
@@ -829,6 +873,7 @@ const en: Copy = {
   'whatsapp.sendCode': 'Send Code',
   'whatsapp.sending': 'Sending...',
   'whatsapp.sendFailed': 'Could not send the code. Check your connection and try again.',
+  'whatsapp.providerUnavailable': "The code couldn't be sent over WhatsApp. Try sending it again.",
   'whatsapp.tooManyRequests': 'Too many requests. Wait a moment before trying again.',
   'whatsapp.otpSubtitle': 'Enter the 6-digit code we sent to {phone}.',
   'whatsapp.otpLabel': 'Verification code',
@@ -887,6 +932,48 @@ const en: Copy = {
   'rewards.watchTarget': 'target {target} minutes',
   'rewards.footnote': 'Coins work only inside this app and cannot be exchanged for cash.',
   'rewards.ctaInsufficient': 'Not enough',
+
+  // ---------------------------------------------------------------------
+  // REWARDS V1 EARN AND SPEND - social missions, watch milestones, ad perks.
+  //
+  // WORDING RULE, and it is not a style preference: a social mission is
+  // USER_CONFIRMED, never platform-verified. Instagram, TikTok and YouTube
+  // expose no API that answers "did user X follow page Y", so the backend
+  // cannot check and neither can this app. "Follow Instagram" is a fine CTA;
+  // any string here implying the app or the server CONFIRMED the follow
+  // happened would be a claim nothing in the system can support.
+  // ---------------------------------------------------------------------
+  'rewards.taskWatchEpisodesTitle': 'Watch Episodes',
+  'rewards.taskWatchEpisodesDesc': 'Start different episodes today',
+  'rewards.ctaClaimed': 'Claimed',
+  'rewards.ctaConfirmFollow': "I've followed",
+  'rewards.taskResetsAt': 'Resets {time}',
+  'rewards.progressEpisodes': '{current}/{target} episodes',
+  'rewards.userConfirmedNote': 'Counted from your own confirmation.',
+  'rewards.socialOpenHint': 'Open the profile, follow, then come back and confirm.',
+  'rewards.socialConfirmHint': 'Followed? Confirm to claim the coins.',
+  'rewards.sectionPerks': 'Active perks',
+  'rewards.perksEmpty': 'No active perks yet.',
+  'rewards.perkSkipTitle': 'Ad skip',
+  'rewards.perkPassTitle': 'Ad-free',
+  'rewards.perkSkipDetail': '{uses} left',
+  'rewards.perkPassDetail': 'No interstitials until it runs out',
+  'rewards.perkExpiresAt': 'Valid until {time}',
+  'rewards.offerSkipAdTitle': 'Skip One Ad',
+  'rewards.offerAdPassTitle': 'Ad-Free Pass',
+  'rewards.offerSkipAdDesc': 'Skip the next {uses} interstitial ad.',
+  'rewards.offerAdPassDesc': 'No interstitial ads for {minutes} minutes.',
+  'rewards.reasonSocialAction': 'Social mission',
+  'rewards.reasonWatchMilestone': 'Watch mission',
+  'rewards.reasonAdPerk': 'Ad perk redeemed',
+  'rewards.missionOpenFailed': "That profile couldn't be opened. Try again.",
+  'rewards.missionClaimSuccess': '+{points} coins from {title}.',
+  'rewards.missionClaimAlready': '"{title}" was already claimed.',
+  'rewards.missionNotStarted': 'Open the profile first, then confirm.',
+  'rewards.missionTooSoon': 'Hold on a moment, then confirm again.',
+  'rewards.missionNotComplete': '"{title}" is not finished yet.',
+  'rewards.missionUnavailable': '"{title}" is not available here.',
+  'rewards.missionNotFound': '"{title}" no longer exists.',
 };
 
 const zh: Copy = {
@@ -1228,6 +1315,7 @@ const zh: Copy = {
   'whatsapp.sendCode': '发送验证码',
   'whatsapp.sending': '发送中...',
   'whatsapp.sendFailed': '验证码发送失败，请检查网络后重试。',
+  'whatsapp.providerUnavailable': '验证码未能通过 WhatsApp 发送，请重新发送。',
   'whatsapp.tooManyRequests': '请求过于频繁，请稍后再试。',
   'whatsapp.otpSubtitle': '请输入我们发送到 {phone} 的 6 位验证码。',
   'whatsapp.otpLabel': '验证码',
@@ -1285,6 +1373,48 @@ const zh: Copy = {
   'rewards.watchTarget': '目标 {target} 分钟',
   'rewards.footnote': '金币仅可在本应用内使用，不可兑换现金。',
   'rewards.ctaInsufficient': '不足',
+
+  // ---------------------------------------------------------------------
+  // REWARDS V1 EARN AND SPEND - social missions, watch milestones, ad perks.
+  //
+  // WORDING RULE, and it is not a style preference: a social mission is
+  // USER_CONFIRMED, never platform-verified. Instagram, TikTok and YouTube
+  // expose no API that answers "did user X follow page Y", so the backend
+  // cannot check and neither can this app. "Follow Instagram" is a fine CTA;
+  // any string here implying the app or the server CONFIRMED the follow
+  // happened would be a claim nothing in the system can support.
+  // ---------------------------------------------------------------------
+  'rewards.taskWatchEpisodesTitle': '观看剧集',
+  'rewards.taskWatchEpisodesDesc': '今天观看不同的剧集',
+  'rewards.ctaClaimed': '已领取',
+  'rewards.ctaConfirmFollow': '我已关注',
+  'rewards.taskResetsAt': '{time} 重置',
+  'rewards.progressEpisodes': '{current}/{target} 集',
+  'rewards.userConfirmedNote': '依据你本人的确认计入。',
+  'rewards.socialOpenHint': '打开主页关注，然后返回确认。',
+  'rewards.socialConfirmHint': '关注好了？点击确认领取金币。',
+  'rewards.sectionPerks': '当前权益',
+  'rewards.perksEmpty': '暂无可用权益。',
+  'rewards.perkSkipTitle': '跳过广告',
+  'rewards.perkPassTitle': '免广告',
+  'rewards.perkSkipDetail': '剩余 {uses} 次',
+  'rewards.perkPassDetail': '有效期内不显示插屏广告',
+  'rewards.perkExpiresAt': '有效期至 {time}',
+  'rewards.offerSkipAdTitle': '跳过一次广告',
+  'rewards.offerAdPassTitle': '免广告通行证',
+  'rewards.offerSkipAdDesc': '跳过接下来 {uses} 次插屏广告。',
+  'rewards.offerAdPassDesc': '{minutes} 分钟内不显示插屏广告。',
+  'rewards.reasonSocialAction': '社交任务',
+  'rewards.reasonWatchMilestone': '观看任务',
+  'rewards.reasonAdPerk': '兑换广告权益',
+  'rewards.missionOpenFailed': '无法打开该主页，请重试。',
+  'rewards.missionClaimSuccess': '{title} 获得 +{points} 金币。',
+  'rewards.missionClaimAlready': '“{title}”已经领取过了。',
+  'rewards.missionNotStarted': '请先打开主页，然后再确认。',
+  'rewards.missionTooSoon': '请稍等片刻再确认。',
+  'rewards.missionNotComplete': '“{title}”尚未完成。',
+  'rewards.missionUnavailable': '此处暂不提供“{title}”。',
+  'rewards.missionNotFound': '“{title}”已不存在。',
 };
 
 export const translations: Record<Language, Copy> = { id, en, zh };

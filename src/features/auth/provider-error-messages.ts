@@ -82,6 +82,24 @@ export function describeOtpRequestError(error: unknown): TranslationKey {
   switch (codeOf(error)) {
     case 'WHATSAPP_AUTH_DISABLED':
       return 'whatsapp.disabled';
+    /**
+     * DELIVERY DEFINITIVELY FAILED, and it is not about this number.
+     *
+     * The backend returns this for a transport error, a 5xx, an expired
+     * access token, or a template that does not exist or is paused - causes
+     * that answer identically for every recipient, which is why it can be
+     * reported specifically without becoming a phone-number oracle the way a
+     * per-number reason would.
+     *
+     * IT GETS ITS OWN COPY BECAUSE THE ADVICE IS DIFFERENT. No challenge
+     * survives this response - the backend withdraws the row before throwing,
+     * so no cooldown is spent and no slot is taken from the number's hourly
+     * budget. "Try again" is therefore true and immediate here, where for a
+     * 429 it would be a lie. The screen leaves resend enabled for exactly
+     * this reason: only the 429 branch re-locks the countdown.
+     */
+    case 'WHATSAPP_PROVIDER_UNAVAILABLE':
+      return 'whatsapp.providerUnavailable';
     case 'INVALID_PHONE_NUMBER':
       return 'whatsapp.phoneInvalid';
     default:

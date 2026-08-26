@@ -44,6 +44,28 @@ describe('describeGoogleLoginError', () => {
 });
 
 describe('describeOtpRequestError', () => {
+  it('gives WHATSAPP_PROVIDER_UNAVAILABLE its own message, because the advice differs', () => {
+    // Delivery definitively failed for a reason that has nothing to do with
+    // WHICH number was targeted - a transport error, an expired token, a
+    // paused template. No challenge survives it, so no cooldown was spent and
+    // no slot was taken from the number's hourly budget: "try again" is true
+    // and immediate here, where for a 429 it would be a lie.
+    expect(
+      describeOtpRequestError(new ApiError(503, 'WHATSAPP_PROVIDER_UNAVAILABLE', 'Down.'))
+    ).toBe('whatsapp.providerUnavailable');
+  });
+
+  it('keeps the provider outage distinct from the provider being switched off', () => {
+    // `WHATSAPP_AUTH_DISABLED` is a deployment that has no WhatsApp
+    // configuration at all - retrying cannot help. The two must not collapse.
+    expect(describeOtpRequestError(new ApiError(503, 'WHATSAPP_AUTH_DISABLED', 'Off.'))).toBe(
+      'whatsapp.disabled'
+    );
+    expect(
+      describeOtpRequestError(new ApiError(503, 'WHATSAPP_PROVIDER_UNAVAILABLE', 'Down.'))
+    ).not.toBe('whatsapp.disabled');
+  });
+
   it('treats BOTH 429 limiters the same, by status rather than code', () => {
     // The per-IP route throttle is applied by the framework and carries the
     // generic `HTTP_ERROR` code, so status is the only reliable signal.

@@ -3683,6 +3683,51 @@ describe('DramaFeedItem', () => {
       );
     }
 
+    // The SAME ladder, but tokened. A re-authorization returns the same
+    // rendition NAMES behind entirely new URLs (the gateway token is
+    // path-embedded and dies at `expiresAt`), which is the shape every
+    // refresh case below turns on.
+    function tokenedMaster(token: string) {
+      return `https://gateway.example.com/t/${token}/master.m3u8`;
+    }
+
+    function tokenedVariant(token: string, quality: string) {
+      return `https://gateway.example.com/t/${token}/${quality}/index.m3u8`;
+    }
+
+    function tokenedLadder(token: string, ...qualities: readonly number[]) {
+      return qualities.map((shortSide) => ({
+        quality: `${shortSide}p`,
+        width: shortSide,
+        height: Math.round((shortSide * 16) / 9),
+        url: tokenedVariant(token, `${shortSide}p`),
+      }));
+    }
+
+    /**
+     * Queues two grants: the first expires in 40s, so the component's own 30s
+     * refresh margin fires the second exactly 10s in - the same timing every
+     * other proactive-refresh case in this file uses.
+     */
+    function authorizeHlsThenRefreshWith(
+      firstQualities: readonly number[],
+      secondQualities: readonly number[]
+    ) {
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildHlsPlaybackAuthorization({
+          masterUrl: tokenedMaster('first'),
+          renditions: tokenedLadder('first', ...firstQualities),
+          expiresAt: new Date(Date.now() + 40000).toISOString(),
+        })
+      );
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(
+        buildHlsPlaybackAuthorization({
+          masterUrl: tokenedMaster('second'),
+          renditions: tokenedLadder('second', ...secondQualities),
+        })
+      );
+    }
+
     async function openSheet(getByLabelText: (label: string) => unknown) {
       await act(async () => {
         fireEvent.press(getByLabelText('Pengaturan pemutaran') as never);
@@ -3963,6 +4008,290 @@ describe('DramaFeedItem', () => {
       expect(getByTestId('playback-settings-clear-display-row')).toBeTruthy();
       expect(getByTestId('playback-settings-fullscreen')).toBeTruthy();
       expect(getByTestId('playback-settings-quality-auto')).toBeTruthy();
+    });
+
+    it('re-resolves a manual pick against a REFRESHED authorization, never pinning the dead URL', async () => {
+      // THE invariant that makes storing a rendition NAME (rather than its
+      // tokened URL) load-bearing rather than stylistic: the variant URL the
+      // viewer picked at 0s is dead by `expiresAt`. Holding the name means
+      // the pre-expiry refresh re-resolves 720p against the FRESH grant, and
+      // the existing generation swap carries the position across.
+      jest.useFakeTimers();
+      try {
+        authorizeHlsThenRefreshWith([360, 720], [360, 720]);
+
+        const { getByLabelText, getByTestId } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+        );
+        await openSheet(getByLabelText);
+        await act(async () => {
+          fireEvent.press(getByTestId('playback-settings-quality-720p'));
+        });
+
+        expect(latestSourceUri()).toBe(tokenedVariant('first', '720p'));
+
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10000);
+        });
+
+        expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(2);
+        // Still 720p, and now on the LIVE token - not the one about to die.
+        expect(latestSourceUri()).toBe(tokenedVariant('second', '720p'));
+        expect(latestSourceUri()).not.toBe(tokenedVariant('first', '720p'));
+        expect(getByTestId('playback-settings-quality-720p').props.accessibilityState).toEqual(
+          expect.objectContaining({ selected: true })
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('falls back to Auto - in the menu AND in the source - when a refresh drops the pinned rung', async () => {
+      // A re-transcode can return a shorter ladder. The player degrades to
+      // the adaptive master rather than a black frame; the menu must agree,
+      // or the checkmark would sit on a rendition nothing is playing.
+      jest.useFakeTimers();
+      try {
+        authorizeHlsThenRefreshWith([360, 720, 1080], [360, 720]);
+
+        const { getByLabelText, getByTestId, queryByTestId } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+        );
+        await openSheet(getByLabelText);
+        await act(async () => {
+          fireEvent.press(getByTestId('playback-settings-quality-1080p'));
+        });
+
+        expect(latestSourceUri()).toBe(tokenedVariant('first', '1080p'));
+
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10000);
+        });
+
+        expect(latestSourceUri()).toBe(tokenedMaster('second'));
+        expect(queryByTestId('playback-settings-quality-1080p')).toBeNull();
+        expect(getByTestId('playback-settings-quality-auto').props.accessibilityState).toEqual(
+          expect.objectContaining({ selected: true })
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('withdraws the whole section when a refreshed ladder no longer offers a real choice', async () => {
+      // One rung is not a choice - "Auto" and that rung are the same stream
+      // under two names. The section disappears rather than becoming a
+      // one-entry menu, and playback continues on the fresh grant.
+      jest.useFakeTimers();
+      try {
+        authorizeHlsThenRefreshWith([360, 720], [720]);
+
+        const { getByLabelText, getByTestId, queryByTestId, queryByText } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+        );
+        await openSheet(getByLabelText);
+        await act(async () => {
+          fireEvent.press(getByTestId('playback-settings-quality-720p'));
+        });
+
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10000);
+        });
+
+        expect(queryByText('Kualitas')).toBeNull();
+        expect(queryByTestId('playback-settings-quality-auto')).toBeNull();
+        expect(queryByTestId('playback-settings-quality-720p')).toBeNull();
+        // The rest of the sheet is untouched, and the source moved to the
+        // live token rather than staying on the expiring one.
+        expect(getByTestId('playback-settings-clear-display-row')).toBeTruthy();
+        expect(latestSourceUri()).toContain('/t/second/');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('leaves no stale quality UI behind when a later authorization fails outright', async () => {
+      jest.useFakeTimers();
+      try {
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildHlsPlaybackAuthorization({
+            masterUrl: tokenedMaster('first'),
+            renditions: tokenedLadder('first', 360, 720),
+            expiresAt: new Date(Date.now() + 40000).toISOString(),
+          })
+        );
+        mockGetPlaybackAuthorization.mockRejectedValue(new Error('gateway unreachable'));
+
+        const { getByLabelText, getByTestId, queryByTestId } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+        );
+        await openSheet(getByLabelText);
+        await act(async () => {
+          fireEvent.press(getByTestId('playback-settings-quality-720p'));
+        });
+
+        expect(getByTestId('playback-settings-quality-720p')).toBeTruthy();
+
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10000);
+        });
+
+        // The failure takes the entire settings surface with it (the sheet is
+        // rendered under `hasPlaybackError ? null : ...`), so there is no menu
+        // left claiming a rendition nothing is playing - and no crash.
+        expect(queryByTestId('playback-settings-sheet')).toBeNull();
+        expect(queryByTestId('playback-settings-quality-720p')).toBeNull();
+        expect(queryByTestId('playback-settings-quality-auto')).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('carries the chosen playback speed onto the rendition-swapped player', async () => {
+      // A quality change replaces the player, so the rate has to be
+      // re-applied to the incoming generation - the same way it already
+      // survives a token refresh. Losing it would silently drop a viewer
+      // watching at 1.5x back to 1x for picking a different rung.
+      authorizeHls(360, 720);
+
+      const { getByLabelText, getByTestId } = await renderFeedItem(
+        <DramaFeedItem video={buildVideo()} {...baseProps} isActive />
+      );
+      await act(async () => {});
+      await openSheet(getByLabelText);
+
+      await act(async () => {
+        fireEvent.press(getByLabelText('Kecepatan 1.5x'));
+      });
+      await act(async () => {
+        fireEvent.press(getByTestId('playback-settings-quality-720p'));
+      });
+
+      const incomingPlayer = findPlayerByUri(variantUrl('720p'));
+
+      expect(incomingPlayer?.playbackRate).toBe(1.5);
+      expect(incomingPlayer?.rateWrites).toEqual([1.5]);
+      expect(getByLabelText('Kecepatan 1.5x').props.accessibilityState).toEqual(
+        expect.objectContaining({ selected: true })
+      );
+    });
+
+    it('rapid 360p -> 540p -> 720p leaves only the newest generation live', async () => {
+      // Every swap hands back a new player. An older generation reclaiming
+      // ownership would resume the rung the viewer already moved off, and
+      // two live players would be audible at once.
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      try {
+        authorizeHls(360, 540, 720);
+
+        const video = buildVideo();
+        const { getByLabelText, getByTestId, rerender } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} isActive />
+        );
+        await act(async () => {});
+
+        const masterPlayer = findPlayerByUri(MASTER_URL);
+
+        // Give the invariant registry something to observe: the outgoing
+        // generation genuinely reports itself playing at each swap.
+        if (masterPlayer) {
+          (masterPlayer as unknown as { playing: boolean }).playing = true;
+        }
+        await act(async () => {
+          rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+        });
+
+        await openSheet(getByLabelText);
+
+        for (const rung of ['360p', '540p', '720p']) {
+          await act(async () => {
+            fireEvent.press(getByTestId(`playback-settings-quality-${rung}`));
+          });
+
+          const justCreated = findPlayerByUri(variantUrl(rung));
+
+          if (justCreated) {
+            (justCreated as unknown as { playing: boolean }).playing = true;
+          }
+          await act(async () => {
+            rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+          });
+        }
+
+        const player360 = findPlayerByUri(variantUrl('360p'));
+        const player540 = findPlayerByUri(variantUrl('540p'));
+        const player720 = findPlayerByUri(variantUrl('720p'));
+
+        expect(latestSourceUri()).toBe(variantUrl('720p'));
+        // Every superseded generation was stopped by the existing
+        // outgoing-player cleanup, in order.
+        expect(masterPlayer?.pause).toHaveBeenCalled();
+        expect(player360?.pause).toHaveBeenCalled();
+        expect(player540?.pause).toHaveBeenCalled();
+        expect(player720?.play).toHaveBeenCalled();
+        expect(getByTestId('playback-settings-quality-720p').props.accessibilityState).toEqual(
+          expect.objectContaining({ selected: true })
+        );
+        expect(
+          consoleErrorSpy.mock.calls.some((call) => call[0] === '[PlaybackInvariantViolation]')
+        ).toBe(false);
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    it('a video change while a rendition is pinned resolves the NEW video adaptively, not the old rung', async () => {
+      // The second video's grant is deliberately left in flight across the
+      // swap, so the assertion is about what lands when it finally resolves -
+      // not about a value that happened to already be there.
+      jest.useFakeTimers();
+      try {
+        const secondGrant = createDeferred<HlsPlaybackAuthorization>();
+
+        mockGetPlaybackAuthorization.mockResolvedValueOnce(
+          buildHlsPlaybackAuthorization({
+            masterUrl: tokenedMaster('first'),
+            renditions: tokenedLadder('first', 360, 720),
+          })
+        );
+        mockGetPlaybackAuthorization.mockReturnValueOnce(secondGrant.promise);
+
+        const { getByLabelText, getByTestId, rerender } = await renderFeedItem(
+          <DramaFeedItem video={buildVideo({ id: 'video-1' })} {...baseProps} isActive />
+        );
+        await openSheet(getByLabelText);
+        await act(async () => {
+          fireEvent.press(getByTestId('playback-settings-quality-720p'));
+        });
+        expect(latestSourceUri()).toBe(tokenedVariant('first', '720p'));
+
+        await act(async () => {
+          rerender(<DramaFeedItem video={buildVideo({ id: 'video-2' })} {...baseProps} isActive />);
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(TEST_PLAYBACK_AUTH_SETTLE_MS);
+        });
+
+        await act(async () => {
+          secondGrant.resolve(
+            buildHlsPlaybackAuthorization({
+              masterUrl: tokenedMaster('second'),
+              renditions: tokenedLadder('second', 360, 720),
+            })
+          );
+          await secondGrant.promise;
+        });
+
+        // Auto, on the new video's own master - the previous clip's pinned
+        // rung did not follow the viewer here.
+        expect(latestSourceUri()).toBe(tokenedMaster('second'));
+        expect(getByTestId('playback-settings-quality-auto').props.accessibilityState).toEqual(
+          expect.objectContaining({ selected: true })
+        );
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 

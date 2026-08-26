@@ -2,7 +2,7 @@
 
 Decision date: 2026-08-26. This document is the reference for why the premium
 surfaces are absent from a V1 build without being absent from the repository,
-and for the two backend contracts V1 is still waiting on.
+and for the two backend contracts V1 was waiting on - both now defined and wired.
 
 ## The scope
 
@@ -70,67 +70,106 @@ boolean would be the client granting itself a paid perk.
 
 **V1 ships no such perk**, and no V1 redemption grants one.
 
-## Open backend contracts
+## Backend contracts — now defined, and wired
 
-V1 mobile work is complete against both of the surfaces below **as currently
-documented**. What remains is confirmation from the parallel backend sessions.
+Both surfaces below were open when this document was written. **Both are now
+specified, implemented on the backend, and wired on this side against the real
+contracts** rather than against a proposal. What is left in each case is named
+at the end of its section, and in both cases it is external configuration —
+not code.
 
-### 1. WhatsApp Login
+### 1. WhatsApp Login — wired to the canonical contract
 
-**Mobile state: complete and real.** `startWhatsAppOtp` → `verifyWhatsAppOtp` →
-session, against the canonical endpoints in `docs/api-contract.md`. Payloads are
-validated at the boundary, `ApiError` is propagated untouched, and no build
-hardcodes an OTP or mints a session the server did not grant.
+Source of truth: the backend's `docs/auth-identity-api-contract.md` (§3.3, §4,
+§5) and `docs/WHATSAPP_LOGIN_SETUP.md`.
 
-**The button is visible by default** — it is a confirmed V1 feature and is not
-withdrawn while its backend is built. `EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false`
-is the kill switch, and the release preflight **warns** so each build makes the
-choice deliberately.
+`startWhatsAppOtp` → `verifyWhatsAppOtp` → session, against
+`POST /auth/whatsapp/otp/request` and `POST /auth/whatsapp/otp/verify`, bodies
+`{ phone }` and `{ phone, code }`. **The phone number is the challenge handle;
+there is no `challengeId` and there will not be one** — at most one challenge is
+live per number, enforced by a database `UNIQUE` index, so a second lookup key
+for the same row would make it addressable after it stopped being the live one.
 
-**Until the backend lands**, `docs/api-contract.md` ("Provider activation
-status") records that a deployed server answers `503 WHATSAPP_AUTH_DISABLED`.
-The client maps that to its own specific message — "Login WhatsApp belum aktif
-di server ini" — rather than a generic failure. An honest "not active yet" was
-accepted over hiding a V1 feature.
+What the four earlier questions were answered with:
 
-**Needed from the WhatsApp backend session:**
+1. **Shapes confirmed**, and the response gained `resendAvailableInSeconds` —
+   the backend adopted the mobile side's argument that a client must not infer
+   resend timing. Both timing fields are validated at the boundary.
+2. **Rate limits confirmed**: 60s per-number cooldown, 5 requests per hour per
+   number, 5 guesses per challenge, and per-IP throttles of 3/10min on request
+   and 5/min on verify. The per-IP one carries `HTTP_ERROR`, not
+   `OTP_RESEND_COOLDOWN`, so the client branches on **status before code**.
+3. **Anti-enumeration holds.** `otp/request` answers identically for a
+   registered and an unregistered number, asserted deep-equal in the backend's
+   e2e suite. The screen has no branch that could reveal the difference.
+4. **`INVALID_OTP` stays one code** for wrong / expired / attempts-exhausted /
+   already-used / no-such-challenge. Splitting it would report whether an
+   attacker's guessing is making progress, and would turn verify into a
+   phone-number enumeration oracle. The client shows one message for all five.
 
-1. Confirmation that `POST /auth/whatsapp/otp/request` and
-   `POST /auth/whatsapp/otp/verify` keep their current request/response shapes
-   (`{ phone }` / `{ phone, code }`; `{ success, expiresInSeconds,
-   resendAvailableInSeconds }` / the ordinary `AuthResponse`).
-2. The real rate-limit values, if they differ from the documented per-number
-   cooldown, per-hour budget and per-IP throttles.
-3. Confirmation that the anti-enumeration guarantee holds with a real provider:
-   the response must stay identical for a registered and an unregistered number.
-4. Whether `INVALID_OTP` remains one code for wrong / expired /
-   attempts-exhausted / already-used / no-such-challenge. The client shows one
-   message for all five deliberately; splitting it would need a product call.
+One code was **added** to the client since: `503
+WHATSAPP_PROVIDER_UNAVAILABLE`, which means delivery definitively failed for a
+reason unrelated to which number was targeted. It gets its own message because
+the advice differs — **no challenge survives it**, so no cooldown was spent and
+retrying immediately is honest. The resend control deliberately stays enabled
+for it; only a `429` re-locks the countdown.
 
-If any of (1) changes, the only file that moves is
-`src/services/auth/provider-auth-service.ts` — the screens, the countdown, the
-error mapping and the toast copy all sit above it.
+Phone normalization now also accepts the `00` international access prefix,
+which the backend accepts and this client used to reject.
 
-### 2. Rewards
+**Still needed, and it is not code:** a Meta developer account, a WhatsApp
+Business Account, a verified sender number, a System User token and an
+approved AUTHENTICATION-category template. **No real WhatsApp message has ever
+been sent by either side.** One end-to-end OTP to a handset someone controls is
+the remaining proof.
 
-**Mobile state: complete against `docs/rewards-domain-contract.md`.** The UI has
-room for coin balance, daily check-in, watch missions, social missions
-(Instagram / TikTok / YouTube, with Facebook already carried) and coin
-redemption. Every task's claimability is **server-owned** (`isClaimSupported`),
-and no client path grants points or an entitlement.
+### 2. Rewards — wired to the V1 earn-and-spend contract
 
-**Needed from the Rewards backend session:**
+Source of truth: the backend's `docs/rewards-api-contract.md`.
 
-1. The real request paths and payloads for claiming a task, if they differ from
-   the documented shapes.
-2. What verifiable signal, if any, will back a social mission — until one
-   exists, `isClaimSupported: false` is the honest answer and the UI states it
-   on the button itself.
-3. The redemption catalog V1 should serve. Every offer today grants premium days
-   and is filtered out of V1, so the Redeem panel currently renders its empty
-   state. A coin utility that does **not** grant premium (an ad-skip perk, a
-   cosmetic, an entry) needs `grantsDays: 0` and will render with no client
-   change.
-4. Whether watch-time missions get a trustworthy backend signal. `watchTime` is
-   `null` today and maps straight through to the section's empty state; the
-   device's own resume position decreases on a rewatch and is not a substitute.
+The four earlier questions, answered:
+
+1. **Paths and payloads confirmed**, and the mission surface arrived:
+   `POST /rewards/missions/:id/open` and `POST /rewards/missions/:id/claim`,
+   both taking **no body** — the amount, the reward day and the idempotency key
+   are all server-derived from the mission id in the path.
+2. **No verifiable signal exists for a social follow, and none is claimed.**
+   Instagram, TikTok and YouTube expose no API that answers "did user X follow
+   page Y". V1 pays a once-per-account reward for a **user-confirmed external
+   action**: the server hands out a destination URL at a recorded instant and
+   the account comes back and confirms at a later one. The wire says so
+   (`verification: "USER_CONFIRMED"`), the ledger says so
+   (`EXTERNAL_SOCIAL_ACTION`), and the UI says so — a test fails if the word
+   "verified" appears in that copy in any of the three shipped languages.
+3. **The V1 coin utility is ad perks**, exactly the `grantsDays: 0` shape this
+   document predicted: `redeem_skip_next_ad` (one interstitial skip, 24h shelf
+   life) and `redeem_ad_pass_2h` (no interstitials for two hours). Both are
+   `kind: "AD_PERK"`. Premium-granting offers stay filtered out of V1 on both
+   sides — the backend withholds them under `CONTENT_ACCESS_MODE=free`, and the
+   client filters on `kind` with `grantsDays` beside it as the fail-closed half.
+4. **`watchTime` is still `null`, and that is an answer.** The backend has no
+   trustworthy duration signal — its only duration-shaped data is a resume
+   position that *decreases* on a rewatch. The V1 watch mission counts a
+   different, provable quantity: **distinct episodes the server authorised
+   within a reward day**, served as a new `WATCH_EPISODES` task with a
+   server-computed `{ current, required }`. It is a new task type rather than a
+   reuse of `WATCH_TIME` precisely because the unit is different.
+
+**Unknown task types are dropped, not rendered and not crashed on** — the
+backend adds them server-side and expects installed clients to keep working.
+
+**Ad perks reach the ad gate as server state**, mirrored into the ads store the
+same way `isPremium` already is, never persisted, and cleared on sign-out and on
+an account switch. A skip is spent only on a transition where an interstitial
+would genuinely have been shown, and the spend is reported once via
+`POST /rewards/perks/:id/consume`. A rewards outage grants nothing: the store's
+defaults suppress no ad, so the existing ad policy runs unchanged.
+
+**Still needed, and it is not code:** the economics remain **product-unapproved**
+(check-in curve, social reward value, watch milestone thresholds, ad-perk prices
+and durations, point expiry, the service timezone). They live in one backend
+file and changing them is an edit there, not a mobile release. The four
+`REWARDS_SOCIAL_*_URL` values are deployment configuration and must point at the
+real Red Panda profiles — the backend's preflight blocks a release whose URL
+still contains a template segment such as `your-handle`.
+

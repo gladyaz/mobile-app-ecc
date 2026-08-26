@@ -193,13 +193,17 @@ if (!isUsableLegalUrl(process.env.EXPO_PUBLIC_TERMS_URL)) {
 if (process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED !== 'false') {
   warning(
     'WhatsApp sign-in is offered (EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED is not "false")',
-    'Confirmed V1 feature, offered by default. docs/api-contract.md records that the backend ' +
-      '"CANNOT be enabled in production - only a `fake` driver exists and the process refuses ' +
-      'to boot with WhatsApp enabled outside development/test", so until the parallel WhatsApp ' +
-      'backend ships, a deployed server answers 503 WHATSAPP_AUTH_DISABLED and the viewer sees ' +
-      'the truthful "not active on this server" message. Confirm that is the intended V1 state ' +
-      'for this build, or set the flag to "false" to withdraw the entry point. See ' +
-      'src/services/auth/provider-availability.ts.'
+    'Confirmed V1 feature, offered by default. The backend now ships a PRODUCTION WhatsApp ' +
+      'driver (cloud-api, Meta WhatsApp Cloud API), so this is no longer blocked on a missing ' +
+      'implementation - it is blocked on CREDENTIALS. Until a real WhatsApp Business sender ' +
+      'and its four Meta values are configured server-side, a deployed backend answers 503 ' +
+      'WHATSAPP_AUTH_DISABLED and the viewer sees the truthful "not active on this server" ' +
+      'message; with them configured but delivery failing, it answers 503 ' +
+      'WHATSAPP_PROVIDER_UNAVAILABLE and the viewer is told the code could not be sent. ' +
+      'NOTE: no real WhatsApp message has ever been sent by either side, so one end-to-end ' +
+      'OTP to a handset you control is still owed before release. Confirm this is the intended ' +
+      'V1 state for this build, or set the flag to "false" to withdraw the entry point. See ' +
+      'src/services/auth/provider-availability.ts and the backend docs/WHATSAPP_LOGIN_SETUP.md.'
   );
 }
 

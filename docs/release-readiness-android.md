@@ -217,10 +217,11 @@ transform, the fallback, prebuild idempotence, and the throw on template drift.
   as the app's own monetization (was a warning);
 - ~~`EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=true`~~ — **withdrawn 2026-08-26.**
   WhatsApp Login is a confirmed V1 feature and is now offered by default, so
-  this is a WARNING rather than a blocker: until the parallel WhatsApp backend
-  ships, a deployed server answers `503 WHATSAPP_AUTH_DISABLED` and the app
-  shows its specific "not active on this server yet" message. An honest
-  unavailable state, not a fake success. See `docs/v1-product-scope.md`;
+  `=true` is not a blocker: until the parallel WhatsApp backend ships, a
+  deployed server answers `503 WHATSAPP_AUTH_DISABLED` and the app shows its
+  specific "not active on this server yet" message. An honest unavailable
+  state, not a fake success. The owed credential is reported as a WARNING on
+  every build. See `docs/v1-product-scope.md`;
 - `EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED=true` — **added 2026-08-26.** V1 is
   free content + ads; this flag restores the premium/paywall UI against a
   backend running `CONTENT_ACCESS_MODE=free`, so every lock it brings back is
@@ -230,6 +231,60 @@ alongside what it already blocked: a missing / non-HTTPS / localhost / LAN API
 base URL, the three release-unsafe flags, bundled demo media on disk, a
 `com.anonymous.*` package (now `com.spark.redpanda`, see B2), and the sample
 AdMob app id.
+
+### 1.9 The preflight now encodes the V1 feature contract
+
+**Added 2026-08-27.** Everything above answers "is this artifact safe to
+distribute". This section answers the other half — "is it the product V1 was
+scoped to" — because a build can be perfectly safe and still be missing a
+confirmed feature, and nothing in a diff shows that.
+
+V1 REQUIRES Google Login, WhatsApp Login, Rewards, Ads and HLS. The preflight
+now **blocks** on:
+
+- `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` unset (**was a warning**) — Google Login is
+  a required V1 method, the value is inlined at build time, and a release built
+  without it does not render the button at all
+  (`services/auth/provider-availability.ts`), so the method disappears
+  *silently* rather than failing loudly;
+- `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` set to a placeholder (`YOUR_...`,
+  `1234567890-...`, `<...>`) or to something that is not shaped
+  `<digits>-<token>.apps.googleusercontent.com` — an ANDROID client id or a
+  client *secret* pasted here cannot mint the ID token the backend verifies,
+  and the failure only appears on a device;
+- `EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false` — withdraws a required V1 login
+  method entirely;
+- `EXPO_PUBLIC_HLS_PLAYBACK_ENABLED=false` (**was a warning**) — a kill switch,
+  not a fallback: every HLS-backed episode resolves to "Video unavailable" with
+  no MP4 behind it, i.e. a video app that cannot play its videos;
+- the Rewards tab route missing, or `services/rewards/rewards-service.ts` no
+  longer reading `rewards/snapshot` from the backend;
+- `EXPO_PUBLIC_ADMOB_INTERSTITIAL_AD_UNIT_ANDROID` **set to a Google sample
+  unit** — the previous rule only caught the unset case, so a build that set
+  the variable to `ca-app-pub-3940256099942544/...` passed and would have shown
+  watermarked test ads to real users. Setting a variable is not the same as
+  configuring it;
+- a payment / billing / in-app-purchase dependency (Midtrans, Stripe, Xendit,
+  RevenueCat, Play Billing, Google Pay, …) — V1 has no way to spend money, and
+  the way that changes is a dependency;
+- the rewards or WhatsApp service importing a mock / fixture / fake module — a
+  fabricated path compiled into a required service is one no flag switches off;
+- the WhatsApp client no longer calling `auth/whatsapp/otp/request` **and**
+  `auth/whatsapp/otp/verify` — the client must never report a session the
+  server did not grant;
+- the Android package drifting from `com.spark.redpanda` — permanent once
+  uploaded, and the identity the Google OAuth client, the AdMob app and the
+  Play listing are all registered against;
+- `expo.version` missing or not a dotted version string.
+
+**How these are proved.** `evaluateReleaseContract` in
+`scripts/check-release-android.js` is a pure function: every fact it judges is
+passed in. `scripts/__tests__/release-contract.test.js` hands it a fully
+configured release that passes with zero blockers, then perturbs exactly one
+fact per case and asserts the specific blocker fires. That is what makes the
+debug-signing rule testable at all — shelling out to the preflight would read
+whatever `.env` and `keystore.properties` happen to be on the machine running
+the suite.
 
 The signing check reads `keystore.properties` for **key names only** — it
 captures the text to the left of the first `=` and nothing else, so no password

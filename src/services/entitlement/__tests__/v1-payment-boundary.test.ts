@@ -59,7 +59,7 @@ const projectRoot = path.resolve(__dirname, '../../../..');
  * task that asks a viewer to subscribe to a YouTube channel.
  */
 const PAYMENT_SDK_PATTERN =
-  /midtrans|xendit|stripe|braintree|paypal|adyen|revenuecat|in-?app-?purchase|\biap\b|play-?billing|expo-in-app|react-native-purchases/i;
+  /midtrans|xendit|stripe|braintree|paypal|adyen|revenuecat|in-?app-?purchase|\biap\b|play-?billing|google-?pay|expo-in-app|react-native-purchases/i;
 
 /** A user-facing place where money would be spent. */
 const PAYMENT_ROUTE_PATTERN =

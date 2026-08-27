@@ -98,6 +98,10 @@ manifest from it), so no custom plugin was needed.
 restores the session. The user signs in again. That is the correct trade for
 bearer tokens, and it is a behaviour change.
 
+**This closed cloud backup only — see §1.10.** `allowBackup="false"` does not
+disable device-to-device transfer on Android 12+, which is a separate
+destination with its own configuration.
+
 ### 1.5 The manifest requested three permissions the app does not use
 
 Confirmed in the merged `android/app/src/main/AndroidManifest.xml` and in the
@@ -290,6 +294,80 @@ The signing check reads `keystore.properties` for **key names only** — it
 captures the text to the left of the first `=` and nothing else, so no password
 enters the process and none can appear in any message it prints.
 
+### 1.10 `allowBackup=false` did not cover device-to-device transfer
+
+**Added 2026-08-27.** §1.4 withdrew the app from Google Drive auto-backup and
+called the token-exposure problem solved. It was solved for *cloud backup* and
+not for the other half.
+
+**The gap.** Android's own documentation, on `allowBackup`: for an app
+targeting Android 12 (API 31) or higher, "On devices from some device
+manufacturers, specifying `android:allowBackup="false"` disables cloud-based
+backup and restore (such as Google Drive backups) but **doesn't disable
+device-to-device transfers for the app**." This app targets API 36. So on the
+single most ordinary migration path an Android user takes — set up the new
+phone from the old phone — the AsyncStorage database, and therefore the access
+and refresh token pair `stores/auth.tsx` persists into it, was still eligible
+to be copied onto the new handset.
+
+The platform sources agree: `FullBackup.IGNORE_FULL_BACKUP_CONTENT_IN_D2D` is
+`@EnabledSince(targetSdkVersion = S)`, so for a modern target the legacy
+`fullBackupContent` rules are *ignored* during a transfer. The Android 12+
+`android:dataExtractionRules` resource, and specifically its `<device-transfer>`
+section, is the only thing that speaks for that destination — and the previous
+static audit confirmed the attribute was absent, because Expo never emits one
+(nothing in the installed `@expo/config-plugins` or `@expo/prebuild-config`
+mentions `dataExtractionRules`).
+
+**The fix.** `plugins/with-android-data-extraction-rules.js` writes
+`android/app/src/main/res/xml/data_extraction_rules.xml` and sets
+`android:dataExtractionRules="@xml/data_extraction_rules"` on `<application>`.
+It is a config plugin for the same reason release signing is one: `android/` is
+gitignored and regenerated, so a resource typed in by hand is destroyed by the
+next prebuild and the artifact after that silently loses the policy.
+
+**The policy is deny-all, in both sections, with no `<include>` anywhere.**
+
+| Decision | Reason |
+|---|---|
+| Both `<cloud-backup>` and `<device-transfer>` | An **absent** section is not a denial. `FullBackup.parseSchemeForBackupDestination` only treats the new scheme as authoritative when it finds the matching section, and otherwise falls through to "no rules at all", i.e. copy everything. A file covering only transfer would be a trap for whoever eventually flips `allowBackup`. |
+| One `<exclude>` per domain, all nine | Exclusion is matched by **exact path**, not prefix (`BackupAgent.manifestExcludesContainFilePath` uses `equals`), and `onFullBackup` runs a separate traversal per domain starting at that domain's own directory. So `<exclude domain="root"/>` alone does **not** exclude `databases/` — which is exactly where AsyncStorage (`RKStorage`) and the tokens live. Excluding the data directory is not the same as excluding what is inside it. |
+| `path="."` | Android documents `path` as required and uses `.` for "the domain root" in its own example. `.` canonicalises away, so the rule resolves to the same string the traversal starts from, which is what makes the exact-match prune fire. |
+| No `<include>` at all | An include for any one domain makes Android skip **every other domain's** rules entirely. Adding one to whitelist a harmless preference would silently change what the other eight domains do. |
+| Deny-all rather than excluding just the auth key | AsyncStorage is one database file; no path names a single key inside it. The narrowest rule that can exclude the tokens already excludes the whole store. What remains (a language choice, an ad-frequency counter) is not worth an allow rule that would need re-auditing on every new persisted key. |
+| `main` source set only | It applies to every variant, so debug and release deny identically. The plugin also **deletes** a generated copy from `debug` / `debugOptimized` / `release`, since a variant override would shadow `main` for that variant alone. |
+| No `fullBackupContent` resource | That is the pre-Android-12 mechanism, and it is only consulted when backup is *enabled*. On API < 31 devices (this app's `minSdk` is 24), `allowBackup="false"` already disables backup and restore outright, and D2D-as-a-separate-destination is an Android 12 concept. A `fullBackupContent` file would be inert. |
+| No `disableIfNoEncryptionCapabilities` | It would assert an encryption capability this app does not implement. **Nothing here encrypts anything** — this is an *extraction* policy: it removes an OS-driven copy path off the device. It makes no claim about data at rest, and none should be made on its behalf. |
+
+**No data is lost by this.** Likes, saved videos and watch progress all sync to
+the backend and are re-merged at first login (`stores/video-interactions.tsx`,
+`stores/series-progress.tsx`), so a transferred device re-fetches them after
+sign-in. The language preference and ad-gate counters reset, which is the same
+behaviour a fresh install already has. **Development is unaffected** — nothing
+in `expo start`, `expo run:android` or either internal demo APK depends on
+backup or transfer.
+
+**Verified without a device.** `expo config --type introspect` and a real
+`expo prebuild --platform android` both produce `<application …
+android:allowBackup="false" … android:dataExtractionRules="@xml/data_extraction_rules">`
+with the resource on disk; a second in-place prebuild leaves both files
+byte-identical (same MD5), and no variant copy is created. The `debug` and
+`debugOptimized` manifests override only `usesCleartextTraffic`, never the
+backup policy.
+
+**Known residual.** Android 36 sources also contain a `cross-platform-transfer`
+section, gated behind the unreleased `Flags.enableCrossPlatformTransfer()`
+aconfig flag and absent from the public documentation. No shipping Android
+release performs that transfer, and its schema is not stable, so no rule is
+written for it. Revisit when the API is documented.
+
+**Gated by the preflight.** `npm run release:preflight` now blocks if the plugin
+leaves `app.json`, if it is registered but cannot be loaded, if either section
+or any domain stops being denied, or if an `<include>` appears. It reads the
+plugin's pure `renderDataExtractionRules()` rather than the gitignored
+`android/` output, so the check reflects the canonical source rather than
+whatever the last prebuild on the machine happened to be pointed at.
+
 ---
 
 ## 2. Verified ready
@@ -311,6 +389,7 @@ enters the process and none can appear in any message it prints.
 | **Native identity matches the app config** | `expo prebuild --platform android --clean` regenerated `android/`, then `:app:processReleaseManifest` produced a real merged **release** manifest carrying `package="com.spark.redpanda"` and `android:label` -> `Red Panda`. `applicationId`, `namespace` and the Java package directory (`com/spark/redpanda`) all agree, and `grep -rl com.anonymous android/` returns 0 files. |
 | **Unused permissions really are stripped** | Verified in the MERGED release manifest, not just the source one: `SYSTEM_ALERT_WINDOW`, `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE` are all absent. What ships is `INTERNET`, `ACCESS_NETWORK_STATE`, `VIBRATE`, `WAKE_LOCK`, `FOREGROUND_SERVICE`, `AD_ID` and the three `ACCESS_ADSERVICES_*` - every one of them from React Native or the AdMob SDK. |
 | **Release manifest flags** | Merged release manifest: `android:allowBackup="false"`, **no** `android:debuggable`, **no** app-wide `android:usesCleartextTraffic`. |
+| **App data cannot leave the device by backup or transfer** | `android:allowBackup="false"` **and** `android:dataExtractionRules="@xml/data_extraction_rules"` on `<application>`, verified in a real `expo prebuild` manifest. The resource denies all nine backup domains in **both** `<cloud-backup>` and `<device-transfer>`, with no `<include>` rule — so the AsyncStorage database holding the access/refresh token pair is excluded from Google Drive backup *and* from device-to-device transfer, which `allowBackup=false` alone does not cover on Android 12+. Written to `main` only, so debug and release share one policy; generation is idempotent (byte-identical across a second in-place prebuild). See §1.10. |
 | **No demo media in a production build, structurally** | `metro/bundled-demo-media.js` keys the exclusion on the build's declared intent rather than on disk state. Measured on a machine that HAS the media: production export 6.8 MB / 43 assets / **zero** `.mp4`; showcase export 65 MB / 11 `.mp4`. |
 | **No payment remnant in the shipped bundle** | `strings` over the release Hermes bundle: `midtrans`, `Segera Hadir`, `billing`, `Play Billing`, `in-app purchase`, `pricing` and `Rp ` are all absent. The only `checkout`/`subscription` hits are the Material Symbols icon name `add_shopping_cart_checkout` and React Native's own `Must pass in a valid subscription`. |
 | **No cleartext exemption in a default build** | `plugins/with-lan-cleartext-demo.js` keys off the scheme of `EXPO_PUBLIC_API_BASE_URL`, so an `https://` backend makes it grant nothing, with nothing to remember to switch off. It also **actively removes** a resource and manifest attribute left by an earlier LAN prebuild — `expo prebuild` without `--clean` regenerates `android/` in place, so returning early would let the tree that built the internal demo ship a production APK still carrying a LAN cleartext exemption. Removal is narrow: only a file bearing the plugin's own generated marker, and only an attribute pointing at its own resource. `usesCleartextTraffic="true"` exists only in the `debug` / `debugOptimized` manifests. See [`playback-quality.md` §4](./playback-quality.md). |
@@ -638,10 +717,21 @@ is a Play blocker.
 
 ### 5.1 R8 / `minifyEnabled` / `shrinkResources` — **do not enable without device QA**
 
-Both are `false` today. Java/Kotlin ships unminified and unshrunk (Hermes still
-compiles JS to bytecode, so the JS is unaffected either way). Enabling them is a
-real size and obfuscation win, and it is also the single change most likely to
-break this exact app **silently at runtime, in release only**:
+Both are `false` today. **Re-audited 2026-08-27** against the generated Gradle
+files, which name the exact switches: `minifyEnabled` reads
+`android.enableMinifyInReleaseBuilds` and `shrinkResources` reads
+`android.enableShrinkResourcesInReleaseBuilds`; neither property appears in
+`android/gradle.properties`, so both default to `false`. `proguardFiles` is
+wired (`proguard-android.txt` + `proguard-rules.pro`) but inert while
+`minifyEnabled` is false. `hermesEnabled=true`, so the JavaScript already ships
+as Hermes bytecode rather than readable source, and `newArchEnabled=true`.
+
+Java/Kotlin ships unminified and unshrunk (Hermes still compiles JS to bytecode,
+so the JS is unaffected either way). **This is not a data-protection gap:**
+minification is not a secrecy control, and every `EXPO_PUBLIC_*` value is inlined
+into the bundle and readable whether or not R8 runs. Enabling them is a real
+size and obfuscation win, and it is also the single change most likely to break
+this exact app **silently at runtime, in release only**:
 
 - AdMob and play-services rely on reflection over classes R8 will strip or
   rename without the right `-keep` rules;

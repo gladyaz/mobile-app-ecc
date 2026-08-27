@@ -25,7 +25,14 @@ const {
   collectImportSpecifiers,
   EXPECTED_ANDROID_PACKAGE,
   GOOGLE_SAMPLE_ADMOB_PUBLISHER,
+  ANDROID_DATA_EXTRACTION_PLUGIN,
+  REQUIRED_EXTRACTION_DOMAINS,
+  REQUIRED_EXTRACTION_SECTIONS,
 } = require('../check-release-android.js');
+
+const {
+  renderDataExtractionRules,
+} = require('../../plugins/with-android-data-extraction-rules.js');
 
 /**
  * A build that satisfies the whole V1 contract. Synthetic throughout - the ids
@@ -66,6 +73,7 @@ const VALID_EXP = {
   plugins: [
     'expo-router',
     './plugins/with-android-release-signing',
+    './plugins/with-android-data-extraction-rules',
     ['react-native-google-mobile-ads', { androidAppId: 'ca-app-pub-7654321098765432~1122334455' }],
   ],
 };
@@ -85,6 +93,11 @@ const VALID_FACTS = {
     "import { request } from '@/services/api/client';\n" +
     "request('auth/whatsapp/otp/request');\n" +
     "request('auth/whatsapp/otp/verify');\n",
+  // The REAL rendered policy, not a fixture. It is a pure function of the
+  // plugin's constants, so using it here means the passing world below is
+  // asserting that what the plugin actually renders today satisfies the gate -
+  // a hand-written stand-in could drift from the plugin and hide that.
+  dataExtractionPolicyXml: renderDataExtractionRules(),
 };
 
 /** Evaluates the passing world with `overrides` merged over it. */
@@ -445,6 +458,81 @@ describe('release contract: Android identity and privacy posture', () => {
     );
   });
 
+  it('blocks a release whose data-extraction plugin is no longer registered', () => {
+    // allowBackup="false" is NOT a substitute. Android documents that for an
+    // app targeting Android 12+, that flag disables cloud backup but "doesn't
+    // disable device-to-device transfers for the app" on some manufacturers'
+    // devices - so without this plugin the token pair in AsyncStorage is still
+    // eligible to be copied onto a new handset.
+    expectBlocked(
+      evaluate({
+        exp: {
+          plugins: VALID_EXP.plugins.filter(
+            (plugin) => plugin !== ANDROID_DATA_EXTRACTION_PLUGIN
+          ),
+        },
+      }),
+      /with-android-data-extraction-rules is not in app\.json's plugins/
+    );
+  });
+
+  it('blocks a registered plugin whose policy cannot be read', () => {
+    // Registration that cannot be evaluated is not evidence. Silence here
+    // would let the gate pass on a plugin that fails to load at prebuild.
+    expectBlocked(
+      evaluate({ dataExtractionPolicyXml: null }),
+      /policy could not be read/
+    );
+  });
+
+  it.each(REQUIRED_EXTRACTION_SECTIONS)(
+    'blocks a policy that drops its <%s> section entirely',
+    (section) => {
+      // An ABSENT section is not a denial: Android falls back to "no rules at
+      // all" for that destination, i.e. copy everything.
+      const gutted = renderDataExtractionRules().replace(
+        new RegExp(`<${section}>[\\s\\S]*?</${section}>`),
+        ''
+      );
+
+      expectBlocked(
+        evaluate({ dataExtractionPolicyXml: gutted }),
+        new RegExp(`${section} \\(section absent\\)`)
+      );
+    }
+  );
+
+  it.each(REQUIRED_EXTRACTION_DOMAINS)(
+    'blocks a policy that stops excluding the %s domain',
+    (domain) => {
+      // Exclusion is matched by EXACT path, so every domain needs its own
+      // rule - dropping `database` alone would re-expose AsyncStorage (and
+      // with it the access and refresh tokens) while the file still looked
+      // like a deny-all policy.
+      const gutted = renderDataExtractionRules()
+        .split('\n')
+        .filter((line) => !line.includes(`<exclude domain="${domain}"`))
+        .join('\n');
+
+      expectBlocked(
+        evaluate({ dataExtractionPolicyXml: gutted }),
+        new RegExp(`no longer denies:.*${domain}`)
+      );
+    }
+  );
+
+  it('blocks a policy that grows an <include> rule', () => {
+    // A single include for any domain makes Android skip every OTHER domain's
+    // rules entirely, so "just whitelist the language preference" silently
+    // changes what the other eight domains do.
+    const widened = renderDataExtractionRules().replace(
+      '</device-transfer>',
+      '    <include domain="sharedpref" path="language.xml" />\n    </device-transfer>'
+    );
+
+    expectBlocked(evaluate({ dataExtractionPolicyXml: widened }), /grown an <include> rule/);
+  });
+
   it.each([
     'android.permission.SYSTEM_ALERT_WINDOW',
     'android.permission.READ_EXTERNAL_STORAGE',
@@ -560,5 +648,28 @@ describe('release contract: the real repository satisfies the structural rules',
     expect(appJson.expo.android.package).toBe(EXPECTED_ANDROID_PACKAGE);
     expect(appJson.expo.ios.bundleIdentifier).toBe(EXPECTED_ANDROID_PACKAGE);
     expect(appJson.expo.android.allowBackup).toBe(false);
+  });
+
+  it('registers the data-extraction plugin in app.json, alongside allowBackup=false', () => {
+    // The two are complements, not alternatives: allowBackup="false" closes
+    // cloud backup, the plugin closes device-to-device transfer. This asserts
+    // the CHECKED-IN config satisfies the rule, so deleting the plugin entry
+    // fails here rather than at release time.
+    const appJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'app.json'), 'utf8'));
+
+    expect(
+      appJson.expo.plugins.map((plugin) => (Array.isArray(plugin) ? plugin[0] : plugin))
+    ).toContain(ANDROID_DATA_EXTRACTION_PLUGIN);
+    expect(
+      fs.existsSync(path.join(projectRoot, 'plugins/with-android-data-extraction-rules.js'))
+    ).toBe(true);
+  });
+
+  it("the plugin's real rendered policy passes the release gate", () => {
+    // The passing world already uses the real render; this states it as its
+    // own case so a policy edit that breaks the gate names itself.
+    expect(blockerTitles(evaluate({ dataExtractionPolicyXml: renderDataExtractionRules() }))).toEqual(
+      []
+    );
   });
 });

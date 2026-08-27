@@ -96,6 +96,49 @@ function collectImportSpecifiers(source) {
 
 const RELEASE_SIGNING_PLUGIN = './plugins/with-android-release-signing';
 
+/**
+ * The plugin that writes `android:dataExtractionRules`. Registration in
+ * `app.json` is the CANONICAL source - `android/` is gitignored and
+ * regenerated, so checking the generated manifest would be checking whatever
+ * the last prebuild on this machine happened to produce.
+ */
+const ANDROID_DATA_EXTRACTION_PLUGIN = './plugins/with-android-data-extraction-rules';
+
+/**
+ * Every domain the policy must deny, restated here rather than imported from
+ * the plugin so that gutting the plugin's own list cannot also silence the
+ * check that guards it. Matches
+ * `FullBackup.BackupScheme.getDirectoryForCriteriaDomain`; see the plugin for
+ * why exclusion has to be per-domain rather than `root` alone.
+ */
+const REQUIRED_EXTRACTION_DOMAINS = [
+  'root',
+  'file',
+  'database',
+  'sharedpref',
+  'device_root',
+  'device_file',
+  'device_database',
+  'device_sharedpref',
+  'external',
+];
+
+/** The two extraction destinations the policy must cover. */
+const REQUIRED_EXTRACTION_SECTIONS = ['cloud-backup', 'device-transfer'];
+
+/**
+ * The resource with its leading explanatory comment stripped.
+ *
+ * The rules below are judged against this, never against the whole file. The
+ * comment necessarily NAMES the things it promises the policy does not do
+ * ("no <include> element appears below"), and a rule that scanned the prose
+ * would fire on the sentence asserting the exact property being checked -
+ * the same trap `MOCK_MODULE_PATTERN` above documents.
+ */
+function extractionRulesBody(xml) {
+  return xml.replace(/<!--[\s\S]*?-->/g, '');
+}
+
 const RELEASE_SIGNING_KEYS = [
   ['storeFile', 'ANDROID_RELEASE_STORE_FILE'],
   ['storePassword', 'ANDROID_RELEASE_STORE_PASSWORD'],
@@ -179,6 +222,7 @@ function isGoogleSampleAdMobId(value) {
  *   rewardsRouteExists: boolean,
  *   rewardsServiceSource: string,
  *   whatsAppServiceSource: string,
+ *   dataExtractionPolicyXml: string | null,
  * }} facts
  * @returns {{ blockers: {title: string, detail: string}[], warnings: {title: string, detail: string}[] }}
  */
@@ -193,6 +237,7 @@ function evaluateReleaseContract(facts) {
     rewardsRouteExists,
     rewardsServiceSource,
     whatsAppServiceSource,
+    dataExtractionPolicyXml,
   } = facts;
 
   const blockers = [];
@@ -614,6 +659,79 @@ function evaluateReleaseContract(facts) {
     );
   }
 
+  // `allowBackup="false"` above closes CLOUD backup. It does NOT close
+  // device-to-device transfer: Android documents that for an app targeting
+  // Android 12 or higher, that flag "disables cloud-based backup and restore
+  // (such as Google Drive backups) but doesn't disable device-to-device
+  // transfers for the app" on some manufacturers' devices. So on the ordinary
+  // "set up the new phone from the old phone" path, the same AsyncStorage
+  // database - access token and refresh token included - could still be copied
+  // onto another handset. `plugins/with-android-data-extraction-rules.js` is
+  // what answers that; these two rules keep it from silently disappearing.
+  const isDataExtractionPluginRegistered = (exp.plugins || []).some(
+    (plugin) => (Array.isArray(plugin) ? plugin[0] : plugin) === ANDROID_DATA_EXTRACTION_PLUGIN
+  );
+
+  if (!isDataExtractionPluginRegistered) {
+    blocker(
+      `${ANDROID_DATA_EXTRACTION_PLUGIN} is not in app.json's plugins`,
+      'Without it, `expo prebuild` emits no android:dataExtractionRules at all (Expo itself ' +
+        'never writes one), and the release APK falls back to Android\'s default: every ' +
+        'app-private domain is eligible for device-to-device transfer, AsyncStorage included. ' +
+        'allowBackup="false" does not cover that case.'
+    );
+  } else if (typeof dataExtractionPolicyXml !== 'string') {
+    // Registered but unloadable. Silence here would be the worst outcome: the
+    // gate would pass on the strength of a plugin that cannot even be required.
+    blocker(
+      `${ANDROID_DATA_EXTRACTION_PLUGIN} is registered but its policy could not be read`,
+      'The plugin must export `renderDataExtractionRules()` so this check can prove what the ' +
+        'build would actually deny. A registration that cannot be evaluated is not evidence.'
+    );
+  } else {
+    // Registration alone is not the property worth gating on: a plugin that is
+    // listed but renders an empty <data-extraction-rules/> would pass it while
+    // denying nothing. So the rendered policy is judged directly. It is a pure
+    // function of the plugin's own constants, so this needs no build and no
+    // generated android/ directory.
+    const rulesBody = extractionRulesBody(dataExtractionPolicyXml);
+
+    const missingRules = REQUIRED_EXTRACTION_SECTIONS.flatMap((section) => {
+      const sectionBody = (
+        rulesBody.match(new RegExp(`<${section}[^>]*>([\\s\\S]*?)</${section}>`)) || []
+      )[1];
+
+      if (sectionBody === undefined) {
+        return [`${section} (section absent)`];
+      }
+
+      return REQUIRED_EXTRACTION_DOMAINS.filter(
+        (domain) => !sectionBody.includes(`<exclude domain="${domain}"`)
+      ).map((domain) => `${section}/${domain}`);
+    });
+
+    if (missingRules.length > 0) {
+      blocker(
+        `The Android data-extraction policy no longer denies: ${missingRules.join(', ')}`,
+        'Both sections must exclude every backup domain. An ABSENT section is not a denial - ' +
+          'Android falls back to copying everything for that destination - and exclusion is ' +
+          'matched by EXACT path, so excluding `root` alone does not exclude `database`, which ' +
+          'is where AsyncStorage (and the token pair) actually lives. See ' +
+          `${ANDROID_DATA_EXTRACTION_PLUGIN}.`
+      );
+    }
+
+    if (rulesBody.includes('<include')) {
+      blocker(
+        'The Android data-extraction policy has grown an <include> rule',
+        'Excludes are the whole policy. A single include re-opens whatever it names, and an ' +
+          'include for any domain makes Android skip every other domain\'s excludes entirely - ' +
+          'so one added to whitelist a harmless preference would change what the other eight ' +
+          'domains do. Persist a new preference somewhere it can be re-derived instead.'
+      );
+    }
+  }
+
   const blockedPermissions = (exp.android && exp.android.blockedPermissions) || [];
   const unblockedPermissions = UNUSED_MERGED_PERMISSIONS.filter(
     ([permission]) => !blockedPermissions.includes(permission)
@@ -765,7 +883,33 @@ function readReleaseFacts() {
     whatsAppServiceSource: readFileIfPresent(
       path.join(projectRoot, 'src', 'services', 'auth', 'provider-auth-service.ts')
     ),
+    dataExtractionPolicyXml: readDataExtractionPolicy(),
   };
+}
+
+/**
+ * Renders the Android data-extraction policy the plugin would write, WITHOUT
+ * running a prebuild.
+ *
+ * `renderDataExtractionRules()` is a pure function of the plugin's own
+ * constants, so what it returns here is byte-identical to what would land in
+ * `android/app/src/main/res/xml/`. That is the point: the check reads the
+ * canonical source (the plugin) rather than the gitignored `android/` tree,
+ * which on any given machine reflects whatever the last prebuild happened to
+ * be pointed at.
+ *
+ * Returns null rather than throwing when the plugin is missing or broken; the
+ * contract turns that into its own blocker, so a preflight run never dies with
+ * a stack trace where it should have printed a finding.
+ */
+function readDataExtractionPolicy() {
+  try {
+    const { renderDataExtractionRules } = require('../plugins/with-android-data-extraction-rules');
+
+    return typeof renderDataExtractionRules === 'function' ? renderDataExtractionRules() : null;
+  } catch {
+    return null;
+  }
 }
 
 // --- Report -----------------------------------------------------------------
@@ -816,6 +960,9 @@ module.exports = {
   RELEASE_SIGNING_PLUGIN,
   RELEASE_UNSAFE_FLAGS,
   UNUSED_MERGED_PERMISSIONS,
+  ANDROID_DATA_EXTRACTION_PLUGIN,
+  REQUIRED_EXTRACTION_DOMAINS,
+  REQUIRED_EXTRACTION_SECTIONS,
 };
 
 // Only runs the checks when invoked as a command, so the pure evaluator above

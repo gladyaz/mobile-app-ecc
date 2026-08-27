@@ -48,6 +48,7 @@
         }
       ],
       "./plugins/with-lan-cleartext-demo",
+      "./plugins/with-android-data-extraction-rules",
       "./plugins/with-android-release-signing",
       "expo-router",
       [

@@ -1,4 +1,5 @@
 import { request } from '@/services/api/client';
+import { isValidAuthResponse } from '@/services/auth/auth-response-contract';
 import { invalidOtpResponse, parseOtpChallenge } from '@/services/auth/otp-challenge';
 import type {
   AuthIdentitySummary,
@@ -71,11 +72,13 @@ const PARSE_SOURCE = 'provider-auth-service';
  * Google configuration.
  */
 export async function loginWithGoogleIdToken(idToken: string): Promise<AuthResponse> {
-  return request<AuthResponse>('auth/google', {
+  const payload = await request<unknown>('auth/google', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ idToken }),
   });
+
+  return parseAuthResponse(payload, 'POST /auth/google');
 }
 
 /**
@@ -111,6 +114,38 @@ export async function startWhatsAppOtp(phoneE164: string): Promise<OtpChallenge>
 }
 
 /**
+ * Validates a session response at the boundary instead of casting it.
+ *
+ * BOTH V1-REQUIRED LOGIN METHODS LAND HERE, and what they hand back is the
+ * credential the app persists to Keystore-backed storage. An unchecked cast
+ * meant a response that had lost `refreshToken` produced a session that
+ * LOOKED signed in and then silently signed the viewer out at the first 401,
+ * with no error on any surface - see `auth-response-contract.ts` for the
+ * full failure walk-through.
+ *
+ * Raises the same `INVALID_RESPONSE` `ApiError` as `parseOtpChallenge` and
+ * `parseAuthIdentities`, through the SAME shared `invalidOtpResponse`
+ * constructor and under this module's `PARSE_SOURCE`, so every drift in this
+ * module surfaces as one legible error the screens already know how to
+ * render, rather than as arithmetic on `undefined` three layers away.
+ *
+ * The message names the ROUTE and nothing else. A session payload is made
+ * almost entirely of credentials, so echoing any of it into a thrown message
+ * - which reaches logs and crash reports - would leak the very tokens this
+ * check exists to protect.
+ */
+function parseAuthResponse(payload: unknown, route: string): AuthResponse {
+  if (!isValidAuthResponse(payload)) {
+    throw invalidOtpResponse(
+      PARSE_SOURCE,
+      `${route} returned a session payload with an invalid shape.`
+    );
+  }
+
+  return payload;
+}
+
+/**
  * Verifies a WhatsApp OTP and returns a normal Short Drama session.
  * `POST /auth/whatsapp/otp/verify`, body `{ phone, code }` - the number is
  * the challenge handle.
@@ -129,11 +164,13 @@ export async function startWhatsAppOtp(phoneE164: string): Promise<OtpChallenge>
  * (5/min), and "WHATSAPP_AUTH_DISABLED" (503).
  */
 export async function verifyWhatsAppOtp(phoneE164: string, code: string): Promise<AuthResponse> {
-  return request<AuthResponse>('auth/whatsapp/otp/verify', {
+  const payload = await request<unknown>('auth/whatsapp/otp/verify', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ phone: phoneE164, code }),
   });
+
+  return parseAuthResponse(payload, 'POST /auth/whatsapp/otp/verify');
 }
 
 /**

@@ -15,6 +15,11 @@ and for the two backend contracts V1 was waiting on - both now defined and wired
 | WhatsApp Login | |
 | HLS Auto / manual quality | |
 
+> **Contract regression layer:** `docs/v1-contract-lock.md` describes the
+> deterministic tests that pin this scope against the backend's own V1
+> release contract, so a mobile change that contradicts it fails a test here
+> instead of shipping.
+
 ## How the premium experience is switched off
 
 One module: `src/services/config/v1-scope.ts`, exposing

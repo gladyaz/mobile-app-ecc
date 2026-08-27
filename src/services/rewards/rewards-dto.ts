@@ -139,7 +139,23 @@ export interface RewardTaskDto {
    */
   isClaimSupported: boolean;
   unsupportedReason?: 'NO_VERIFIABLE_SIGNAL' | 'AWAITING_PRODUCT_DECISION';
-  /** Present exactly when `isClaimSupported` is true. See the union's doc. */
+  /**
+   * How strong the evidence behind this task is. See the union's doc.
+   *
+   * PRESENT ON EVERY MISSION TASK, IN EVERY STATE - including a COMPLETED
+   * one, whose `isClaimSupported` has already flipped to `false` because
+   * there is nothing left to pay. The backend's `toSocialTask` /
+   * `toWatchTask` emit it unconditionally, on purpose: a claim that has been
+   * paid is exactly the one a UI is most tempted to describe as verified,
+   * and the field has to still be there to refuse that. (This mirror
+   * previously said "present exactly when `isClaimSupported` is true",
+   * matching the backend's own field comment rather than its behaviour;
+   * `rewards-contract.test.ts` now pins the real rule.)
+   *
+   * OPTIONAL because the placeholder tiles that no signal can pay
+   * (`REWARDED_AD`, `CAMPAIGN`) carry no evidence class at all - there is no
+   * evidence to classify.
+   */
   verification?: RewardTaskVerificationDto;
   /**
    * Where a social mission sends the viewer. SERVER-OWNED: it comes from

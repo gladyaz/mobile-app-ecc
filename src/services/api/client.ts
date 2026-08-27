@@ -1,10 +1,10 @@
+import { isValidAuthResponse } from '@/services/auth/auth-response-contract';
 import {
   clearTokensAndNotify,
   getSessionGeneration,
   getTokens,
   setTokensAndNotify,
 } from '@/services/auth/token-store';
-import type { AuthResponse } from '@/types/auth';
 
 const HTTP_NO_CONTENT = 204;
 
@@ -185,15 +185,29 @@ async function runTokenRefresh(): Promise<boolean> {
   }
 
   try {
-    const authResponse = await request<AuthResponse>('auth/refresh', {
+    const payload = await request<unknown>('auth/refresh', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: currentRefreshToken }),
     });
 
+    // VALIDATED, NOT CAST. A rotation that came back without a usable
+    // `refreshToken` used to be stored anyway: the store held `undefined`,
+    // the app stayed on screen, and the NEXT 401 found nothing to rotate and
+    // signed the viewer out - one expired access token turned into a lost
+    // session, with the real cause a request earlier. Treating a malformed
+    // rotation as a failed one is both truthful and what the caller already
+    // handles, since `false` is the answer it takes for "this session is
+    // over". See services/auth/auth-response-contract.ts.
+    if (!isValidAuthResponse(payload)) {
+      clearTokensAndNotify();
+
+      return false;
+    }
+
     setTokensAndNotify({
-      accessToken: authResponse.accessToken,
-      refreshToken: authResponse.refreshToken,
+      accessToken: payload.accessToken,
+      refreshToken: payload.refreshToken,
     });
 
     return true;

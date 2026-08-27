@@ -134,28 +134,49 @@ const EXTRACTION_SECTIONS = ['cloud-backup', 'device-transfer'];
 const HEADER_NOTE = `  Red Panda denies BOTH cloud backup and device-to-device transfer of all
   app-private storage.
 
-  WHAT IS BEING PROTECTED: AsyncStorage. It is a SQLite database under
-  databases/ (RKStorage), and src/stores/auth.tsx persists the signed-in
-  account plus the backend's access AND refresh token into it as plaintext
-  JSON under "@mobile-app-ecc/auth". Everything else it holds is either
-  account-private (likes, saved videos, watch progress, their sync queues) or
-  a preference the app re-derives on its own.
+  WHAT IS BEING PROTECTED. Two different stores, for two different reasons:
 
-  WHY DENY-ALL RATHER THAN EXCLUDING THE AUTH KEY: AsyncStorage is one
-  database file. There is no path that names one key inside it, so the
-  narrowest rule that can actually exclude the tokens already excludes the
-  whole store - and once the store is gone, the remaining candidates (a
-  language choice, an ad-frequency counter) are not worth an allow rule that
-  would have to be re-audited every time something new is persisted. Nothing
-  here is lost data: likes, saves and watch progress live on the backend and
-  are re-merged at first login on the new device.
+   - AsyncStorage, a SQLite database under databases/ (RKStorage). It holds
+     the signed-in account's NON-SECRET metadata under "@mobile-app-ecc/auth"
+     (id, name, username, email - see src/services/auth/persisted-account.ts),
+     plus likes, saved videos, watch progress, their sync queues, and device
+     preferences. Since the secure-session work it holds NO bearer token.
+   - SecureStore's own SharedPreferences file ("SecureStore"), which holds the
+     access/refresh pair as AES-256-GCM ciphertext under an Android Keystore
+     key (src/services/auth/session-secret-store.ts). The sharedpref and
+     device_sharedpref excludes below are what cover it.
+
+  THE TWO PROTECTIONS ARE SEPARATE AND BOTH ARE NEEDED. This file is BACKUP /
+  TRANSFER protection: it stops the OS copying this app's data off the device.
+  Keystore encryption is AT-REST protection: it stops the token being readable
+  in the copy that stays. Neither substitutes for the other, and this policy
+  still matters with tokens encrypted - the account metadata, the watch
+  history and the ciphertext itself are all still worth not shipping to a new
+  handset unasked.
+
+  WHY DENY-ALL RATHER THAN EXCLUDING ONE KEY: AsyncStorage is one database
+  file. There is no path that names one key inside it, so the narrowest rule
+  that can exclude anything in it already excludes the whole store - and once
+  the store is gone, the remaining candidates (a language choice, an
+  ad-frequency counter) are not worth an allow rule that would have to be
+  re-audited every time something new is persisted. Nothing here is lost data:
+  likes, saves and watch progress live on the backend and are re-merged at
+  first login on the new device.
+
+  THIS FILE IS THE ONLY BACKUP AUTHORITY. expo-secure-store ships a config
+  plugin that would write its OWN android:dataExtractionRules - an
+  include-based policy covering only its own prefs file, which is strictly
+  weaker than the deny-all below. app.json therefore registers it with
+  { "configureAndroidBackup": false }, and npm run release:preflight fails the
+  build if that is ever dropped.
 
   NO <include> ELEMENT APPEARS BELOW, DELIBERATELY. An empty include set means
   "everything except the excludes" - the excludes are the whole policy, which
   is why they enumerate every domain rather than relying on an implicit deny.
 
   This is an EXTRACTION policy, not encryption: it stops this app's data from
-  being copied off the device by the OS. It makes no claim about data at rest.`;
+  being copied off the device by the OS. It makes no claim, by itself, about
+  data at rest - and AsyncStorage is NOT encrypted by anything here.`;
 
 /** One `<exclude/>` line per domain, indented for the section it sits in. */
 function renderExcludes(indent) {
@@ -227,9 +248,10 @@ function removeStaleVariantResources(platformProjectRoot) {
  * as Google Drive backups) but doesn't disable device-to-device transfers for
  * the app" on some manufacturers' devices. So on the "set up your new phone
  * from your old phone" path - the single most ordinary way an Android user
- * moves - this app's AsyncStorage database, access token and refresh token
- * included, could be copied onto the new handset while the app itself was
- * never asked. `<device-transfer>` is the only mechanism that answers that,
+ * moves - this app's AsyncStorage database, and SecureStore's encrypted
+ * SharedPreferences beside it, could be copied onto the new handset while the
+ * app itself was never asked. `<device-transfer>` is the only mechanism that
+ * answers that,
  * and Expo emits neither the attribute nor the resource (nothing in the
  * installed `@expo/config-plugins` or `@expo/prebuild-config` mentions
  * `dataExtractionRules`), so it has to be written here.

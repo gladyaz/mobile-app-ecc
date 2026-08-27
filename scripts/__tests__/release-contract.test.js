@@ -28,6 +28,10 @@ const {
   ANDROID_DATA_EXTRACTION_PLUGIN,
   REQUIRED_EXTRACTION_DOMAINS,
   REQUIRED_EXTRACTION_SECTIONS,
+  SECURE_STORE_MODULE,
+  SECURE_STORE_PLUGIN,
+  SESSION_SECRET_STORE_PATH,
+  stripComments,
 } = require('../check-release-android.js');
 
 const {
@@ -74,6 +78,9 @@ const VALID_EXP = {
     'expo-router',
     './plugins/with-android-release-signing',
     './plugins/with-android-data-extraction-rules',
+    // Registered with its own backup rules OFF, so this app's deny-all policy
+    // stays the single authority. See the secure-session cases below.
+    ['expo-secure-store', { configureAndroidBackup: false }],
     ['react-native-google-mobile-ads', { androidAppId: 'ca-app-pub-7654321098765432~1122334455' }],
   ],
 };
@@ -81,7 +88,13 @@ const VALID_EXP = {
 const VALID_FACTS = {
   env: VALID_ENV,
   exp: VALID_EXP,
-  dependencyNames: ['expo', 'react-native', 'react-native-google-mobile-ads', 'zustand'],
+  dependencyNames: [
+    'expo',
+    'expo-secure-store',
+    'react-native',
+    'react-native-google-mobile-ads',
+    'zustand',
+  ],
   declaredKeystoreKeys: new Set(),
   keystorePropertiesExists: false,
   isKeystorePropertiesIgnored: true,
@@ -98,6 +111,20 @@ const VALID_FACTS = {
   // asserting that what the plugin actually renders today satisfies the gate -
   // a hand-written stand-in could drift from the plugin and hide that.
   dataExtractionPolicyXml: renderDataExtractionRules(),
+  // Secure session storage. Short synthetic sources: every rule that judges
+  // them is an import check or an identifier check on comment-stripped code,
+  // so a fixture only has to carry the imports and identifiers, not the real
+  // implementation.
+  secureStoreImporters: [SESSION_SECRET_STORE_PATH],
+  authStoreSource:
+    "import { persistSession } from '@/services/auth/session-store';\n" +
+    'persistSession(account, tokens);\n',
+  persistedAccountSource:
+    "import { setItem } from '@/services/storage/local-storage';\n" +
+    'setItem(key, version, { id, name, username, email });\n',
+  sessionSecretStoreSource:
+    "import * as SecureStore from 'expo-secure-store';\n" +
+    'SecureStore.setItemAsync(key, value);\n',
 };
 
 /** Evaluates the passing world with `overrides` merged over it. */
@@ -599,6 +626,33 @@ describe('release contract: the real repository satisfies the structural rules',
     expect(fs.existsSync(path.join(projectRoot, 'src/app/(tabs)/rewards.tsx'))).toBe(true);
   });
 
+  it('keeps the session credential behind the one Keystore-backed boundary', () => {
+    const source = fs.readFileSync(path.join(projectRoot, SESSION_SECRET_STORE_PATH), 'utf8');
+
+    expect(collectImportSpecifiers(source)).toContain(SECURE_STORE_MODULE);
+  });
+
+  it('keeps the auth store away from AsyncStorage entirely', () => {
+    // The pre-upgrade store imported `@/services/storage/local-storage` and
+    // wrote `{ user, tokens }` through it. Nothing in it may reach the
+    // plaintext store any more.
+    const source = fs.readFileSync(path.join(projectRoot, 'src/stores/auth.tsx'), 'utf8');
+    const imports = collectImportSpecifiers(source);
+
+    expect(imports).not.toContain('@/services/storage/local-storage');
+    expect(imports).not.toContain('@react-native-async-storage/async-storage');
+    expect(imports).toContain('@/services/auth/session-store');
+  });
+
+  it('names no token field in the module that owns the AsyncStorage auth key', () => {
+    const code = stripComments(
+      fs.readFileSync(path.join(projectRoot, 'src/services/auth/persisted-account.ts'), 'utf8')
+    );
+
+    expect(code).not.toContain('accessToken');
+    expect(code).not.toContain('refreshToken');
+  });
+
   it('keeps the rewards service on the real backend, importing no fabricated data', () => {
     const source = fs.readFileSync(
       path.join(projectRoot, 'src/services/rewards/rewards-service.ts'),
@@ -670,6 +724,157 @@ describe('release contract: the real repository satisfies the structural rules',
     // own case so a policy edit that breaks the gate names itself.
     expect(blockerTitles(evaluate({ dataExtractionPolicyXml: renderDataExtractionRules() }))).toEqual(
       []
+    );
+  });
+});
+
+/**
+ * The rules that keep bearer tokens out of AsyncStorage.
+ *
+ * Each case perturbs ONE fact, exactly like the cases above. What is being
+ * proved is not that the current code is correct - the other suites do that -
+ * but that the GATE would notice if it stopped being.
+ */
+describe('release contract: secure session storage', () => {
+  it('blocks a build with no secure-storage dependency at all', () => {
+    // Without it there is nowhere for the pair to go but AsyncStorage.
+    expectBlocked(
+      evaluate({ dependencyNames: ['expo', 'react-native'] }),
+      /expo-secure-store is not a dependency/
+    );
+  });
+
+  it('blocks a build where the secure-store plugin is not registered', () => {
+    expectBlocked(
+      evaluate({
+        exp: { plugins: VALID_EXP.plugins.filter((plugin) => plugin[0] !== SECURE_STORE_PLUGIN) },
+      }),
+      /expo-secure-store is not registered/
+    );
+  });
+
+  it('blocks a build that lets the secure-store plugin write its own backup rules', () => {
+    // The default (configureAndroidBackup: true) points
+    // android:dataExtractionRules at ITS resource, whose policy is an
+    // include-based rule for one domain - strictly weaker than the deny-all
+    // this app ships, and only one of the two attributes survives the merge.
+    expectBlocked(
+      evaluate({
+        exp: {
+          plugins: VALID_EXP.plugins.map((plugin) =>
+            plugin[0] === SECURE_STORE_PLUGIN ? SECURE_STORE_PLUGIN : plugin
+          ),
+        },
+      }),
+      /configureAndroidBackup/
+    );
+  });
+
+  it('blocks a build whose secure-store plugin is registered with the flag on', () => {
+    expectBlocked(
+      evaluate({
+        exp: {
+          plugins: VALID_EXP.plugins.map((plugin) =>
+            plugin[0] === SECURE_STORE_PLUGIN
+              ? [SECURE_STORE_PLUGIN, { configureAndroidBackup: true }]
+              : plugin
+          ),
+        },
+      }),
+      /configureAndroidBackup/
+    );
+  });
+
+  it('blocks a build where the session-secret boundary has gone missing', () => {
+    expectBlocked(evaluate({ sessionSecretStoreSource: '' }), /session-secret-store\.ts is missing/);
+  });
+
+  it('blocks a boundary that no longer reaches Keystore-backed storage', () => {
+    // Still there, still imported by the store - but persisting somewhere that
+    // is not encrypted by the Android Keystore.
+    expectBlocked(
+      evaluate({
+        sessionSecretStoreSource:
+          "import { setItem } from '@/services/storage/local-storage';\n" +
+          'setItem(key, 1, tokens);\n',
+      }),
+      /no longer imports expo-secure-store/
+    );
+  });
+
+  it('blocks a second module reaching for secure storage directly', () => {
+    // Scattered SecureStore calls are how "where do the tokens live, and what
+    // happens when the write fails" stops having one answer.
+    expectBlocked(
+      evaluate({
+        secureStoreImporters: [SESSION_SECRET_STORE_PATH, 'src/app/login.tsx'],
+      }),
+      /imported outside the session-secret boundary/
+    );
+  });
+
+  it('blocks the auth store importing AsyncStorage directly', () => {
+    // THE regression this whole rule set exists for: the store holds the live
+    // pair in React state, so direct access to the plaintext store is exactly
+    // how it used to end up persisted there.
+    expectBlocked(
+      evaluate({
+        authStoreSource:
+          "import { setItem } from '@/services/storage/local-storage';\n" +
+          'setItem(STORAGE_KEYS.auth, 3, { user, tokens });\n',
+      }),
+      /imports AsyncStorage directly/
+    );
+  });
+
+  it('blocks the auth store importing the AsyncStorage package itself', () => {
+    expectBlocked(
+      evaluate({
+        authStoreSource:
+          "import AsyncStorage from '@react-native-async-storage/async-storage';\n",
+      }),
+      /imports AsyncStorage directly/
+    );
+  });
+
+  it.each(['accessToken', 'refreshToken'])(
+    'blocks the persisted-account module naming %s in its code',
+    (field) => {
+      expectBlocked(
+        evaluate({
+          persistedAccountSource:
+            "import { setItem } from '@/services/storage/local-storage';\n" +
+            `setItem(key, version, { id, ${field} });\n`,
+        }),
+        /references token material/
+      );
+    }
+  );
+
+  it('does NOT fire on a doc comment that merely names the token fields', () => {
+    // The trap MOCK_MODULE_PATTERN documents: a rule that scanned prose would
+    // fire on the sentence asserting the exact property being checked. Comments
+    // are stripped before the identifiers are looked for.
+    const result = evaluate({
+      persistedAccountSource:
+        '/**\n' +
+        ' * Deliberately persists no accessToken and no refreshToken - those live\n' +
+        ' * in session-secret-store.ts, behind the Android Keystore.\n' +
+        ' */\n' +
+        "import { setItem } from '@/services/storage/local-storage';\n" +
+        '// never write a refreshToken here\n' +
+        'setItem(key, version, { id, name, username, email });\n',
+    });
+
+    expect(blockerTitles(result)).toEqual([]);
+  });
+
+  it('leaves the existing deny-all backup policy rules intact', () => {
+    // Guards the interaction directly: registering expo-secure-store must not
+    // have made the older data-extraction rules unreachable or redundant.
+    expectBlocked(
+      evaluate({ exp: { plugins: ['expo-router'] } }),
+      new RegExp(`${ANDROID_DATA_EXTRACTION_PLUGIN.replace(/[./]/g, '\\$&')} is not in app.json`)
     );
   });
 });

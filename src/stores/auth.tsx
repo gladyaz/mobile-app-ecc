@@ -19,10 +19,16 @@ import {
   loginWithGoogleIdToken,
   verifyWhatsAppOtp,
 } from '@/services/auth/provider-auth-service';
+import type { PersistedAccount } from '@/services/auth/persisted-account';
+import {
+  clearSession,
+  persistRotatedTokens,
+  persistSession,
+  restoreSession,
+} from '@/services/auth/session-store';
 import * as tokenStore from '@/services/auth/token-store';
 import { buildDemoAuthResponse } from '@/services/demo/demo-auth';
 import { isDemoMode } from '@/services/demo/demo-mode';
-import { getItem, removeItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
 import type { AuthResponse, AuthTokens, AuthUser as BackendAuthUser } from '@/types/auth';
 
 /**
@@ -38,25 +44,12 @@ import type { AuthResponse, AuthTokens, AuthUser as BackendAuthUser } from '@/ty
  * consumer must therefore render its own fallback - see profile.tsx - which
  * is the only way the UI can stay honest about an account that genuinely
  * has no email address.
+ *
+ * ALIASED to the persisted shape rather than redeclared: what the store shows
+ * and what is written to AsyncStorage are the same four fields, and two
+ * identical declarations are two things that can drift.
  */
-type AuthUser = {
-  readonly id: string;
-  readonly name: string | null;
-  readonly username: string | null;
-  readonly email: string | null;
-};
-
-type PersistedAuth = {
-  readonly user: AuthUser | null;
-  readonly tokens: AuthTokens | null;
-};
-
-// Bumped to 3 in Phase 10D: version 2 persisted `email: ''` and
-// `name: <user id>` for an account with no email address, so a stored v2
-// payload would reintroduce exactly the two states this version exists to
-// remove. A version bump discards it and re-derives from the next
-// authenticated response instead of migrating a shape that was wrong.
-const AUTH_STORAGE_VERSION = 3;
+type AuthUser = PersistedAccount;
 
 /**
  * What a Google button press produced, from the app's point of view.
@@ -176,17 +169,27 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [tokens, setTokens] = useState<AuthTokens | null>(null);
   const [isHydrated, setIsHydrated] = useState(false);
 
+  /**
+   * Rebuilds the session from storage at launch, and performs the one-time
+   * move of a pre-upgrade plaintext payload into secure storage on the way.
+   * All of that lives in `services/auth/session-store.ts`; see its
+   * `restoreSession` for the full state table.
+   *
+   * BOTH HALVES OR NEITHER. `restoreSession` only ever answers `restored` when
+   * it actually holds a secure credential, so there is no branch here that can
+   * set a user without tokens - which is what stops a failed secure read from
+   * presenting a signed-in shell whose every request would 401.
+   */
   useEffect(() => {
-    getItem<PersistedAuth>(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION)
-      .then((persisted) => {
-        if (persisted?.user) {
-          setUser(persisted.user);
+    restoreSession()
+      .then((restored) => {
+        if (restored.status !== 'restored') {
+          return;
         }
 
-        if (persisted?.tokens) {
-          setTokens(persisted.tokens);
-          tokenStore.setTokens(persisted.tokens);
-        }
+        setUser(restored.session.account);
+        setTokens(restored.session.tokens);
+        tokenStore.setTokens(restored.session.tokens);
       })
       .finally(() => {
         setIsHydrated(true);
@@ -198,29 +201,28 @@ export function AuthProvider({ children }: PropsWithChildren) {
    * refresh-on-401 interceptor (`services/api/client.ts`) calls
    * `token-store.ts`'s notifying setters after a background refresh
    * succeeds or fails. This keeps `stores/auth.tsx` as the single source of
-   * truth for React-visible auth state and AsyncStorage persistence, while
+   * truth for React-visible auth state and for session persistence, while
    * `token-store.ts` itself stays a plain, storage-free holder (see
    * token-store.ts's module doc comment for the full responsibility split).
    *
-   * Uses the functional form of `setUser` purely to read the latest user
-   * without adding `user` as an effect dependency (which would otherwise
-   * force an unsubscribe/resubscribe on every login/logout).
+   * A ROTATION CHANGES THE CREDENTIAL, NOT WHO IS SIGNED IN, so only the
+   * secure half is rewritten and the persisted account metadata is left alone.
+   * That is also why the old functional-`setUser` trick for reading the
+   * current user is gone: there is no longer anything about the user to
+   * re-persist here.
+   *
+   * PERSISTING THE ROTATED PAIR IS BEST-EFFORT, and it is the one place that
+   * is right. The new pair is already live in memory, so the rest of this run
+   * works either way; if the write failed, the next cold start reads a spent
+   * refresh token, the refresh fails, and the viewer is truthfully signed out
+   * and asked to sign in - which is the correct end state, just later.
    */
   useEffect(() => {
     const unsubscribe = tokenStore.onTokensChanged((nextTokens) => {
       if (nextTokens) {
         setTokens(nextTokens);
-        setUser((currentUser) => {
-          if (currentUser) {
-            setItem<PersistedAuth>(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION, {
-              user: currentUser,
-              tokens: nextTokens,
-            }).catch(() => {
-              // Best-effort persistence, matching setItem's own swallow-and-log-nothing contract.
-            });
-          }
-
-          return currentUser;
+        persistRotatedTokens(nextTokens).catch(() => {
+          // See the doc comment above for why a failure here is survivable.
         });
 
         return;
@@ -228,9 +230,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
       setUser(null);
       setTokens(null);
-      removeItem(STORAGE_KEYS.auth).catch(() => {
-        // Best-effort cleanup, matching removeItem's own swallow-and-log-nothing contract.
-      });
+      void clearSession();
     });
 
     return unsubscribe;
@@ -244,7 +244,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
    * same way, with the same tokens - there is no second token store and no
    * provider-specific session shape. A provider's own credential (a Google
    * ID token, an OTP) is consumed before this point and never reaches
-   * storage: only the backend's own access/refresh pair does.
+   * storage: only the backend's own access/refresh pair does, and only into
+   * Keystore-backed secure storage (see services/auth/session-store.ts).
+   *
+   * PERSIST FIRST, THEN SET STATE. `persistSession` throws when secure storage
+   * is present but refuses the credential, and that throw propagates out of
+   * `login()`/`loginWithGoogle()`/`loginWithWhatsApp()` for the screen to
+   * report. Setting React state first would leave the viewer looking at a
+   * signed-in app whose credential was never stored - signed out again at the
+   * next launch with no explanation. A platform with no secure storage at all
+   * (web) is NOT a failure and does not throw; that session simply lives for
+   * the run.
    */
   const adoptSession = useCallback(async (authResponse: AuthResponse) => {
     const derivedUser = deriveAuthUser(authResponse.user);
@@ -253,13 +263,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
       refreshToken: authResponse.refreshToken,
     };
 
+    await persistSession(derivedUser, nextTokens);
+
     setUser(derivedUser);
     setTokens(nextTokens);
     tokenStore.setTokens(nextTokens);
-    await setItem<PersistedAuth>(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION, {
-      user: derivedUser,
-      tokens: nextTokens,
-    });
   }, []);
 
   /**
@@ -370,7 +378,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setUser(null);
     setTokens(null);
     tokenStore.setTokens(null);
-    await removeItem(STORAGE_KEYS.auth);
+    // Clears BOTH halves - the Keystore-backed credential and the persisted
+    // account metadata. Never throws; see session-store.ts's clearSession.
+    await clearSession();
 
     // Clears the Google SDK's own cached account so the next sign-in asks
     // which account to use instead of silently reusing the last one.

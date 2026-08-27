@@ -84,7 +84,15 @@ independent and both matter.
 
 ### 1.4 Auth tokens were eligible for Google Drive backup
 
-`src/services/storage/local-storage.ts` persists the auth envelope — access
+> **Historical.** At the time of this entry `stores/auth.tsx` persisted the
+> access **and** refresh token to AsyncStorage as plaintext JSON. That is no
+> longer true — see **§1.11**, which moved the pair into Android
+> Keystore-backed storage. This entry is kept because the backup decision it
+> records still stands on its own: the AsyncStorage database still holds
+> account metadata, watch history and preferences worth not shipping to
+> another device.
+
+`src/services/storage/local-storage.ts` persisted the auth envelope — access
 **and** refresh token — to AsyncStorage as plaintext JSON, which lives in the
 app's private storage. Android's `allowBackup` defaults to `true`, and
 auto-backup copies private storage to the user's Google Drive and restores it
@@ -331,10 +339,10 @@ next prebuild and the artifact after that silently loses the policy.
 | Decision | Reason |
 |---|---|
 | Both `<cloud-backup>` and `<device-transfer>` | An **absent** section is not a denial. `FullBackup.parseSchemeForBackupDestination` only treats the new scheme as authoritative when it finds the matching section, and otherwise falls through to "no rules at all", i.e. copy everything. A file covering only transfer would be a trap for whoever eventually flips `allowBackup`. |
-| One `<exclude>` per domain, all nine | Exclusion is matched by **exact path**, not prefix (`BackupAgent.manifestExcludesContainFilePath` uses `equals`), and `onFullBackup` runs a separate traversal per domain starting at that domain's own directory. So `<exclude domain="root"/>` alone does **not** exclude `databases/` — which is exactly where AsyncStorage (`RKStorage`) and the tokens live. Excluding the data directory is not the same as excluding what is inside it. |
+| One `<exclude>` per domain, all nine | Exclusion is matched by **exact path**, not prefix (`BackupAgent.manifestExcludesContainFilePath` uses `equals`), and `onFullBackup` runs a separate traversal per domain starting at that domain's own directory. So `<exclude domain="root"/>` alone does **not** exclude `databases/` — which is exactly where AsyncStorage (`RKStorage`) lives, and `sharedpref` is where SecureStore's encrypted file lives. Excluding the data directory is not the same as excluding what is inside it. |
 | `path="."` | Android documents `path` as required and uses `.` for "the domain root" in its own example. `.` canonicalises away, so the rule resolves to the same string the traversal starts from, which is what makes the exact-match prune fire. |
 | No `<include>` at all | An include for any one domain makes Android skip **every other domain's** rules entirely. Adding one to whitelist a harmless preference would silently change what the other eight domains do. |
-| Deny-all rather than excluding just the auth key | AsyncStorage is one database file; no path names a single key inside it. The narrowest rule that can exclude the tokens already excludes the whole store. What remains (a language choice, an ad-frequency counter) is not worth an allow rule that would need re-auditing on every new persisted key. |
+| Deny-all rather than excluding just the auth key | AsyncStorage is one database file; no path names a single key inside it. The narrowest rule that can exclude anything in it already excludes the whole store. What remains (a language choice, an ad-frequency counter) is not worth an allow rule that would need re-auditing on every new persisted key. |
 | `main` source set only | It applies to every variant, so debug and release deny identically. The plugin also **deletes** a generated copy from `debug` / `debugOptimized` / `release`, since a variant override would shadow `main` for that variant alone. |
 | No `fullBackupContent` resource | That is the pre-Android-12 mechanism, and it is only consulted when backup is *enabled*. On API < 31 devices (this app's `minSdk` is 24), `allowBackup="false"` already disables backup and restore outright, and D2D-as-a-separate-destination is an Android 12 concept. A `fullBackupContent` file would be inert. |
 | No `disableIfNoEncryptionCapabilities` | It would assert an encryption capability this app does not implement. **Nothing here encrypts anything** — this is an *extraction* policy: it removes an OS-driven copy path off the device. It makes no claim about data at rest, and none should be made on its behalf. |
@@ -368,6 +376,180 @@ plugin's pure `renderDataExtractionRules()` rather than the gitignored
 `android/` output, so the check reflects the canonical source rather than
 whatever the last prebuild on the machine happened to be pointed at.
 
+**What §1.4 and §1.10 together do NOT do.** They stop the OS copying this app's
+data *off* the device. They do nothing about the copy that stays on it: at the
+close of §1.10 the token pair was still plaintext JSON at rest, readable by
+anyone with a shell on a rooted or debuggable device. That is a different
+problem with a different mechanism, and it is **§1.11**.
+
+---
+
+### 1.11 The token pair was plaintext at rest on the handset
+
+**Added 2026-08-27.** §1.4 and §1.10 closed both OS-driven paths by which this
+app's storage could *leave* the device. Neither made the token pair unreadable
+in the copy that remains on it, and neither claimed to — §1.10's own table says
+"**Nothing here encrypts anything** … It makes no claim about data at rest".
+This entry is that claim being made good.
+
+**Two protections, deliberately separate.** Keep these apart when reading or
+extending this document:
+
+| | Mechanism | What it stops | Where it is documented |
+|---|---|---|---|
+| **Backup / transfer protection** | `android:allowBackup="false"` + deny-all `android:dataExtractionRules` | The OS copying app-private storage to Google Drive, or onto a new handset during device-to-device setup | §1.4, §1.10 |
+| **Token at-rest protection** | `expo-secure-store` — Android Keystore + AES-256-GCM | The token pair being *readable* in the storage that stays on the device | This section |
+
+Neither substitutes for the other. Backup protection still matters with tokens
+encrypted (the account metadata, watch history, and the ciphertext itself are
+all still worth not transferring), and encryption still matters with backup
+denied (a rooted or debuggable handset never involved the OS backup path at
+all).
+
+**The gap.** `stores/auth.tsx` wrote `{ user, tokens }` through
+`services/storage/local-storage.ts` into AsyncStorage under
+`@mobile-app-ecc/auth`. On Android, AsyncStorage is a SQLite database
+(`RKStorage`) under `databases/` in the app's private data directory. Private
+is an *access-control* property enforced by the Linux UID sandbox — it is not
+encryption. `adb shell run-as com.spark.redpanda` on a debuggable build, or any
+root shell, reads the file directly, and the access and refresh token were
+sitting in it in the clear.
+
+**The fix.** `src/services/auth/session-secret-store.ts` is now the one module
+that may import `expo-secure-store`, and the pair is stored there.
+
+Verified against the **installed** implementation
+(`node_modules/expo-secure-store@57.0.2/android/src/main/java/expo/modules/securestore/`),
+not against marketing copy:
+
+| Property | Evidence in the installed source |
+|---|---|
+| Key lives in the Android Keystore | `SecureStoreModule.kt`: `KEYSTORE_PROVIDER = "AndroidKeyStore"`, opened via `KeyStore.getInstance(KEYSTORE_PROVIDER)` |
+| AES-256-GCM | `encryptors/AESEncryptor.kt`: `AES_CIPHER = "AES/GCM/NoPadding"`, `AES_KEY_SIZE_BITS = 256`, `KeyGenParameterSpec.Builder(...).setBlockModes(BLOCK_MODE_GCM).setEncryptionPaddings(ENCRYPTION_PADDING_NONE)` |
+| Fresh IV per item, authenticated | A new IV per `encryptItem`; the GCM tag length is stored beside the value and rejected below 96 bits on read |
+| Ciphertext location | `getSharedPreferences("SecureStore", Context.MODE_PRIVATE)` |
+| Not gated on biometrics | `setUserAuthenticationRequired(options.requireAuthentication)` — this app leaves `requireAuthentication` unset (see below) |
+
+**What this does and does not buy.** The bytes on disk are still inside the
+app's private data directory; what changed is that they are ciphertext under a
+key the process cannot extract. On hardware with a TEE or StrongBox the key
+material never enters userspace. It is **not** protection against a debugger
+attached to a debuggable build, and **not** protection against a rooted device
+where an attacker can simply ask the Keystore to decrypt on the app's behalf —
+Keystore binds the key to the *device* and to this app's signing identity, not
+to a human. **AsyncStorage is not encrypted by any of this**, and must never be
+described as such; what changed is that no token is put there.
+
+`requireAuthentication` is deliberately **not** set. It would put a biometric
+prompt in front of every cold start and every background token refresh, and
+such keys are invalidated when enrolled biometrics change — which would
+permanently sign people out for adding a fingerprint. That is a product
+decision V1 has not taken.
+
+**The persisted shape, exactly.**
+
+| Store | Key | Contents |
+|---|---|---|
+| AsyncStorage | `@mobile-app-ecc/auth` | `{ "version": 4, "data": { "id", "name", "username", "email" } }` — four non-secret account fields. `id` is a non-empty string; the other three are `string \| null`. **No token, and no field derived from one.** |
+| SecureStore | `mobile-app-ecc.session-tokens.v1` | `{ "accessToken", "refreshToken" }`, JSON, stored as AES-256-GCM ciphertext |
+
+The AsyncStorage **key name is unchanged**; the envelope `version` went 3 → 4.
+Renaming the key would have stranded every installed build's stored account
+behind a key nothing reads. Everything else AsyncStorage holds — language,
+likes, saved videos, watch progress, ad counters — is untouched and stays
+exactly where it was.
+
+Why one SecureStore value rather than two keys: the pair must move together. A
+crash between two writes would leave a fresh access token beside a spent
+refresh token — a session that works until the first 401 and then cannot be
+refreshed.
+
+**The upgrade path.** An already-installed handset holds a version-3 payload
+with the plaintext pair. `services/auth/session-store.ts`'s `restoreSession()`
+migrates it on the next launch, in this order, and only this order:
+
+1. Read secure storage. If it already holds a pair, that wins.
+2. Otherwise read the version-3 payload and validate both halves.
+3. Write the pair to secure storage — **and read it back** to confirm it is
+   retrievable and unchanged.
+4. Only then write the version-4 envelope, which overwrites the version-3 one
+   and is therefore what removes the plaintext copy.
+
+The legacy token is never deleted before the secure write has demonstrably
+succeeded, so a failure at any point leaves the handset in its original state
+and the next launch retries from there. The read-back exists because a write
+that merely *resolves* is not proof the value can be read again.
+
+Every state a handset can be in is enumerated in `restoreSession()`'s doc
+comment and covered by `src/services/auth/__tests__/session-store.test.ts`:
+already-migrated, partially-migrated (secure write landed, rewrite did not),
+malformed legacy payload, orphaned credential with no metadata, failed secure
+write, failed secure read, and a platform with no secure storage at all.
+
+**Failure semantics: truthful sign-out, never a fake session.** An
+authenticated state is produced only when a secure credential was actually read
+or actually written — account metadata alone never authenticates. A failed
+secure *read* signs the viewer out and touches nothing (not knowing whether a
+credential exists is not a licence to delete or overwrite one). A failed secure
+*write* at sign-in throws, so the screen reports a failed sign-in rather than
+showing a signed-in app whose credential was never stored. A failed *delete* at
+sign-out still completes the sign-out, and the orphaned credential is cleared
+on the next launch.
+
+**Web is memory-only, by design.** `expo-secure-store`'s web implementation is
+literally `export default {}` (`build/ExpoSecureStore.web.js`), so
+`isAvailableAsync()` is `false` there. Sign-in on `npm run web` still works and
+the session lives for that run, but nothing is persisted — the alternative
+would be writing the pair to `localStorage` in the clear, which is the exact
+exposure this work removes. A pre-existing version-3 payload on such a platform
+is left **untouched** rather than deleted, because deleting the only copy
+without a successful secure write is the one thing the migration must never do.
+V1 ships an Android artifact; web is a development preview.
+
+**Backup-policy interaction — checked, and closed.** `expo-secure-store` ships a
+config plugin that, with its default `configureAndroidBackup: true`, sets
+`android:fullBackupContent` **and** `android:dataExtractionRules` to resources
+of its own. Its `secure_store_data_extraction_rules.xml` is
+`<include domain="sharedpref" path="."/>` plus one `<exclude>` for its own
+file — an *include*-based rule covering a single domain, where this app denies
+all nine in both sections. Only one `android:dataExtractionRules` can survive
+the merge, so `app.json` registers the plugin as
+`["expo-secure-store", { "configureAndroidBackup": false }]`, leaving
+`plugins/with-android-data-extraction-rules.js` as the single backup authority.
+The deny-all policy already covers SecureStore's own file through its
+`sharedpref` and `device_sharedpref` excludes, so nothing is lost by switching
+the plugin's rules off — the app's policy is a strict superset.
+
+Note also that SecureStore data does not survive an uninstall regardless: the
+Keystore key is destroyed with the app, so a restored copy of the ciphertext
+would be undecryptable even if one existed.
+
+**Gated by the preflight.** `npm run release:preflight` now blocks a release
+that:
+
+- does not depend on `expo-secure-store`;
+- does not register it with `configureAndroidBackup: false`;
+- has lost `src/services/auth/session-secret-store.ts`, or that file no longer
+  imports `expo-secure-store`;
+- imports `expo-secure-store` from any **other** module under `src/` (the whole
+  tree is walked, so a *new* importer is caught, which is the point);
+- lets `src/stores/auth.tsx` import AsyncStorage or
+  `@/services/storage/local-storage` directly — the store holds the live pair,
+  so denying it reach to the plaintext store is what makes "the tokens are not
+  in AsyncStorage" a property of the code rather than of somebody having
+  checked;
+- lets `src/services/auth/persisted-account.ts` — the only writer of the
+  AsyncStorage auth key — so much as name `accessToken` or `refreshToken`.
+
+Every rule is structural: an import specifier, a plugin registration, or an
+identifier in **comment-stripped** code. None reads prose. That is the trap
+`MOCK_MODULE_PATTERN` documents in the preflight itself: a rule that scanned doc
+comments would fire on the sentences explaining the very property being checked,
+and a guard that fails on a correct file teaches people to delete the guard.
+`scripts/__tests__/release-contract.test.js` proves each rule fires when its
+fact is perturbed, proves the comment-stripping case explicitly, and asserts the
+checked-in source satisfies all of them.
+
 ---
 
 ## 2. Verified ready
@@ -384,12 +566,12 @@ whatever the last prebuild on the machine happened to be pointed at.
 | **No paywall in a V1 build** | The premium/paywall UI is switched off by one policy module (`services/config/v1-scope.ts`, default OFF, and `EXPO_PUBLIC_PREMIUM_EXPERIENCE_ENABLED=true` is a preflight blocker). The entitlement architecture underneath is preserved, not deleted, and each gated surface has a test pinning both states. See `docs/v1-product-scope.md`. |
 | **Premium gate fails closed** (preserved, off in V1) | `stores/entitlement.tsx` reports `isPremium: false` while logged out, while hydrating, and for any user it has never had an answer for. `GET /videos/:id/playback` is the only real authority. A malformed `accessTier` degrades to `premium`, never `free`. |
 | **Rewards never fabricates numbers** | `src/services/rewards/rewards-service.ts` sends intent only, has no dev-tools route, and throws rather than falling back to fixtures. |
-| **Session survives restart; expiry handled; concurrent 401s are safe** | Tokens persist to AsyncStorage and rehydrate on mount. A `401 INVALID_ACCESS_TOKEN` refreshes once and retries once. The refresh is **single-flight**, so the three providers `_layout.tsx` mounts together cannot each spend the same (rotating) refresh token and force-log-out a valid session at launch. The retry is gated on an identity *generation*, not on the token string, so a sibling request's rotation is retried under the new token while a genuine account change is refused — a request issued by user A can never be committed to user B. Provider credentials (Google ID token, OTP) are consumed once and never persisted. |
+| **Session survives restart; expiry handled; concurrent 401s are safe** | The token pair persists to Android Keystore-backed secure storage (AES-256-GCM) and the non-secret account fields to AsyncStorage; a launch rebuilds the session from both, and produces a signed-in state only when a secure credential was actually read (§1.11). A `401 INVALID_ACCESS_TOKEN` refreshes once and retries once. The refresh is **single-flight**, so the three providers `_layout.tsx` mounts together cannot each spend the same (rotating) refresh token and force-log-out a valid session at launch. The retry is gated on an identity *generation*, not on the token string, so a sibling request's rotation is retried under the new token while a genuine account change is refused — a request issued by user A can never be committed to user B. Provider credentials (Google ID token, OTP) are consumed once and never persisted. |
 | **Debug diagnostics are stripped from the release bundle** | Confirmed by `strings` on the exported Hermes bundle: `[PlaybackDecision]`, `[api-client]`, `[media-url]` and the dev "Reset Local Data" button are all absent. `__DEV__` dead-code elimination works as the code assumes. |
 | **Native identity matches the app config** | `expo prebuild --platform android --clean` regenerated `android/`, then `:app:processReleaseManifest` produced a real merged **release** manifest carrying `package="com.spark.redpanda"` and `android:label` -> `Red Panda`. `applicationId`, `namespace` and the Java package directory (`com/spark/redpanda`) all agree, and `grep -rl com.anonymous android/` returns 0 files. |
 | **Unused permissions really are stripped** | Verified in the MERGED release manifest, not just the source one: `SYSTEM_ALERT_WINDOW`, `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE` are all absent. What ships is `INTERNET`, `ACCESS_NETWORK_STATE`, `VIBRATE`, `WAKE_LOCK`, `FOREGROUND_SERVICE`, `AD_ID` and the three `ACCESS_ADSERVICES_*` - every one of them from React Native or the AdMob SDK. |
 | **Release manifest flags** | Merged release manifest: `android:allowBackup="false"`, **no** `android:debuggable`, **no** app-wide `android:usesCleartextTraffic`. |
-| **App data cannot leave the device by backup or transfer** | `android:allowBackup="false"` **and** `android:dataExtractionRules="@xml/data_extraction_rules"` on `<application>`, verified in a real `expo prebuild` manifest. The resource denies all nine backup domains in **both** `<cloud-backup>` and `<device-transfer>`, with no `<include>` rule — so the AsyncStorage database holding the access/refresh token pair is excluded from Google Drive backup *and* from device-to-device transfer, which `allowBackup=false` alone does not cover on Android 12+. Written to `main` only, so debug and release share one policy; generation is idempotent (byte-identical across a second in-place prebuild). See §1.10. |
+| **App data cannot leave the device by backup or transfer** | `android:allowBackup="false"` **and** `android:dataExtractionRules="@xml/data_extraction_rules"` on `<application>`, verified in a real `expo prebuild` manifest. The resource denies all nine backup domains in **both** `<cloud-backup>` and `<device-transfer>`, with no `<include>` rule — so the AsyncStorage database (account metadata, watch history, preferences) *and* SecureStore's encrypted SharedPreferences file are both excluded from Google Drive backup and from device-to-device transfer, which `allowBackup=false` alone does not cover on Android 12+. This is backup/transfer protection; at-rest protection for the token pair is separate — see §1.11. Written to `main` only, so debug and release share one policy; generation is idempotent (byte-identical across a second in-place prebuild). See §1.10. |
 | **No demo media in a production build, structurally** | `metro/bundled-demo-media.js` keys the exclusion on the build's declared intent rather than on disk state. Measured on a machine that HAS the media: production export 6.8 MB / 43 assets / **zero** `.mp4`; showcase export 65 MB / 11 `.mp4`. |
 | **No payment remnant in the shipped bundle** | `strings` over the release Hermes bundle: `midtrans`, `Segera Hadir`, `billing`, `Play Billing`, `in-app purchase`, `pricing` and `Rp ` are all absent. The only `checkout`/`subscription` hits are the Material Symbols icon name `add_shopping_cart_checkout` and React Native's own `Must pass in a valid subscription`. |
 | **No cleartext exemption in a default build** | `plugins/with-lan-cleartext-demo.js` keys off the scheme of `EXPO_PUBLIC_API_BASE_URL`, so an `https://` backend makes it grant nothing, with nothing to remember to switch off. It also **actively removes** a resource and manifest attribute left by an earlier LAN prebuild — `expo prebuild` without `--clean` regenerates `android/` in place, so returning early would let the tree that built the internal demo ship a production APK still carrying a LAN cleartext exemption. Removal is narrow: only a file bearing the plugin's own generated marker, and only an attribute pointing at its own resource. `usesCleartextTraffic="true"` exists only in the `debug` / `debugOptimized` manifests. See [`playback-quality.md` §4](./playback-quality.md). |

@@ -139,6 +139,86 @@ function extractionRulesBody(xml) {
   return xml.replace(/<!--[\s\S]*?-->/g, '');
 }
 
+// --- Secure session storage -------------------------------------------------
+//
+// These rules exist so a production V1 cannot regress to keeping bearer tokens
+// as plaintext JSON in AsyncStorage, which is what it did before the
+// secure-session work.
+//
+// EVERY RULE BELOW IS STRUCTURAL - an import specifier, a plugin registration,
+// or an identifier in comment-stripped code. None of them reads prose. That is
+// deliberate and it is the same trap `MOCK_MODULE_PATTERN` above documents: a
+// rule that scanned doc comments would fire on the sentences that EXPLAIN the
+// property being checked, and a guard that fails on a correct file teaches
+// people to delete the guard.
+
+const SECURE_STORE_MODULE = 'expo-secure-store';
+
+/**
+ * The single module allowed to import `expo-secure-store`.
+ *
+ * Checked as an EXCLUSIVE list, not just a presence check. Scattered
+ * `SecureStore.setItemAsync` calls across screens would leave no one file that
+ * can be reviewed to answer "where do the tokens live, and what happens when
+ * the write fails" - and no single place for the migration to be correct in.
+ */
+const SESSION_SECRET_STORE_PATH = 'src/services/auth/session-secret-store.ts';
+
+/** The store that must reach persistence only through the session boundary. */
+const AUTH_STORE_PATH = 'src/stores/auth.tsx';
+
+/**
+ * The AsyncStorage modules `stores/auth.tsx` must NOT import.
+ *
+ * This is the rule that actually enforces "no tokens in AsyncStorage", and it
+ * enforces it by construction rather than by inspection: the store holds the
+ * live token pair in React state, so if it cannot reach AsyncStorage at all,
+ * it cannot put them there. Persistence goes through
+ * `services/auth/session-store.ts`, whose two destinations are each
+ * single-purpose.
+ */
+const ASYNC_STORAGE_MODULES = [
+  '@react-native-async-storage/async-storage',
+  '@/services/storage/local-storage',
+];
+
+/**
+ * The field names that identify bearer-token material.
+ *
+ * Matched against the CODE of `persisted-account.ts` with comments stripped -
+ * the module that owns the `@mobile-app-ecc/auth` AsyncStorage key. That file
+ * exists to persist four non-secret account fields and has no legitimate
+ * reason to name either of these, so their appearance is a reliable signal
+ * that a token is on its way back into the plaintext store.
+ */
+const TOKEN_FIELD_NAMES = ['accessToken', 'refreshToken'];
+
+const PERSISTED_ACCOUNT_PATH = 'src/services/auth/persisted-account.ts';
+
+/**
+ * Source with `//` and block comments removed.
+ *
+ * Same technique as `extractionRulesBody` above, and for the same reason: the
+ * doc comments in these files necessarily NAME the things they promise the
+ * code does not do.
+ */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/**
+ * expo-secure-store's own config plugin, which by default writes an
+ * `android:dataExtractionRules` of its own.
+ *
+ * Its policy is `<include domain="sharedpref" path="."/>` plus one exclude for
+ * its own file - an INCLUDE-based rule covering a single domain, where this
+ * app's policy denies all nine. Letting it win would replace an audited
+ * deny-all with something strictly weaker, so app.json must register it with
+ * `configureAndroidBackup: false` and leave
+ * `./plugins/with-android-data-extraction-rules` as the only backup authority.
+ */
+const SECURE_STORE_PLUGIN = 'expo-secure-store';
+
 const RELEASE_SIGNING_KEYS = [
   ['storeFile', 'ANDROID_RELEASE_STORE_FILE'],
   ['storePassword', 'ANDROID_RELEASE_STORE_PASSWORD'],
@@ -223,6 +303,10 @@ function isGoogleSampleAdMobId(value) {
  *   rewardsServiceSource: string,
  *   whatsAppServiceSource: string,
  *   dataExtractionPolicyXml: string | null,
+ *   secureStoreImporters: readonly string[],
+ *   authStoreSource: string,
+ *   persistedAccountSource: string,
+ *   sessionSecretStoreSource: string,
  * }} facts
  * @returns {{ blockers: {title: string, detail: string}[], warnings: {title: string, detail: string}[] }}
  */
@@ -238,6 +322,10 @@ function evaluateReleaseContract(facts) {
     rewardsServiceSource,
     whatsAppServiceSource,
     dataExtractionPolicyXml,
+    secureStoreImporters,
+    authStoreSource,
+    persistedAccountSource,
+    sessionSecretStoreSource,
   } = facts;
 
   const blockers = [];
@@ -732,6 +820,125 @@ function evaluateReleaseContract(facts) {
     }
   }
 
+  // --- Secure session storage ----------------------------------------------
+  //
+  // Before this, `stores/auth.tsx` wrote `{ user, tokens }` straight into
+  // AsyncStorage, so the access AND refresh token sat as plaintext JSON in
+  // RKStorage. The rules below make that specific regression fail the gate.
+  // See the constants block near the top of this file for why each one is
+  // structural rather than a text search.
+
+  if (!dependencyNames.includes(SECURE_STORE_MODULE)) {
+    blocker(
+      `${SECURE_STORE_MODULE} is not a dependency`,
+      'It is the Keystore-backed store the session credentials live in: on Android it holds ' +
+        'them as AES-256-GCM ciphertext under a key generated inside the Android Keystore. ' +
+        'Without it there is nowhere for the access/refresh pair to go except AsyncStorage, ' +
+        'which is a plain SQLite database this app must never put a bearer token in. ' +
+        'Install it with `npx expo install expo-secure-store`.'
+    );
+  }
+
+  // The plugin's own backup rules must stay switched off, or the app ships with
+  // whichever android:dataExtractionRules won the merge - and its policy is an
+  // include-based single-domain rule where this app denies all nine.
+  const secureStorePluginEntry = (exp.plugins || []).find(
+    (plugin) => (Array.isArray(plugin) ? plugin[0] : plugin) === SECURE_STORE_PLUGIN
+  );
+
+  if (!secureStorePluginEntry) {
+    blocker(
+      `${SECURE_STORE_PLUGIN} is not registered in app.json's plugins`,
+      'It must be registered explicitly WITH `{ "configureAndroidBackup": false }`. Left ' +
+        'unregistered the module still autolinks, but nothing states which backup policy wins, ' +
+        'and a future prebuild ordering change could let its own rules replace ' +
+        `${ANDROID_DATA_EXTRACTION_PLUGIN}'s deny-all. Registering it with the flag off makes ` +
+        'this app\'s policy the single, stated authority.'
+    );
+  } else if (
+    !Array.isArray(secureStorePluginEntry) ||
+    (secureStorePluginEntry[1] || {}).configureAndroidBackup !== false
+  ) {
+    blocker(
+      `${SECURE_STORE_PLUGIN} is registered without \`configureAndroidBackup: false\``,
+      'With the default (true) its plugin writes android:fullBackupContent and ' +
+        'android:dataExtractionRules pointing at its OWN resource, whose policy is ' +
+        '`<include domain="sharedpref" path="."/>` with one exclude for its own file. An ' +
+        'include-based rule for one domain is strictly weaker than this app\'s nine-domain ' +
+        `deny-all, and only one of the two attributes can survive. Set the flag to false so ` +
+        `${ANDROID_DATA_EXTRACTION_PLUGIN} stays the only backup authority.`
+    );
+  }
+
+  // The canonical boundary must exist and must be the ONLY importer. A second
+  // importer is how "where do the tokens live" stops having one answer.
+  if (!sessionSecretStoreSource) {
+    blocker(
+      `${SESSION_SECRET_STORE_PATH} is missing`,
+      'It is the canonical session-secret boundary - the one module that may talk to ' +
+        'expo-secure-store, and the one place the write-then-read-back verification the ' +
+        'legacy migration depends on is implemented.'
+    );
+  } else if (!collectImportSpecifiers(sessionSecretStoreSource).includes(SECURE_STORE_MODULE)) {
+    blocker(
+      `${SESSION_SECRET_STORE_PATH} no longer imports ${SECURE_STORE_MODULE}`,
+      'The boundary file exists but does not reach Keystore-backed storage, so whatever it ' +
+        'now persists the session credentials to is not encrypted by the Android Keystore.'
+    );
+  }
+
+  const straySecureStoreImporters = (secureStoreImporters || []).filter(
+    (modulePath) => modulePath !== SESSION_SECRET_STORE_PATH
+  );
+
+  if (straySecureStoreImporters.length > 0) {
+    blocker(
+      `${SECURE_STORE_MODULE} is imported outside the session-secret boundary: ` +
+        straySecureStoreImporters.join(', '),
+      `Only ${SESSION_SECRET_STORE_PATH} may import it. Every other caller goes through ` +
+        'services/auth/session-store.ts, so that failure handling, the read-back verification ' +
+        'and the legacy migration are implemented once rather than re-decided per call site.'
+    );
+  }
+
+  // The store must not be able to reach AsyncStorage at all. It holds the live
+  // token pair, so this is what makes "the tokens are not in AsyncStorage" a
+  // property of the code rather than of somebody having checked.
+  if (authStoreSource) {
+    const authStorageImports = collectImportSpecifiers(authStoreSource).filter((specifier) =>
+      ASYNC_STORAGE_MODULES.includes(specifier)
+    );
+
+    if (authStorageImports.length > 0) {
+      blocker(
+        `${AUTH_STORE_PATH} imports AsyncStorage directly: ${authStorageImports.join(', ')}`,
+        'It holds the live access/refresh pair in React state, so direct access to the ' +
+          'plaintext store is exactly how the pair used to end up persisted there. Session ' +
+          'persistence belongs to services/auth/session-store.ts, which sends the credentials ' +
+          'to Keystore-backed storage and only the non-secret account fields to AsyncStorage.'
+      );
+    }
+  }
+
+  // The module that owns the AsyncStorage auth key must not so much as name a
+  // token field. Comments are stripped first; see `stripComments`.
+  if (persistedAccountSource) {
+    const persistedAccountCode = stripComments(persistedAccountSource);
+    const leakedFields = TOKEN_FIELD_NAMES.filter((field) =>
+      persistedAccountCode.includes(field)
+    );
+
+    if (leakedFields.length > 0) {
+      blocker(
+        `${PERSISTED_ACCOUNT_PATH} references token material: ${leakedFields.join(', ')}`,
+        'That module is the only writer of the "@mobile-app-ecc/auth" AsyncStorage key, and it ' +
+          'exists to persist four non-secret account fields (id, name, username, email). Naming ' +
+          'a token field there means one is being written to, or read from, the plaintext ' +
+          'store. The pair belongs in services/auth/session-secret-store.ts.'
+      );
+    }
+  }
+
   const blockedPermissions = (exp.android && exp.android.blockedPermissions) || [];
   const unblockedPermissions = UNUSED_MERGED_PERMISSIONS.filter(
     ([permission]) => !blockedPermissions.includes(permission)
@@ -884,7 +1091,65 @@ function readReleaseFacts() {
       path.join(projectRoot, 'src', 'services', 'auth', 'provider-auth-service.ts')
     ),
     dataExtractionPolicyXml: readDataExtractionPolicy(),
+    secureStoreImporters: collectSecureStoreImporters(),
+    authStoreSource: readFileIfPresent(path.join(projectRoot, ...AUTH_STORE_PATH.split('/'))),
+    persistedAccountSource: readFileIfPresent(
+      path.join(projectRoot, ...PERSISTED_ACCOUNT_PATH.split('/'))
+    ),
+    sessionSecretStoreSource: readFileIfPresent(
+      path.join(projectRoot, ...SESSION_SECRET_STORE_PATH.split('/'))
+    ),
   };
+}
+
+/**
+ * Every module under `src/` whose imports include `expo-secure-store`, as
+ * repo-relative POSIX paths.
+ *
+ * WHY THE WHOLE TREE rather than a fixed list of files: the rule being checked
+ * is that there is exactly ONE importer, and a rule that only looks at files it
+ * already knows about cannot notice a NEW one - which is precisely the
+ * regression it exists to catch.
+ *
+ * Test files are skipped. A suite that reaches for the module directly is
+ * exercising the boundary, not bypassing it, and shipping code is what this
+ * gate is about.
+ */
+function collectSecureStoreImporters() {
+  const sourceRoot = path.join(projectRoot, 'src');
+  const importers = [];
+
+  if (!fs.existsSync(sourceRoot)) {
+    return importers;
+  }
+
+  const pending = [sourceRoot];
+
+  while (pending.length > 0) {
+    const directory = pending.pop();
+
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolutePath = path.join(directory, entry.name);
+
+      if (entry.isDirectory()) {
+        if (entry.name !== '__tests__' && entry.name !== 'node_modules') {
+          pending.push(absolutePath);
+        }
+
+        continue;
+      }
+
+      if (!/\.(ts|tsx|js|jsx)$/.test(entry.name) || /\.test\./.test(entry.name)) {
+        continue;
+      }
+
+      if (collectImportSpecifiers(readFileIfPresent(absolutePath)).includes(SECURE_STORE_MODULE)) {
+        importers.push(path.relative(projectRoot, absolutePath).split(path.sep).join('/'));
+      }
+    }
+  }
+
+  return importers.sort();
 }
 
 /**
@@ -956,6 +1221,14 @@ module.exports = {
   GOOGLE_SAMPLE_ADMOB_PUBLISHER,
   GOOGLE_WEB_CLIENT_ID_PATTERN,
   PAYMENT_SDK_PATTERN,
+  ASYNC_STORAGE_MODULES,
+  AUTH_STORE_PATH,
+  PERSISTED_ACCOUNT_PATH,
+  SECURE_STORE_MODULE,
+  SECURE_STORE_PLUGIN,
+  SESSION_SECRET_STORE_PATH,
+  TOKEN_FIELD_NAMES,
+  stripComments,
   RELEASE_SIGNING_KEYS,
   RELEASE_SIGNING_PLUGIN,
   RELEASE_UNSAFE_FLAGS,

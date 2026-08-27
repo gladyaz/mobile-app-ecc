@@ -11,6 +11,7 @@ import {
   verifyWhatsAppOtp,
 } from '@/services/auth/provider-auth-service';
 import { getItem, setItem, STORAGE_KEYS } from '@/services/storage/local-storage';
+import { __SESSION_TOKENS_KEY } from '@/services/auth/session-secret-store';
 import {
   __resetTokenStoreForTests,
   clearTokensAndNotify,
@@ -39,12 +40,39 @@ const mockedLoginWithGoogleIdToken = loginWithGoogleIdToken as jest.MockedFuncti
 >;
 const mockedVerifyWhatsAppOtp = verifyWhatsAppOtp as jest.MockedFunction<typeof verifyWhatsAppOtp>;
 
-// Matches the version this store currently persists at - kept in sync via
-// the same constant contract as stores/auth.tsx's own AUTH_STORAGE_VERSION.
-// Bumped to 3 when `email`/`name`/`username` became nullable, so a v2
-// payload (which coerced a missing email to '' and a missing name to the
-// user id) is discarded rather than restored.
-const AUTH_STORAGE_VERSION = 3;
+/**
+ * The two persisted shapes this store has to cope with.
+ *
+ * Version 3 is the PRE-UPGRADE payload - `{ user, tokens }`, with the bearer
+ * pair as plaintext JSON. Nothing writes it any more; it is seeded below only
+ * to stand in for an already-installed build, whose session must survive the
+ * upgrade rather than being dropped.
+ *
+ * Version 4 is what is written now: the four non-secret account fields and
+ * nothing else. The credential lives in Keystore-backed secure storage instead
+ * - see services/auth/session-store.ts, whose own suite covers the storage
+ * semantics in detail. What THIS file checks is that the React store ends up in
+ * the right state and puts nothing secret in AsyncStorage on the way.
+ */
+const LEGACY_AUTH_STORAGE_VERSION = 3;
+const ACCOUNT_STORAGE_VERSION = 4;
+
+type SecureStoreMockControls = {
+  readonly __resetSecureStoreMock: () => void;
+  readonly __peekSecureStore: (key: string) => string | null;
+};
+
+const secureStore = jest.requireMock<SecureStoreMockControls>('expo-secure-store');
+
+/** What is actually sitting in secure storage, as raw text. */
+function readSecurePayload(): string | null {
+  return secureStore.__peekSecureStore(__SESSION_TOKENS_KEY);
+}
+
+/** The raw AsyncStorage auth payload, as stored - not as parsed. */
+async function readRawAuthPayload(): Promise<string | null> {
+  return AsyncStorage.getItem(STORAGE_KEYS.auth);
+}
 
 function buildAuthResponse(overrides?: Partial<AuthResponse>): AuthResponse {
   return {
@@ -57,6 +85,10 @@ function buildAuthResponse(overrides?: Partial<AuthResponse>): AuthResponse {
 
 afterEach(async () => {
   await AsyncStorage.clear();
+  // Secure storage is now the other half of a session, so leaving it populated
+  // would carry a signed-in credential into the next test exactly the way a
+  // stale AsyncStorage would.
+  secureStore.__resetSecureStoreMock();
   __resetTokenStoreForTests();
   jest.clearAllMocks();
 });
@@ -130,7 +162,9 @@ function AuthProbe() {
 }
 
 describe('AuthProvider', () => {
-  it('restores a persisted user session on mount', async () => {
+  it('restores a session persisted by an already-installed build', async () => {
+    // The upgrade case: a handset that was signed in BEFORE tokens moved to
+    // secure storage must come back signed in, not be silently logged out.
     const persisted = {
       user: {
         id: 'user_001',
@@ -140,7 +174,7 @@ describe('AuthProvider', () => {
       },
       tokens: { accessToken: 'access-1', refreshToken: 'refresh-1' },
     };
-    await setItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION, persisted);
+    await setItem(STORAGE_KEYS.auth, LEGACY_AUTH_STORAGE_VERSION, persisted);
 
     const { getByTestId } = await render(
       <AuthProvider>
@@ -153,6 +187,11 @@ describe('AuthProvider', () => {
     expect(getByTestId('authenticated').props.children).toBe('true');
     expect(getByTestId('username').props.children).toBe('gladyaz');
     expect(getTokens()).toEqual(persisted.tokens);
+
+    // ...and the pair it came back with is now in secure storage, with no
+    // copy left in the plaintext one.
+    expect(readSecurePayload()).toContain('refresh-1');
+    expect(await readRawAuthPayload()).not.toContain('refresh-1');
   });
 
   it('discards a version-2 payload instead of restoring its coerced fields', async () => {
@@ -208,14 +247,24 @@ describe('AuthProvider', () => {
     expect(getByTestId('username').props.children).toBe('gladyaz');
     expect(getByTestId('name').props.children).toBe('Gladyaz');
 
-    const persisted = await getItem<{ user: unknown; tokens: unknown }>(
-      STORAGE_KEYS.auth,
-      AUTH_STORAGE_VERSION
-    );
-    expect(persisted).toEqual({
-      user: { id: 'user_001', name: 'Gladyaz', username: 'gladyaz', email: 'gladyaz@example.com' },
-      tokens: { accessToken: 'access-token-1', refreshToken: 'refresh-token-1' },
+    // The account metadata goes to AsyncStorage...
+    expect(await getItem(STORAGE_KEYS.auth, ACCOUNT_STORAGE_VERSION)).toEqual({
+      id: 'user_001',
+      name: 'Gladyaz',
+      username: 'gladyaz',
+      email: 'gladyaz@example.com',
     });
+
+    // ...and the credential goes to secure storage, and ONLY there.
+    const secure = readSecurePayload() ?? '';
+    expect(secure).toContain('access-token-1');
+    expect(secure).toContain('refresh-token-1');
+
+    const raw = (await readRawAuthPayload()) ?? '';
+    expect(raw).not.toContain('accessToken');
+    expect(raw).not.toContain('refreshToken');
+    expect(raw).not.toContain('access-token-1');
+    expect(raw).not.toContain('refresh-token-1');
   });
 
   it('does NOT create an account when login fails with INVALID_CREDENTIALS', async () => {
@@ -242,7 +291,8 @@ describe('AuthProvider', () => {
     expect(mockedRegister).not.toHaveBeenCalled();
     expect(getByTestId('authenticated').props.children).toBe('false');
     expect(getTokens()).toBeNull();
-    expect(await getItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION)).toBeUndefined();
+    expect(await readRawAuthPayload()).toBeNull();
+    expect(readSecurePayload()).toBeNull();
   });
 
   it('registers only through the explicit registration entry point', async () => {
@@ -325,7 +375,10 @@ describe('AuthProvider', () => {
 
     expect(mockedLogout).toHaveBeenCalledWith('refresh-token-1');
     expect(getByTestId('username').props.children).toBe('');
-    expect(await getItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION)).toBeUndefined();
+    expect(await readRawAuthPayload()).toBeNull();
+    // The Keystore-backed half is cleared too - a sign-out that left the
+    // credential behind would be a sign-out in the UI only.
+    expect(readSecurePayload()).toBeNull();
     expect(getTokens()).toBeNull();
   });
 
@@ -348,7 +401,8 @@ describe('AuthProvider', () => {
     await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('false'));
 
     expect(mockedLogout).toHaveBeenCalledWith('refresh-token-1');
-    expect(await getItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION)).toBeUndefined();
+    expect(await readRawAuthPayload()).toBeNull();
+    expect(readSecurePayload()).toBeNull();
   });
 
   it('forces a logout when token-store reports a cleared token (interceptor-driven)', async () => {
@@ -356,7 +410,7 @@ describe('AuthProvider', () => {
       user: { id: 'user_001', name: 'Gladyaz', username: 'gladyaz', email: 'gladyaz@example.com' },
       tokens: { accessToken: 'access-1', refreshToken: 'refresh-1' },
     };
-    await setItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION, persisted);
+    await setItem(STORAGE_KEYS.auth, LEGACY_AUTH_STORAGE_VERSION, persisted);
 
     const { getByTestId } = await render(
       <AuthProvider>
@@ -376,7 +430,8 @@ describe('AuthProvider', () => {
 
     await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('false'));
     expect(getByTestId('username').props.children).toBe('');
-    expect(await getItem(STORAGE_KEYS.auth, 2)).toBeUndefined();
+    expect(await readRawAuthPayload()).toBeNull();
+    expect(readSecurePayload()).toBeNull();
   });
 
   describe('provider sign-in enters the existing session store', () => {
@@ -404,15 +459,15 @@ describe('AuthProvider', () => {
         accessToken: 'access-token-1',
         refreshToken: 'refresh-token-1',
       });
-      expect(await getItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION)).toEqual({
-        user: {
-          id: 'user_001',
-          name: 'Gladyaz',
-          username: 'gladyaz',
-          email: 'gladyaz@example.com',
-        },
-        tokens: { accessToken: 'access-token-1', refreshToken: 'refresh-token-1' },
+      expect(await getItem(STORAGE_KEYS.auth, ACCOUNT_STORAGE_VERSION)).toEqual({
+        id: 'user_001',
+        name: 'Gladyaz',
+        username: 'gladyaz',
+        email: 'gladyaz@example.com',
       });
+      // A provider sign-in lands in the same two places as an email one.
+      expect(readSecurePayload()).toContain('refresh-token-1');
+      expect(await readRawAuthPayload()).not.toContain('refresh-token-1');
     });
 
     it('never persists the Google ID token as the session', async () => {
@@ -433,11 +488,9 @@ describe('AuthProvider', () => {
       await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('true'));
 
       // The provider credential is one-shot: it must appear nowhere in the
-      // token store or in what was written to AsyncStorage.
-      const persisted = JSON.stringify(
-        await getItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION)
-      );
-      expect(persisted).not.toContain('google-id-token');
+      // token store, and in NEITHER persistence destination.
+      expect(await readRawAuthPayload()).not.toContain('google-id-token');
+      expect(readSecurePayload()).not.toContain('google-id-token');
       expect(JSON.stringify(getTokens())).not.toContain('google-id-token');
     });
 
@@ -576,7 +629,8 @@ describe('AuthProvider', () => {
       // is revoked, local state is cleared...
       expect(mockedLogout).toHaveBeenCalledWith('refresh-token-1');
       expect(getTokens()).toBeNull();
-      expect(await getItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION)).toBeUndefined();
+      expect(await readRawAuthPayload()).toBeNull();
+      expect(readSecurePayload()).toBeNull();
       // ...and the provider's own cached account is cleared, so the next
       // sign-in asks which account to use.
       expect(mockedSignOutFromGoogle).toHaveBeenCalled();
@@ -600,7 +654,8 @@ describe('AuthProvider', () => {
       await waitFor(() => expect(getByTestId('authenticated').props.children).toBe('false'));
 
       expect(mockedLogout).toHaveBeenCalledWith('refresh-token-1');
-      expect(await getItem(STORAGE_KEYS.auth, AUTH_STORAGE_VERSION)).toBeUndefined();
+      expect(await readRawAuthPayload()).toBeNull();
+      expect(readSecurePayload()).toBeNull();
     });
   });
 

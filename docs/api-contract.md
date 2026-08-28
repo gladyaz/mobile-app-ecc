@@ -549,29 +549,85 @@ while both sides look correctly configured.
 #### Not available, and must not be built as if it were
 
 - **A "set first password" flow** for a Google-only or WhatsApp-only account. Password reset deliberately refuses passwordless accounts rather than silently minting a first credential. Mobile must not present password reset as a route into one.
-- **Self-delete for a passwordless account.** `POST /users/me/deletion` requires the current password and fails closed with `INVALID_CREDENTIALS` for an account that has none. The Data & Privacy screen should not offer deletion as if it will work for such an account; the honest fix needs a verified-provider reauthentication flow, which does not exist.
+- ~~**Self-delete for a passwordless account.**~~ **RESOLVED.** This used to be a real gap: `POST /users/me/deletion` demanded the current password and failed closed with `INVALID_CREDENTIALS` for an account that had none, so a Google-only or WhatsApp-only account was told its password was wrong. The backend now accepts a proof appropriate to the identity and the app asks for whichever one the account can produce — see the three deletion routes below.
+
+### GET /users/me/deletion/methods
+
+- Purpose: Ask which deletion proofs the signed-in account can produce **on this server, right now** — the route that decides whether the "Hapus Akun" card renders a password field, a "continue with Google" button, or a "send me a code" button.
+- Method and path: `GET /users/me/deletion/methods`
+- Auth required: Yes
+- Request params/body: None.
+- Example response:
+
+```json
+{ "methods": ["password", "google", "whatsapp"] }
+```
+
+Ordered `password`, `google`, `whatsapp` — a fixed order, so a client that renders the first entry as its default gets a stable one for a given account. A method appears only when the account owns the credential **and** the server can currently verify it (the provider's feature flag is on). Only method NAMES: no email, no phone, no Google `sub`; a screen needing a display identifier reads the masked one from `GET /auth/identities`.
+
+**An empty list is a truthful, reachable answer, not an error** — a Google-only account on a server with `GOOGLE_AUTH_ENABLED=false` genuinely has no verifiable proof. The client renders it as an explanation plus the support route, never as a retryable failure.
+
+- Mobile screen: Data & Privasi (`src/app/account-data.tsx` → `src/features/account-deletion/delete-account-card.tsx`)
+- Connected: Yes. `fetchDeletionMethods()` in `src/services/auth/account-deletion-service.ts`. The payload is validated at the boundary (an unrecognized future method is dropped rather than rejecting the whole list, matching `parseAuthIdentities`).
+
+### POST /users/me/deletion/whatsapp/otp
+
+- Purpose: Deliver an **account-deletion** verification code over WhatsApp to the number the authenticated caller's own account already has linked.
+- Method and path: `POST /users/me/deletion/whatsapp/otp`
+- Auth required: Yes
+- Request body: **None, and there is deliberately no `phone` field.** The number is read from the caller's own `AuthIdentity` row, which is what binds the challenge to this account and keeps this authenticated route from becoming a way to send WhatsApp messages to arbitrary numbers.
+- Example response (`202 Accepted`):
+
+```json
+{ "success": true, "expiresInSeconds": 300, "resendAvailableInSeconds": 60 }
+```
+
+**NOT `POST /auth/whatsapp/otp/request`.** The login route issues a code in the backend's `login` purpose namespace — a code that can mint a session. This route issues one in the `account_deletion` namespace, which `POST /auth/whatsapp/otp/verify` cannot even see. The two call sites must stay separate: a login code submitted as a deletion proof simply fails `INVALID_OTP`, and a deletion code submitted to the login verify route would sign the viewer in rather than delete anything.
+
+- Errors: `409 ACCOUNT_DELETION_METHOD_UNAVAILABLE` (no linked number, or WhatsApp disabled server-side); `429 OTP_RESEND_COOLDOWN` (per-number cooldown / rolling budget); a generic `429` with code `HTTP_ERROR` from the per-IP route throttle (the same 3-per-10-minutes budget the login route carries — **branch on `error.status`, not `error.code`**); `503 WHATSAPP_PROVIDER_UNAVAILABLE` when delivery itself failed (no challenge survives this, so no cooldown is spent and "try again shortly" is true).
+- Connected: Yes. `requestWhatsAppDeletionOtp()` in `src/services/auth/account-deletion-service.ts`. The timing constants drive `src/features/auth/use-otp-resend-countdown.ts`, shared unchanged with the login flow.
 
 ### POST /users/me/deletion
 
 - Purpose: Permanently delete the current user's account, from the "Data & Privasi" screen's danger zone.
 - Method and path: `POST /users/me/deletion`
 - Auth required: Yes
-- Request body (from `deleteMyAccount()` in `src/services/auth/account-deletion-service.ts`):
+- Request body — **one endpoint, one discriminated proof** (from `deleteMyAccount(proof)` in `src/services/auth/account-deletion-service.ts`):
 
-```json
-{
-  "currentPassword": "current-password",
-  "confirmDeletion": true
-}
+```jsonc
+// password — the pre-existing body, still sent verbatim, with NO `method` field
+{ "currentPassword": "current-password", "confirmDeletion": true }
+
+// google — a FRESH Google ID token obtained from services/auth/google-sign-in.ts
+{ "method": "google", "idToken": "<fresh Google ID token>", "confirmDeletion": true }
+
+// whatsapp — the code delivered by POST /users/me/deletion/whatsapp/otp
+{ "method": "whatsapp", "code": "123456", "confirmDeletion": true }
 ```
 
-`confirmDeletion` must be the LITERAL boolean `true` — the backend rejects the string `"true"` and any other value with a `400`. `deleteMyAccount()` has no parameter for this field and always sends the literal `true`; there is no code path in this client that can send anything else.
+`method` is optional on the backend and defaults to `"password"`. **This client deliberately omits it for the password path**, so that request stays byte-identical to what it has always been and does not depend on a DTO older deployments would reject. Google and WhatsApp name their method, because for them there is no default to inherit. Proof fields belonging to other methods are ignored by the backend and never sent by this client — the `DeletionProof` union makes a mixed body unrepresentable.
+
+`confirmDeletion` must be the LITERAL boolean `true` — the backend rejects the string `"true"` and any other value with a `400`. It is an **intent flag, never a credential**: it is required in ADDITION to a real proof, never instead of one. `deleteMyAccount()` has no parameter for it and always sends the literal `true`.
+
+**Google ownership is proved server-side, by `sub`.** The verified token's subject is compared against this account's own `AuthIdentity.providerSubject`; a mismatch answers `ACCOUNT_DELETION_PROOF_MISMATCH`. The mobile client never compares Google email addresses itself — an email can be unverified or reassigned, and a client-side check is not evidence of anything. The client also never exchanges that token at `POST /auth/google`: doing so would mint a session for whichever account owns the Google identity and could sign the viewer into a *different* account mid-deletion.
 
 - Example response: `200 { "success": true }`.
-- Mobile screen: Data & Privasi (`src/app/account-data.tsx`)
-- MVP priority: P0 (Phase 12, work unit 12C-B1/12C-M1)
-- Backend notes: **IMMEDIATE and IRREVERSIBLE** — no grace period, no cancellation endpoint. On success, every session for the account (including this device's own current session) is revoked and the `User` row itself is deleted in the same transaction; related rows cascade-delete (sessions, like/save interactions, watch progress, entitlements, password-reset tokens, lockouts) while `AnalyticsEvent`/`AuthAuditEvent` rows survive anonymized (`userId` set to `null`). Throws `ApiError` with code `INVALID_CREDENTIALS` (status 401) for a wrong `currentPassword` on an account that still exists — the same generic code `login()`/`changePassword()` use. Throws code `INVALID_ACCESS_TOKEN` (status 401) — NOT `INVALID_CREDENTIALS` — if the user no longer exists, including a repeated call on an already-deleted account (no distinct "already deleted" oracle, by design): this reuses the same generic "vanished user" code `GET /users/me/export` throws for the identical condition (see that endpoint's notes below), rather than collapsing it into the wrong-password code. Verified against backend source: `src/auth/auth.service.ts`'s `deleteAccount` throws `AppErrorCode.INVALID_ACCESS_TOKEN` when `this.prisma.user.findUnique` returns null, pinned by `src/auth/account-deletion.service.spec.ts`'s "is idempotent: a second call for an already-deleted account gets the same clean INVALID_ACCESS_TOKEN 401 every other 'user vanished' path already uses" test. Throws code `ACCOUNT_DELETION_FORBIDDEN` (status 403) if the account's role is not a plain `user` (e.g. admin/operator) — self-service deletion is not available for those roles this phase. Throws status 429 (generic `HTTP_ERROR` code — the backend's throttler does not emit an endpoint-specific error code, so `error.status`, not `error.code`, is the only reliable signal for this case) once the dedicated 5-calls-per-15-minutes rate limit is exceeded.
-- Connected: Yes. `deleteMyAccount(currentPassword)` in `src/services/auth/account-deletion-service.ts` calls `request('users/me/deletion', ...)` with `{ requiresAuth: true }`. `src/app/account-data.tsx` requires an explicit, unmissable "this is permanent and cannot be undone" confirmation (via the shared `ConfirmDialog`) plus the current password before ever calling this. On success, the screen purges the just-deleted identity's own cached per-user data — `clearPersistedInteractionsForIdentity`/`clearPersistedProgressForIdentity` (new exports added to `src/stores/video-interactions.tsx`/`src/stores/series-progress.tsx` for this work unit) — BEFORE calling `useAuth().logout()` and redirecting to `/login`. This extra purge is deliberately more aggressive than what `logout()` alone does: an ordinary logout leaves a signed-out identity's own like/save/watch-progress data cached in `AsyncStorage` on purpose, so the same device can resume it if that same account logs back in later (see those two stores' identity-scoped hydration effects). Account deletion has no "later login as this account" to ever resume for, so this work unit added a dedicated, more aggressive purge path for exactly this case rather than changing `logout()`'s own (intentional, unrelated) behavior for every other caller.
+- Mobile screen: Data & Privasi (`src/app/account-data.tsx` → `src/features/account-deletion/`)
+- Backend notes: **IMMEDIATE and IRREVERSIBLE** — no grace period, no cancellation endpoint. On success every session for the account (including this device's own) is revoked and the `User` row is deleted in the same transaction; related rows cascade-delete (sessions, auth identities, like/save interactions, watch progress, entitlements, password-reset tokens, lockouts, and the whole rewards set: wallet, ledger, check-ins, redemptions, mission claims, watch credits, perks), while `AnalyticsEvent` survives de-linked and `AuthAuditEvent` survives explicitly scrubbed (`userId`, `ipHash`, `userAgent`, `metadata` nulled). Every `PhoneOtpChallenge` for the account's number is purged after the commit. Because `AuthIdentity` cascades, presenting the same Google account or phone number afterwards takes the brand-new-account path — there is no orphan identity that can re-enter a deleted account.
+
+| Status | Code | Means |
+|---|---|---|
+| `400` | `HTTP_ERROR` | Missing/`false` `confirmDeletion`, unknown `method`, or the chosen method's field missing |
+| `401` | `INVALID_ACCESS_TOKEN` | No/expired token, or the account no longer exists (a repeat call — no distinct "already deleted" oracle, the same generic code `GET /users/me/export` throws) |
+| `401` | `INVALID_CREDENTIALS` | Wrong password |
+| `401` | `INVALID_GOOGLE_TOKEN` | The Google credential did not verify (bad signature, wrong audience, expired, bad issuer — deliberately not split) |
+| `401` | `INVALID_OTP` | Code wrong, expired, already used, or attempts exhausted — **one code for all four, by design**; the client must not split it |
+| `401` | `ACCOUNT_DELETION_PROOF_MISMATCH` | The credential verified but belongs to a different identity ("that is not the Google account linked to this account") |
+| `403` | `ACCOUNT_DELETION_FORBIDDEN` | Not a plain `user` role (admin/operator) |
+| `409` | `ACCOUNT_DELETION_METHOD_UNAVAILABLE` | This account cannot produce the named proof. The honest answer that replaced the old, false `INVALID_CREDENTIALS` for passwordless accounts; the client re-reads `GET /users/me/deletion/methods` on this code and on no other |
+| `429` | `HTTP_ERROR` | 5 deletion attempts per 15 minutes (a framework throttle — `error.status`, not `error.code`, is the reliable signal) |
+
+- Connected: Yes. On success the screen purges the just-deleted identity's own cached per-user data — `clearPersistedInteractionsForIdentity`/`clearPersistedProgressForIdentity` — **before** calling `useAuth().logout()` (which clears both the Keystore-backed token pair and the persisted account metadata via `session-store.clearSession`, and signs the Google SDK out) and redirecting to `/login`. That extra purge is deliberately more aggressive than an ordinary logout, which leaves a signed-out identity's data cached on purpose so the same account can resume it later; a deleted account has no "later". Rewards state needs no step of its own — it is React-state-only, re-read from `GET /rewards/snapshot` each session and never persisted. **Nothing local is cleared when the request fails**, so a network error never signs a viewer out or wipes their cache.
 
 ### GET /users/me/export
 

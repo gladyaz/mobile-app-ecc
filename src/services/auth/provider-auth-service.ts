@@ -1,4 +1,5 @@
-import { ApiError, request } from '@/services/api/client';
+import { request } from '@/services/api/client';
+import { invalidOtpResponse, parseOtpChallenge } from '@/services/auth/otp-challenge';
 import type {
   AuthIdentitySummary,
   AuthProviderId,
@@ -8,6 +9,9 @@ import type {
 } from '@/types/auth';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
+
+/** Names this module in every boundary-validation failure it raises. */
+const PARSE_SOURCE = 'provider-auth-service';
 
 /**
  * The ONE place the app talks to the backend's provider-auth surface
@@ -98,59 +102,12 @@ export async function startWhatsAppOtp(phoneE164: string): Promise<OtpChallenge>
     body: JSON.stringify({ phone: phoneE164 }),
   });
 
-  return parseOtpChallenge(payload);
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function invalidResponse(detail: string): ApiError {
-  return new ApiError(0, 'INVALID_RESPONSE', `[provider-auth-service] ${detail}`);
-}
-
-/**
- * Validates the OTP challenge payload instead of casting it.
- *
- * This is the one place in the provider surface where an unchecked cast had
- * teeth: the two timing fields feed arithmetic in
- * `features/auth/use-otp-resend-countdown.ts`, so a backend that omitted
- * `resendAvailableInSeconds` produced NaN, a countdown that never finished,
- * and a permanently disabled "resend" button - a dead end for the viewer,
- * from a payload that looked fine to TypeScript. The canonical contract now
- * guarantees both fields, which is a reason to keep checking them at the
- * boundary rather than to stop: a boundary check is how a contract drift
- * surfaces as one legible error instead of as arithmetic on `undefined`.
- *
- * `success` is checked too, because the backend sends it and a payload
- * without it is not the response this function claims to return.
- *
- * Throws (rather than substituting defaults) on a malformed payload: an
- * invented countdown would hide the contract mismatch, and the caller
- * already renders a real "code could not be sent" error state. Follows the
- * same shape-validation precedent as `parseAdsConfig` in
- * `services/ads/ads-config-service.ts`, which differs only in that ads
- * pacing has a safe default and a login challenge does not.
- */
-function parseOtpChallenge(payload: unknown): OtpChallenge {
-  if (typeof payload !== 'object' || payload === null) {
-    throw invalidResponse('WhatsApp OTP challenge payload is not an object.');
-  }
-
-  const { success, expiresInSeconds, resendAvailableInSeconds } = payload as Record<
-    string,
-    unknown
-  >;
-
-  if (
-    success !== true ||
-    !isFiniteNumber(expiresInSeconds) ||
-    !isFiniteNumber(resendAvailableInSeconds)
-  ) {
-    throw invalidResponse('WhatsApp OTP challenge payload has an invalid shape.');
-  }
-
-  return { expiresInSeconds, resendAvailableInSeconds };
+  // Validated, not cast - and validated by the SHARED parser in
+  // `services/auth/otp-challenge.ts`, because the account-deletion OTP route
+  // answers this identical shape and two copies of the check are two things
+  // that can drift. See that module for why a malformed payload throws
+  // instead of defaulting.
+  return parseOtpChallenge(payload, PARSE_SOURCE);
 }
 
 /**
@@ -209,12 +166,12 @@ export async function listAuthIdentities(): Promise<readonly AuthIdentitySummary
  */
 function parseAuthIdentities(payload: unknown): readonly AuthIdentitySummary[] {
   if (!Array.isArray(payload)) {
-    throw invalidResponse('Auth identity list payload is not an array.');
+    throw invalidOtpResponse(PARSE_SOURCE, 'Auth identity list payload is not an array.');
   }
 
   return payload.map((entry) => {
     if (typeof entry !== 'object' || entry === null) {
-      throw invalidResponse('Auth identity entry is not an object.');
+      throw invalidOtpResponse(PARSE_SOURCE, 'Auth identity entry is not an object.');
     }
 
     const { provider, identifier, usable, canBeUnlinked, createdAt, verifiedAt } = entry as Record<
@@ -231,7 +188,7 @@ function parseAuthIdentities(payload: unknown): readonly AuthIdentitySummary[] {
       typeof createdAt !== 'string' ||
       (verifiedAt !== null && typeof verifiedAt !== 'string')
     ) {
-      throw invalidResponse('Auth identity entry has an invalid shape.');
+      throw invalidOtpResponse(PARSE_SOURCE, 'Auth identity entry has an invalid shape.');
     }
 
     return {

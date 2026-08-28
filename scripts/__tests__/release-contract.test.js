@@ -106,6 +106,14 @@ const VALID_FACTS = {
     "import { request } from '@/services/api/client';\n" +
     "request('auth/whatsapp/otp/request');\n" +
     "request('auth/whatsapp/otp/verify');\n",
+  // The three provider-deletion routes, as the real module names them. Short
+  // synthetic source for the same reason as the two above: the rule is a
+  // literal-route check, so the fixture only has to carry the literals.
+  accountDeletionServiceSource:
+    "import { request } from '@/services/api/client';\n" +
+    "request('users/me/deletion/methods', { method: 'GET' });\n" +
+    "request('users/me/deletion/whatsapp/otp', { method: 'POST' });\n" +
+    "request('users/me/deletion', { method: 'POST' });\n",
   // The REAL rendered policy, not a fixture. It is a pure function of the
   // plugin's constants, so using it here means the passing world below is
   // asserting that what the plugin actually renders today satisfies the gate -
@@ -349,6 +357,82 @@ describe('release contract: a release cannot ship with WhatsApp Login withdrawn'
     expectBlocked(
       evaluate({ env: { EXPO_PUBLIC_HLS_PLAYBACK_ENABLED: 'false' } }),
       /^EXPO_PUBLIC_HLS_PLAYBACK_ENABLED=false$/
+    );
+  });
+});
+
+describe('release contract: every V1 sign-in method keeps a working deletion path', () => {
+  it('the passing world already satisfies the deletion contract', () => {
+    // Without this the cases below could all pass because something else in
+    // the fixture is broken.
+    const { blockers } = evaluate({});
+
+    expect(blockers.map((entry) => entry.title).join('\n')).not.toMatch(/deletion service/i);
+  });
+
+  it('blocks a build whose account-deletion service is gone entirely', () => {
+    expectBlocked(
+      evaluate({ accountDeletionServiceSource: '' }),
+      /The account-deletion service is missing/
+    );
+  });
+
+  it('blocks a regression to password-only deletion (no method discovery, no deletion OTP)', () => {
+    // This is the exact shape of the defect that shipped: only the deletion
+    // POST, so a Google-only or WhatsApp-only account meets a password field
+    // it can never satisfy. It compiles, installs and passes everything else.
+    expectBlocked(
+      evaluate({
+        accountDeletionServiceSource:
+          "import { request } from '@/services/api/client';\n" +
+          "request('users/me/deletion', { method: 'POST' });\n",
+      }),
+      /no longer calls: 'users\/me\/deletion\/methods', 'users\/me\/deletion\/whatsapp\/otp'/
+    );
+  });
+
+  it('blocks a build that dropped only the deletion OTP route', () => {
+    expectBlocked(
+      evaluate({
+        accountDeletionServiceSource:
+          "import { request } from '@/services/api/client';\n" +
+          "request('users/me/deletion/methods', { method: 'GET' });\n" +
+          "request('users/me/deletion', { method: 'POST' });\n",
+      }),
+      /no longer calls: 'users\/me\/deletion\/whatsapp\/otp'/
+    );
+  });
+
+  it('blocks a deletion service that reaches for the WhatsApp LOGIN otp route', () => {
+    // Substituting the login challenge would put a session-minting code into
+    // a deletion flow, and the backend would refuse it anyway - the deletion
+    // claim only reads its own purpose namespace.
+    expectBlocked(
+      evaluate({
+        accountDeletionServiceSource:
+          "import { request } from '@/services/api/client';\n" +
+          "request('users/me/deletion/methods', { method: 'GET' });\n" +
+          "request('users/me/deletion/whatsapp/otp', { method: 'POST' });\n" +
+          "request('auth/whatsapp/otp/request', { method: 'POST' });\n" +
+          "request('users/me/deletion', { method: 'POST' });\n",
+      }),
+      /calls a SIGN-IN route: 'auth\/whatsapp\/otp\/request'/
+    );
+  });
+
+  it('blocks a deletion service that exchanges a Google token for a session', () => {
+    // The failure mode: a "re-authenticate with Google" step that signs the
+    // viewer into whichever account the Google sheet returned, mid-deletion.
+    expectBlocked(
+      evaluate({
+        accountDeletionServiceSource:
+          "import { request } from '@/services/api/client';\n" +
+          "request('users/me/deletion/methods', { method: 'GET' });\n" +
+          "request('users/me/deletion/whatsapp/otp', { method: 'POST' });\n" +
+          "request('auth/google', { method: 'POST' });\n" +
+          "request('users/me/deletion', { method: 'POST' });\n",
+      }),
+      /calls a SIGN-IN route: 'auth\/google'/
     );
   });
 });

@@ -21,6 +21,23 @@ function read(...segments: string[]): string {
 }
 
 /**
+ * Source with comments removed.
+ *
+ * Needed because the strongest guards below are "this module does NOT reach
+ * for that function", and the modules in question NAME those functions in
+ * their doc comments precisely in order to forbid them - so a raw-text check
+ * fails on the very comment that documents the rule. Mirrors the same
+ * `stripComments` treatment `scripts/check-release-android.js` applies before
+ * its own identifier checks, and the test it carries for exactly this case
+ * ("does NOT fire on a doc comment that merely names the token fields").
+ */
+function readCode(...segments: string[]): string {
+  return read(...segments)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
+}
+
+/**
  * THE V1 FEATURE SET, stated once as something that fails when it stops being
  * true.
  *
@@ -93,6 +110,62 @@ describe('V1 feature set is present', () => {
     // rewards, and it is what `rewards-economics-boundary.test.ts` guards in
     // depth. Named here too because "no fake reward success" is a V1 term.
     expect(mapper).not.toMatch(/balancePoints\s*[+-]=|balancePoints:\s*\w+\s*[+-]/);
+  });
+
+  it('keeps a working account-deletion path for EVERY V1 sign-in method', () => {
+    const service = read('src', 'services', 'auth', 'account-deletion-service.ts');
+
+    // Google Login and WhatsApp Login both create accounts with NO password.
+    // A client that can only confirm a deletion with a password therefore
+    // creates accounts it cannot delete - a Play policy failure that is
+    // invisible in a diff, because the password path keeps working.
+    expect(service).toContain("'users/me/deletion/methods'");
+    expect(service).toContain("'users/me/deletion/whatsapp/otp'");
+    expect(service).toContain("'users/me/deletion'");
+
+    // All three proofs the backend accepts must be constructible here.
+    for (const method of ['password', 'google', 'whatsapp']) {
+      expect(`account-deletion-service: ${service}`).toContain(`'${method}'`);
+    }
+  });
+
+  it('never lets the deletion flow mint a session', () => {
+    // The failure being excluded: a "re-authenticate with Google" step that
+    // exchanges the token at POST /auth/google would sign the viewer into
+    // whichever account owns that Google identity - mid-deletion, with the
+    // destructive button still on screen. The deletion module must reach only
+    // its own routes, and the flow must obtain its Google credential from the
+    // sign-in ADAPTER (which returns an ID token and nothing else).
+    const service = readCode('src', 'services', 'auth', 'account-deletion-service.ts');
+
+    expect(service).not.toContain("'auth/google'");
+    expect(service).not.toContain("'auth/whatsapp/otp/request'");
+    expect(service).not.toContain("'auth/whatsapp/otp/verify'");
+
+    const flow = readCode('src', 'features', 'account-deletion', 'use-account-deletion.ts');
+
+    expect(flow).toContain('signInWithGoogle');
+    expect(flow).not.toContain('loginWithGoogleIdToken');
+    expect(flow).not.toContain('loginWithGoogle(');
+    expect(flow).not.toContain('verifyWhatsAppOtp');
+    expect(flow).not.toContain('startWhatsAppOtp');
+  });
+
+  it('never compares a Google email client-side as ownership proof', () => {
+    // Ownership is established server-side by comparing the verified token's
+    // `sub` against this account's own linked provider subject. An email
+    // comparison here would be a second, weaker copy of that rule.
+    const flow = readCode('src', 'features', 'account-deletion', 'use-account-deletion.ts');
+
+    expect(flow).not.toMatch(/\bemail\s*===/);
+    expect(flow).not.toMatch(/===\s*\w*[eE]mail\b/);
+  });
+
+  it('keeps the deletion surface reachable from the Data & Privasi screen', () => {
+    // expo-router derives every navigable screen from the route files on
+    // disk, so a card dropped from this screen is a deletion path that exists
+    // in the codebase and cannot be reached by any viewer.
+    expect(read('src', 'app', 'account-data.tsx')).toContain('DeleteAccountCard');
   });
 
   it('keeps HLS Auto and manual rendition selection available', () => {

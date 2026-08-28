@@ -3,12 +3,22 @@ import { router } from 'expo-router';
 
 import AccountDataScreen from '@/app/account-data';
 import { ApiError } from '@/services/api/client';
-import { deleteMyAccount } from '@/services/auth/account-deletion-service';
-import { listAuthIdentities } from '@/services/auth/provider-auth-service';
+import { fetchDeletionMethods } from '@/services/auth/account-deletion-service';
 import { exportMyData } from '@/services/export/export-service';
-import { clearPersistedProgressForIdentity } from '@/stores/series-progress';
-import { clearPersistedInteractionsForIdentity } from '@/stores/video-interactions';
 import type { UserExport } from '@/types/export';
+
+/**
+ * This screen's OWN behaviour: the auth guard, "Ekspor Data Saya", and the
+ * fact that it still hosts the deletion surface.
+ *
+ * The deletion FLOW - method discovery, the three provider proofs, the
+ * irreversible confirmation and the post-deletion cleanup - is covered by
+ * `features/account-deletion/__tests__/delete-account-card.test.tsx` and
+ * `.../delete-account-session-cleanup.test.tsx`, where that behaviour now
+ * lives. Re-driving it through this screen would be the same assertions with
+ * an extra wrapper, and would make a screen-layout change look like a
+ * deletion regression.
+ */
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), canGoBack: () => false },
@@ -22,33 +32,14 @@ jest.mock('@/stores/auth', () => ({
 }));
 
 jest.mock('@/services/auth/account-deletion-service');
-jest.mock('@/services/auth/provider-auth-service');
+jest.mock('@/services/auth/google-sign-in');
 jest.mock('@/services/export/export-service');
 jest.mock('@/stores/video-interactions');
 jest.mock('@/stores/series-progress');
 
-const mockedDeleteMyAccount = deleteMyAccount as jest.MockedFunction<typeof deleteMyAccount>;
 const mockedExportMyData = exportMyData as jest.MockedFunction<typeof exportMyData>;
-const mockedListAuthIdentities = listAuthIdentities as jest.MockedFunction<
-  typeof listAuthIdentities
->;
-
-/** The shape `GET /auth/identities` returns for one linked method. */
-function buildIdentity(provider: 'email' | 'google' | 'whatsapp') {
-  return {
-    provider,
-    identifier: provider === 'email' ? 'jane@example.com' : null,
-    usable: true,
-    canBeUnlinked: provider !== 'email',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    verifiedAt: '2026-01-01T00:00:00.000Z',
-  };
-}
-const mockedClearInteractions = clearPersistedInteractionsForIdentity as jest.MockedFunction<
-  typeof clearPersistedInteractionsForIdentity
->;
-const mockedClearProgress = clearPersistedProgressForIdentity as jest.MockedFunction<
-  typeof clearPersistedProgressForIdentity
+const mockedFetchDeletionMethods = fetchDeletionMethods as jest.MockedFunction<
+  typeof fetchDeletionMethods
 >;
 
 function buildExport(overrides?: Partial<UserExport>): UserExport {
@@ -87,13 +78,7 @@ beforeEach(() => {
     user: { id: 'user_1', name: 'Jane', username: 'jane', email: 'jane@example.com' },
     logout: mockLogout,
   });
-  mockedClearInteractions.mockResolvedValue(undefined);
-  mockedClearProgress.mockResolvedValue(undefined);
-  mockedDeleteMyAccount.mockResolvedValue(undefined);
-  // Most cases here are about an ordinary email+password account, which is the
-  // only kind V1 can create. The cases that pin the passwordless behaviour
-  // override this.
-  mockedListAuthIdentities.mockResolvedValue([buildIdentity('email')]);
+  mockedFetchDeletionMethods.mockResolvedValue(['password']);
 });
 
 describe('AccountDataScreen - auth guard', () => {
@@ -239,181 +224,6 @@ describe('AccountDataScreen - export my data', () => {
   });
 });
 
-describe('AccountDataScreen - delete my account', () => {
-  it('requires a current password before the confirmation dialog appears', async () => {
-    const { getByTestId, getByText, queryByText } = await render(<AccountDataScreen />);
-
-    await fireEvent.press(getByTestId('delete-account-submit'));
-
-    expect(getByText('Password saat ini wajib diisi')).toBeTruthy();
-    expect(queryByText('Hapus Akun Secara Permanen?')).toBeNull();
-    expect(mockedDeleteMyAccount).not.toHaveBeenCalled();
-  });
-
-  it('shows an unmissable irreversible-confirmation dialog and does NOT call the API until confirmed', async () => {
-    const { getByTestId, getByText, getAllByText } = await render(<AccountDataScreen />);
-
-    await fireEvent.changeText(getByTestId('delete-account-password-input'), 'my-password');
-    await fireEvent.press(getByTestId('delete-account-submit'));
-
-    expect(getByText('Hapus Akun Secara Permanen?')).toBeTruthy();
-    expect(getAllByText(/PERMANEN/).length).toBeGreaterThan(0);
-    expect(getAllByText(/TIDAK BISA DIBATALKAN/).length).toBeGreaterThan(0);
-    expect(mockedDeleteMyAccount).not.toHaveBeenCalled();
-  });
-
-  it('cancelling the confirmation genuinely blocks the action - no API call, no cleanup, no logout', async () => {
-    const { getByTestId, getByText, queryByText } = await render(<AccountDataScreen />);
-
-    await fireEvent.changeText(getByTestId('delete-account-password-input'), 'my-password');
-    await fireEvent.press(getByTestId('delete-account-submit'));
-    await fireEvent.press(getByText('Batal'));
-
-    expect(queryByText('Hapus Akun Secara Permanen?')).toBeNull();
-    expect(mockedDeleteMyAccount).not.toHaveBeenCalled();
-    expect(mockedClearInteractions).not.toHaveBeenCalled();
-    expect(mockedClearProgress).not.toHaveBeenCalled();
-    expect(mockLogout).not.toHaveBeenCalled();
-    expect(router.replace).not.toHaveBeenCalledWith('/login');
-  });
-
-  it('on confirmed success: calls the API, purges BOTH identity-scoped stores for the deleted user, then performs a full local sign-out and routes to /login', async () => {
-    const { getByTestId } = await render(<AccountDataScreen />);
-
-    await fireEvent.changeText(getByTestId('delete-account-password-input'), 'correct-password');
-    await fireEvent.press(getByTestId('delete-account-submit'));
-    await fireEvent.press(getByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() => expect(mockedDeleteMyAccount).toHaveBeenCalledWith('correct-password'));
-    await waitFor(() => expect(mockedClearInteractions).toHaveBeenCalledWith('user_1'));
-    await waitFor(() => expect(mockedClearProgress).toHaveBeenCalledWith('user_1'));
-    await waitFor(() => expect(mockLogout).toHaveBeenCalledTimes(1));
-    expect(router.replace).toHaveBeenCalledWith('/login');
-  });
-
-  it('purges cleanup with the identity captured BEFORE logout, not a live post-logout read (regression guard for a future refactor that re-reads mutable state)', async () => {
-    // Stand-in for the exact failure mode under guard: a store whose `user`
-    // is cleared on logout, the way a ref/live-state read (rather than a
-    // value captured once before any cleanup/logout runs) would observe it.
-    // If `handleConfirmDelete` were ever refactored to derive the cleanup
-    // identity from a fresh read taken after `await logout()` instead of the
-    // pre-deletion binding, this mock arrangement makes that read observe
-    // `null` - so the cleanup calls below would receive the wrong identity
-    // (or none at all) instead of the deleted user's real id.
-    mockLogout.mockImplementation(async () => {
-      mockUseAuth.mockReturnValue({
-        isAuthenticated: false,
-        isHydrated: true,
-        user: null,
-        logout: mockLogout,
-      });
-    });
-
-    const { getByTestId } = await render(<AccountDataScreen />);
-
-    await fireEvent.changeText(getByTestId('delete-account-password-input'), 'correct-password');
-    await fireEvent.press(getByTestId('delete-account-submit'));
-    await fireEvent.press(getByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() => expect(mockedDeleteMyAccount).toHaveBeenCalledWith('correct-password'));
-    await waitFor(() => expect(mockLogout).toHaveBeenCalledTimes(1));
-    // Must be the PRE-deletion id ('user_1'), never `undefined`/`null` and
-    // never anything read after `logout()` cleared the mocked store above.
-    expect(mockedClearInteractions).toHaveBeenCalledWith('user_1');
-    expect(mockedClearProgress).toHaveBeenCalledWith('user_1');
-  });
-
-  it('disables the confirm button while the request is in flight (no double-submit)', async () => {
-    const deferred = createDeferred<void>();
-    mockedDeleteMyAccount.mockReturnValueOnce(deferred.promise);
-
-    const { getByTestId } = await render(<AccountDataScreen />);
-
-    await fireEvent.changeText(getByTestId('delete-account-password-input'), 'correct-password');
-    await fireEvent.press(getByTestId('delete-account-submit'));
-    await fireEvent.press(getByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() => expect(mockedDeleteMyAccount).toHaveBeenCalledTimes(1));
-
-    await fireEvent.press(getByTestId('confirm-dialog-confirm'));
-    expect(mockedDeleteMyAccount).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      deferred.resolve(undefined);
-      await deferred.promise;
-    });
-  });
-
-  it('a wrong current password (401) surfaces a distinct message, does NOT clean up or sign out, and the user stays logged in', async () => {
-    mockedDeleteMyAccount.mockRejectedValueOnce(
-      new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid credentials.')
-    );
-
-    const { getByTestId, getByText } = await render(<AccountDataScreen />);
-
-    await fireEvent.changeText(getByTestId('delete-account-password-input'), 'wrong-password');
-    await fireEvent.press(getByTestId('delete-account-submit'));
-    await fireEvent.press(getByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() => expect(getByText(/Password saat ini salah\./)).toBeTruthy());
-    expect(mockedClearInteractions).not.toHaveBeenCalled();
-    expect(mockedClearProgress).not.toHaveBeenCalled();
-    expect(mockLogout).not.toHaveBeenCalled();
-    expect(router.replace).not.toHaveBeenCalledWith('/login');
-
-    // Retry affordance: the dialog stays open and pressing confirm again re-attempts.
-    mockedDeleteMyAccount.mockResolvedValueOnce(undefined);
-    await fireEvent.press(getByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() => expect(mockedDeleteMyAccount).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(mockLogout).toHaveBeenCalledTimes(1));
-  });
-
-  it('a privileged account (403 ACCOUNT_DELETION_FORBIDDEN) surfaces a distinct message, not the generic or wrong-password one', async () => {
-    mockedDeleteMyAccount.mockRejectedValueOnce(
-      new ApiError(
-        403,
-        'ACCOUNT_DELETION_FORBIDDEN',
-        'Self-service account deletion is not available for this account type'
-      )
-    );
-
-    const { getByTestId, getByText, queryByText } = await render(<AccountDataScreen />);
-
-    await fireEvent.changeText(getByTestId('delete-account-password-input'), 'correct-password');
-    await fireEvent.press(getByTestId('delete-account-submit'));
-    await fireEvent.press(getByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() =>
-      expect(
-        getByText(/Akun ini tidak bisa dihapus sendiri\. Jenis akun ini memerlukan proses penghapusan khusus\./)
-      ).toBeTruthy()
-    );
-    expect(queryByText(/Password saat ini salah/)).toBeNull();
-    expect(mockLogout).not.toHaveBeenCalled();
-  });
-
-  it('a rate limit (429) surfaces a distinct message naming the 15-minute window, not the generic or wrong-password one', async () => {
-    mockedDeleteMyAccount.mockRejectedValueOnce(
-      new ApiError(429, 'HTTP_ERROR', 'ThrottlerException: Too Many Requests')
-    );
-
-    const { getByTestId, getByText, queryByText } = await render(<AccountDataScreen />);
-
-    await fireEvent.changeText(getByTestId('delete-account-password-input'), 'correct-password');
-    await fireEvent.press(getByTestId('delete-account-submit'));
-    await fireEvent.press(getByTestId('confirm-dialog-confirm'));
-
-    await waitFor(() =>
-      expect(
-        getByText(/Terlalu banyak percobaan\. Untuk keamanan akunmu, coba lagi dalam 15 menit\./)
-      ).toBeTruthy()
-    );
-    expect(queryByText(/Password saat ini salah/)).toBeNull();
-    expect(mockLogout).not.toHaveBeenCalled();
-  });
-});
-
 describe('AccountDataScreen - no dev-only controls reachable', () => {
   it('never renders a dev-only control, regardless of __DEV__', async () => {
     const originalDev = (globalThis as { __DEV__?: boolean }).__DEV__;
@@ -436,58 +246,23 @@ describe('AccountDataScreen - no dev-only controls reachable', () => {
   });
 });
 
-describe('AccountDataScreen - deletion is only offered where it can succeed', () => {
-  it('offers the password-gated deletion to an account that has a password', async () => {
-    mockedListAuthIdentities.mockResolvedValue([buildIdentity('email')]);
-
-    const { getByTestId, queryByTestId } = await render(<AccountDataScreen />);
-
-    await waitFor(() => expect(getByTestId('delete-account-password-input')).toBeTruthy());
-    expect(getByTestId('delete-account-submit')).toBeTruthy();
-    expect(queryByTestId('delete-account-unavailable')).toBeNull();
-  });
-
-  it('does not offer a password form to a passwordless account, and says why', async () => {
-    // `POST /users/me/deletion` requires the current password and fails closed
-    // with INVALID_CREDENTIALS for an account that has none. The screen used to
-    // render that refusal as "Password saat ini salah." - telling a viewer they
-    // mistyped a password they never had. docs/api-contract.md forbids offering
-    // deletion as if it will work for such an account.
-    mockedListAuthIdentities.mockResolvedValue([buildIdentity('google')]);
-
-    const { getByTestId, queryByTestId } = await render(<AccountDataScreen />);
-
-    await waitFor(() => expect(getByTestId('delete-account-unavailable')).toBeTruthy());
-    expect(queryByTestId('delete-account-password-input')).toBeNull();
-    expect(queryByTestId('delete-account-submit')).toBeNull();
-  });
-
-  it('keeps deletion available when the identity lookup itself fails', async () => {
-    // Fail SAFE, not closed. A transient failure of an unrelated request must
-    // not take away a viewer's ability to delete their own account; the server
-    // still refuses correctly if there really is no password.
-    mockedListAuthIdentities.mockRejectedValue(new Error('network error'));
-
+describe('AccountDataScreen - hosts both personal-data actions', () => {
+  it('renders the export action AND the deletion surface on the same screen', async () => {
+    // The two live together because they are the same question - "what
+    // happens to MY DATA" - and because Google Play expects the in-app
+    // deletion route to be findable. A refactor that dropped the card from
+    // this screen would leave the app with no reachable deletion path at all.
     const { getByTestId } = await render(<AccountDataScreen />);
 
-    await waitFor(() => expect(getByTestId('delete-account-password-input')).toBeTruthy());
+    expect(getByTestId('export-data-button')).toBeTruthy();
+    await waitFor(() => expect(getByTestId('delete-account-submit')).toBeTruthy());
   });
 
-  it('shows neither branch until the lookup settles, so nothing is rendered on a guess', async () => {
-    const deferred = createDeferred<Awaited<ReturnType<typeof listAuthIdentities>>>();
+  it('asks the backend which deletion methods this account can use', async () => {
+    // The screen must not re-derive this from identities, which is the guess
+    // that used to offer a password field to a passwordless account.
+    await render(<AccountDataScreen />);
 
-    mockedListAuthIdentities.mockReturnValue(deferred.promise);
-
-    const { getByTestId, queryByTestId } = await render(<AccountDataScreen />);
-
-    expect(getByTestId('delete-account-loading')).toBeTruthy();
-    expect(queryByTestId('delete-account-password-input')).toBeNull();
-    expect(queryByTestId('delete-account-unavailable')).toBeNull();
-
-    await act(async () => {
-      deferred.resolve([buildIdentity('email')]);
-    });
-
-    await waitFor(() => expect(getByTestId('delete-account-password-input')).toBeTruthy());
+    await waitFor(() => expect(mockedFetchDeletionMethods).toHaveBeenCalledTimes(1));
   });
 });

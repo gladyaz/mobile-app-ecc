@@ -168,6 +168,26 @@ const SESSION_SECRET_STORE_PATH = 'src/services/auth/session-secret-store.ts';
 const AUTH_STORE_PATH = 'src/stores/auth.tsx';
 
 /**
+ * The client half of the V1 provider-aware account-deletion contract.
+ *
+ * ALL THREE ROUTES OR NONE. A build that kept only `POST /users/me/deletion`
+ * would compile, install, pass every other check, and be exactly the defect
+ * this work unit fixed: Google-only and WhatsApp-only accounts - the two
+ * sign-in methods V1 leads with - would meet a password field they can never
+ * satisfy, or no deletion path at all. The discovery route is what makes the
+ * other two usable, and the deletion-OTP route is what keeps a WhatsApp
+ * confirmation from borrowing the session-minting login challenge.
+ */
+const ACCOUNT_DELETION_SERVICE_PATH = 'src/services/auth/account-deletion-service.ts';
+
+const REQUIRED_DELETION_ROUTES = [
+  "'users/me/deletion/methods'",
+  "'users/me/deletion/whatsapp/otp'",
+  "'users/me/deletion'",
+];
+
+
+/**
  * The AsyncStorage modules `stores/auth.tsx` must NOT import.
  *
  * This is the rule that actually enforces "no tokens in AsyncStorage", and it
@@ -302,6 +322,7 @@ function isGoogleSampleAdMobId(value) {
  *   rewardsRouteExists: boolean,
  *   rewardsServiceSource: string,
  *   whatsAppServiceSource: string,
+ *   accountDeletionServiceSource: string,
  *   dataExtractionPolicyXml: string | null,
  *   secureStoreImporters: readonly string[],
  *   authStoreSource: string,
@@ -321,6 +342,7 @@ function evaluateReleaseContract(facts) {
     rewardsRouteExists,
     rewardsServiceSource,
     whatsAppServiceSource,
+    accountDeletionServiceSource,
     dataExtractionPolicyXml,
     secureStoreImporters,
     authStoreSource,
@@ -411,12 +433,12 @@ function evaluateReleaseContract(facts) {
     blocker(
       'EXPO_PUBLIC_ACCOUNT_DELETION_URL is not set to an https URL',
       'Google Play requires a web account-deletion page reachable WITHOUT installing the app, ' +
-        'declared in the Data safety form. It is a blocker rather than a warning because the ' +
-        'BINARY depends on it too: an account with no password cannot use the in-app path (the ' +
-        'backend requires the current password and fails closed), so this URL is the only ' +
-        'deletion route the app can offer such an account, and without it the Profile row that ' +
-        'would carry it is not rendered at all. See src/app/account-data.tsx and ' +
-        'src/constants/legal.ts.'
+        'declared in the Data safety form. It is still a blocker even though the IN-APP path now ' +
+        'covers every V1 sign-in method (password, Google and WhatsApp all have a real ' +
+        'confirmation flow - see src/features/account-deletion/), because Play asks for a route ' +
+        'that does not require installing the app at all, and because it is the fallback for ' +
+        'somebody who has lost access to their sign-in factor entirely. Without it the Profile ' +
+        'row that would carry it is not rendered at all. See src/constants/legal.ts.'
     );
   }
 
@@ -518,6 +540,60 @@ function evaluateReleaseContract(facts) {
         'the real backend (docs/rewards-domain-contract.md). A service that stopped calling ' +
         '`rewards/snapshot` is either broken or serving fabricated points.'
     );
+  }
+
+  // ACCOUNT DELETION FOR EVERY V1 SIGN-IN METHOD. Google Login and WhatsApp
+  // Login both create accounts with no password, so a client that can only
+  // confirm a deletion with a password can create accounts it cannot delete -
+  // which is a Play policy failure and a data-rights failure at once, and one
+  // that is invisible in a diff because the password path keeps working.
+  //
+  // A STATIC CHECK IS RELIABLE HERE precisely because these are frozen literal
+  // route strings in one module: `services/api/client.ts` takes the path as a
+  // string literal at each call site, and this client constructs no deletion
+  // path dynamically. So "the module names all three routes" is a real
+  // property of the artifact, not a proxy for one.
+  if (!accountDeletionServiceSource) {
+    blocker(
+      `The account-deletion service is missing: ${ACCOUNT_DELETION_SERVICE_PATH}`,
+      'In-app account deletion is a REQUIRED V1 capability (Google Play Data safety) and this ' +
+        'is the only module that talks to the deletion routes. Without it the Data & Privasi ' +
+        'screen has no deletion path at all.'
+    );
+  } else {
+    const missingDeletionRoutes = REQUIRED_DELETION_ROUTES.filter(
+      (route) => !accountDeletionServiceSource.includes(route)
+    );
+
+    if (missingDeletionRoutes.length > 0) {
+      blocker(
+        `The account-deletion service no longer calls: ${missingDeletionRoutes.join(', ')}`,
+        'V1 provider account deletion needs all three routes. GET /users/me/deletion/methods is ' +
+          'what tells the app whether to ask for a password, a Google re-authentication or a ' +
+          'WhatsApp code - without it the app is back to guessing, which is what showed a ' +
+          'password field to accounts that never had a password. POST ' +
+          '/users/me/deletion/whatsapp/otp issues the code in the account_deletion namespace; ' +
+          'the login OTP route is NOT a substitute, because its codes can mint a session. POST ' +
+          '/users/me/deletion performs the deletion itself.'
+      );
+    }
+
+    // NO SESSION-MINTING ROUTE IN THE DELETION MODULE. A deletion confirmation
+    // must never be able to exchange a provider credential for a session: that
+    // is how "delete my account" becomes "silently signed into the account the
+    // Google sheet happened to return".
+    for (const forbidden of ["'auth/google'", "'auth/whatsapp/otp/request'", "'auth/whatsapp/otp/verify'"]) {
+      if (accountDeletionServiceSource.includes(forbidden)) {
+        blocker(
+          `The account-deletion service calls a SIGN-IN route: ${forbidden}`,
+          'Deletion confirmation must never mint a session. The login routes exchange a provider ' +
+            'credential for an access/refresh pair, so calling one here could sign the viewer ' +
+            'into a different account mid-deletion, or redeem a deletion code as a login. Obtain ' +
+            'the Google ID token from services/auth/google-sign-in.ts and the WhatsApp code from ' +
+            'POST /users/me/deletion/whatsapp/otp, and send both only to POST /users/me/deletion.'
+        );
+      }
+    }
   }
 
   // --- V1 FEATURE CONTRACT: NOT ALLOWED ------------------------------------
@@ -1090,6 +1166,9 @@ function readReleaseFacts() {
     whatsAppServiceSource: readFileIfPresent(
       path.join(projectRoot, 'src', 'services', 'auth', 'provider-auth-service.ts')
     ),
+    accountDeletionServiceSource: readFileIfPresent(
+      path.join(projectRoot, ...ACCOUNT_DELETION_SERVICE_PATH.split('/'))
+    ),
     dataExtractionPolicyXml: readDataExtractionPolicy(),
     secureStoreImporters: collectSecureStoreImporters(),
     authStoreSource: readFileIfPresent(path.join(projectRoot, ...AUTH_STORE_PATH.split('/'))),
@@ -1233,6 +1312,8 @@ module.exports = {
   RELEASE_SIGNING_PLUGIN,
   RELEASE_UNSAFE_FLAGS,
   UNUSED_MERGED_PERMISSIONS,
+  ACCOUNT_DELETION_SERVICE_PATH,
+  REQUIRED_DELETION_ROUTES,
   ANDROID_DATA_EXTRACTION_PLUGIN,
   REQUIRED_EXTRACTION_DOMAINS,
   REQUIRED_EXTRACTION_SECTIONS,

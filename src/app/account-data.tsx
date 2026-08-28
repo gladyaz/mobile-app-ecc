@@ -1,31 +1,21 @@
 import { router } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { useCallback, useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { ConfirmDialog } from '@/components/confirm-dialog';
 import { FontFamily, Palette, Radius } from '@/constants/theme';
+import { DeleteAccountCard } from '@/features/account-deletion/delete-account-card';
 import { ApiError } from '@/services/api/client';
-import { deleteMyAccount } from '@/services/auth/account-deletion-service';
-import { listAuthIdentities } from '@/services/auth/provider-auth-service';
 import { exportMyData } from '@/services/export/export-service';
-import { clearPersistedProgressForIdentity } from '@/stores/series-progress';
 import { useAuth } from '@/stores/auth';
-import { clearPersistedInteractionsForIdentity } from '@/stores/video-interactions';
 import type { UserExport } from '@/types/export';
 
 /**
- * Phase 12, work unit 12C-M1: "Data & Privasi" screen - hosts the two
- * personal-data-lifecycle actions the backend now exposes (`GET
- * /users/me/export`, `POST /users/me/deletion`).
+ * "Data & Privasi" - hosts the two personal-data-lifecycle actions the
+ * backend exposes: `GET /users/me/export` (owned by this file) and account
+ * deletion (owned by `features/account-deletion`, which now spans three
+ * routes and three provider flows rather than the single password field this
+ * screen used to render inline).
  *
  * DELIBERATELY a separate screen from `src/app/account-security.tsx`, not a
  * third section bolted onto it. `account-security.tsx`'s own scope note
@@ -51,44 +41,8 @@ function describeExportError(error: unknown): string {
   return 'Gagal mengekspor data. Periksa koneksi kamu dan coba lagi.';
 }
 
-/**
- * Maps the three distinct backend failure modes for account deletion to
- * three distinct, actionable messages - a wrong password, a privileged
- * (non-"user") account, and a rate limit are different situations for the
- * user and must never collapse into one generic "something went wrong"
- * message. A 400 (malformed confirmation payload) can never actually occur
- * from this screen - `deleteMyAccount()` always sends the literal boolean
- * `true` - so it falls into the generic fallback below along with any other
- * unexpected failure (network, 500, etc.).
- */
-function describeDeleteAccountError(error: unknown, wasSignInMethodUnknown = false): string {
-  if (error instanceof ApiError && error.code === 'INVALID_CREDENTIALS') {
-    // The backend returns this code both for a genuinely wrong password AND
-    // for an account that has no password at all. Normally the screen has
-    // already ruled the second case out by reading the account's identities,
-    // so naming the password is correct. When that lookup FAILED, the form was
-    // shown on an assumption, and the same code no longer distinguishes the
-    // two - so the copy must not assert which one happened.
-    return wasSignInMethodUnknown
-      ? 'Penghapusan akun gagal. Jika kamu masuk lewat Google atau WhatsApp, akun ini tidak ' +
-          'punya password dan belum bisa dihapus dari aplikasi - hubungi dukungan. Jika kamu ' +
-          'punya password, pastikan password yang kamu masukkan benar.'
-      : 'Password saat ini salah.';
-  }
-
-  if (error instanceof ApiError && error.code === 'ACCOUNT_DELETION_FORBIDDEN') {
-    return 'Akun ini tidak bisa dihapus sendiri. Jenis akun ini memerlukan proses penghapusan khusus.';
-  }
-
-  if (error instanceof ApiError && error.status === 429) {
-    return 'Terlalu banyak percobaan. Untuk keamanan akunmu, coba lagi dalam 15 menit.';
-  }
-
-  return 'Gagal menghapus akun. Periksa koneksi kamu dan coba lagi.';
-}
-
 export default function AccountDataScreen() {
-  const { isAuthenticated, isHydrated, logout, user } = useAuth();
+  const { isAuthenticated, isHydrated } = useAuth();
 
   useEffect(() => {
     if (isHydrated && !isAuthenticated) {
@@ -114,134 +68,6 @@ export default function AccountDataScreen() {
       setIsExporting(false);
     }
   }, []);
-
-  // ---- Delete my account ----
-  /**
-   * Whether this account can actually complete an in-app deletion.
-   *
-   * `POST /users/me/deletion` requires the current password and fails closed
-   * with INVALID_CREDENTIALS for an account that has none - and
-   * docs/api-contract.md states outright that "the Data & Privacy screen
-   * should not offer deletion as if it will work for such an account". Before
-   * this check it did exactly that: a Google-only or WhatsApp-only account got
-   * a password field, and the backend's refusal was rendered as "Password saat
-   * ini salah." - telling a viewer they mistyped a password they never had.
-   *
-   * The signal is the presence of an `email` identity, because an email
-   * identity is inseparable from `User.passwordHash` (see the note on
-   * LinkableAuthProviderId in types/auth.ts).
-   *
-   * `null` means "not known yet". The password form is not rendered on a
-   * guess in either direction: showing it too eagerly reproduces the lie, and
-   * hiding it too eagerly takes deletion away from an account that has it.
-   */
-  const [hasPasswordCredential, setHasPasswordCredential] = useState<boolean | null>(null);
-  const [isLoadingIdentities, setIsLoadingIdentities] = useState(true);
-  /**
-   * Set when the identity lookup never succeeded, so the password form below is
-   * being shown on a fail-SAFE assumption rather than on a known answer.
-   *
-   * It matters because the assumption can be wrong in exactly the direction
-   * this screen was fixed to stop being wrong: a passwordless account whose
-   * lookup failed still gets the form, submits, and the backend answers
-   * INVALID_CREDENTIALS - which would otherwise render as "Password saat ini
-   * salah." to somebody who never had a password. Knowing the answer was a
-   * guess lets that case say what actually happened.
-   */
-  const [didIdentityLookupFail, setDidIdentityLookupFail] = useState(false);
-
-  useEffect(() => {
-    let isActive = true;
-
-    void (async () => {
-      try {
-        const identities = await listAuthIdentities();
-
-        if (isActive) {
-          setHasPasswordCredential(identities.some((identity) => identity.provider === 'email'));
-        }
-      } catch {
-        // Fail SAFE, not closed: a failed lookup must not remove a viewer's
-        // ability to delete their own account. The password path still refuses
-        // correctly on the server if it turns out there is no password, and the
-        // explanatory copy below covers that case.
-        if (isActive) {
-          setHasPasswordCredential(true);
-          setDidIdentityLookupFail(true);
-        }
-      } finally {
-        if (isActive) {
-          setIsLoadingIdentities(false);
-        }
-      }
-    })();
-
-    return () => {
-      isActive = false;
-    };
-  }, []);
-
-  const [deletePassword, setDeletePassword] = useState('');
-  const [isDeleteSubmitted, setIsDeleteSubmitted] = useState(false);
-  const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-
-  const deletePasswordError =
-    isDeleteSubmitted && !deletePassword ? 'Password saat ini wajib diisi' : null;
-
-  const handleRequestDelete = useCallback(() => {
-    setIsDeleteSubmitted(true);
-
-    if (!deletePassword) {
-      return;
-    }
-
-    setDeleteError(null);
-    setIsDeleteConfirmVisible(true);
-  }, [deletePassword]);
-
-  const handleConfirmDelete = useCallback(async () => {
-    setIsDeleting(true);
-    setDeleteError(null);
-
-    // Captured BEFORE any cleanup/logout touches `user` - this is the
-    // identity whose locally-cached per-user data must be purged on
-    // success. See `clearPersistedInteractionsForIdentity`/
-    // `clearPersistedProgressForIdentity`'s doc comments for why this is
-    // necessary in addition to (not instead of) `logout()`.
-    const deletedUserId = user?.id;
-
-    try {
-      await deleteMyAccount(deletePassword);
-
-      // Deletion succeeded: the account no longer exists, so every token
-      // this device holds for it is now dead, AND any locally-cached
-      // per-user data for it must not linger either (there is no future
-      // login as this account to ever reclaim it). Order: purge the
-      // deleted identity's cached data FIRST (while its id is still in
-      // hand), THEN run the same full local sign-out
-      // `account-security.tsx`'s logout-all flow already established
-      // (`useAuth().logout()` + redirect to `/login`) - reusing that exact
-      // path rather than inventing a second one.
-      if (deletedUserId) {
-        await Promise.all([
-          clearPersistedInteractionsForIdentity(deletedUserId),
-          clearPersistedProgressForIdentity(deletedUserId),
-        ]);
-      }
-
-      setIsDeleteConfirmVisible(false);
-      setDeletePassword('');
-      setIsDeleteSubmitted(false);
-      await logout();
-      router.replace('/login');
-    } catch (error) {
-      setDeleteError(describeDeleteAccountError(error, didIdentityLookupFail));
-    } finally {
-      setIsDeleting(false);
-    }
-  }, [deletePassword, didIdentityLookupFail, logout, user]);
 
   if (!isHydrated || !isAuthenticated) {
     return null;
@@ -328,81 +154,14 @@ export default function AccountDataScreen() {
           ) : null}
         </View>
 
-        {/* Danger zone: delete account */}
-        <View style={[styles.card, styles.dangerCard]}>
-          <Text style={styles.sectionTitle}>Hapus Akun</Text>
-          <Text style={styles.sectionCaption}>
-            Tindakan ini bersifat PERMANEN dan TIDAK BISA DIBATALKAN. Seluruh datamu - video yang
-            disukai, disimpan, progres tontonan, dan akses premium - akan langsung dihapus dan
-            tidak dapat dipulihkan.
-          </Text>
-
-          {isLoadingIdentities ? (
-            <Text style={styles.sectionCaption} testID="delete-account-loading">
-              Memeriksa metode masukmu...
-            </Text>
-          ) : hasPasswordCredential ? (
-            <>
-              <View style={styles.field}>
-                <Text style={styles.label}>Password Saat Ini</Text>
-                <TextInput
-                  editable={!isDeleting}
-                  onChangeText={setDeletePassword}
-                  placeholder="••••••••"
-                  placeholderTextColor={Palette.textMuted}
-                  secureTextEntry
-                  style={[styles.input, deletePasswordError && styles.inputError]}
-                  testID="delete-account-password-input"
-                  value={deletePassword}
-                />
-                {deletePasswordError ? (
-                  <Text style={styles.errorText}>{deletePasswordError}</Text>
-                ) : null}
-              </View>
-
-              <Pressable
-                accessibilityRole="button"
-                disabled={isDeleting}
-                onPress={handleRequestDelete}
-                style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
-                testID="delete-account-submit">
-                <Text style={styles.dangerButtonText}>Hapus Akun Saya</Text>
-              </Pressable>
-            </>
-          ) : (
-            /* No password on this account, so the in-app path cannot succeed.
-               Saying so is the whole point: the alternative is a form that
-               takes an input, sends it, and reports a wrong password to
-               somebody who never set one. */
-            <Text style={styles.sectionCaption} testID="delete-account-unavailable">
-              Akun ini masuk tanpa password, sehingga penghapusan akun belum bisa dilakukan
-              langsung dari aplikasi. Hubungi dukungan lewat alamat email di halaman Kebijakan
-              Privasi untuk meminta penghapusan akun.
-            </Text>
-          )}
-        </View>
+        {/* Danger zone: delete account. The whole flow - which proofs this
+            account can produce, gathering the one it uses, the irreversible
+            confirmation, and the post-deletion cleanup - lives in
+            `features/account-deletion`, because it is now three provider
+            flows rather than one password field. This screen keeps only what
+            it is: the place both personal-data actions live. */}
+        <DeleteAccountCard />
       </ScrollView>
-
-      <ConfirmDialog
-        cancelLabel="Batal"
-        confirmLabel="Ya, Hapus Akun Saya Selamanya"
-        isConfirming={isDeleting}
-        isDestructive
-        message={
-          deleteError
-            ? `${deleteError} Tekan tombol di bawah untuk mencoba lagi.`
-            : 'Tindakan ini PERMANEN dan TIDAK BISA DIBATALKAN. Akun beserta seluruh datamu akan dihapus sekarang juga.'
-        }
-        onCancel={() => {
-          setIsDeleteConfirmVisible(false);
-          setDeleteError(null);
-        }}
-        onConfirm={() => {
-          void handleConfirmDelete();
-        }}
-        title="Hapus Akun Secara Permanen?"
-        visible={isDeleteConfirmVisible}
-      />
     </View>
   );
 }
@@ -448,9 +207,6 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
     backgroundColor: Palette.surface,
   },
-  dangerCard: {
-    borderColor: 'rgba(239, 68, 68, 0.35)',
-  },
   sectionTitle: {
     fontSize: 15,
     fontFamily: FontFamily.extraBold,
@@ -462,34 +218,6 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     fontFamily: FontFamily.regular,
     color: Palette.textMuted,
-  },
-  field: {
-    gap: 7,
-  },
-  label: {
-    fontSize: 12,
-    fontFamily: FontFamily.bold,
-    letterSpacing: 0.3,
-    color: Palette.textSecondary,
-  },
-  input: {
-    height: 48,
-    paddingHorizontal: 14,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Palette.border,
-    backgroundColor: Palette.background,
-    fontSize: 14,
-    fontFamily: FontFamily.regular,
-    color: Palette.text,
-  },
-  inputError: {
-    borderColor: Palette.error,
-  },
-  errorText: {
-    fontSize: 11.5,
-    fontFamily: FontFamily.semiBold,
-    color: Palette.error,
   },
   primaryButton: {
     height: 48,
@@ -553,19 +281,6 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontFamily: FontFamily.regular,
     color: Palette.textSecondary,
-  },
-  dangerButton: {
-    height: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Palette.error,
-  },
-  dangerButtonText: {
-    fontSize: 13.5,
-    fontFamily: FontFamily.bold,
-    color: Palette.error,
   },
   buttonPressed: {
     opacity: 0.75,

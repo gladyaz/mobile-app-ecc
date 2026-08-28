@@ -366,6 +366,75 @@ export const V1_UNHANDLED_BACKEND_AUTH_CODES: readonly {
 ];
 
 /* -------------------------------------------------------------------------
+ * ACCOUNT DELETION
+ * ---------------------------------------------------------------------- */
+
+/**
+ * ADDED AFTER THE ORIGINAL CONTRACT LOCK. The provider-aware deletion surface
+ * landed on a sibling branch of the one this manifest arrived on, so the two
+ * met only at integration - which is exactly the kind of gap this layer
+ * exists to make loud, and the reason it is recorded here rather than left
+ * for the next drift to find.
+ *
+ * WHY IT BELONGS IN A V1 CONTRACT AT ALL. Google Login and WhatsApp Login
+ * both mint accounts with no password. A client that can only confirm a
+ * deletion with a password can therefore create accounts it cannot delete -
+ * a Play policy failure and a data-rights failure at once - and the break is
+ * invisible in a diff because the password path keeps working. So the
+ * property worth pinning is not one route's shape; it is that all three
+ * proofs stay reachable.
+ *
+ * ONE ENDPOINT CARRIES ALL THREE PROOFS (`POST users/me/deletion`, with a
+ * discriminated `method`), so the route list alone cannot express that
+ * property - `account-deletion-contract.test.ts` pins the proof union
+ * against the implementation's own exported constant.
+ */
+export const V1_ACCOUNT_DELETION_ENDPOINTS: readonly V1Endpoint[] = [
+  {
+    path: 'users/me/deletion/methods',
+    method: 'GET',
+    requiresAuth: true,
+    consumer: 'services/auth/account-deletion-service.ts#fetchDeletionMethods',
+    /**
+     * The client reads `methods` and nothing else. Order is re-imposed
+     * locally, so arrival order is deliberately NOT contractual - see
+     * `parseDeletionMethods`.
+     */
+    requiredResponseFields: ['methods'],
+  },
+  {
+    path: 'users/me/deletion/whatsapp/otp',
+    method: 'POST',
+    requiresAuth: true,
+    consumer: 'services/auth/account-deletion-service.ts#requestWhatsAppDeletionOtp',
+    /**
+     * The same challenge shape as the LOGIN OTP, parsed by the same shared
+     * `parseOtpChallenge`. Identical shape, separate namespace: a code issued
+     * here does not verify a login, and vice versa.
+     */
+    requiredResponseFields: ['success', 'expiresInSeconds', 'resendAvailableInSeconds'],
+  },
+  {
+    path: 'users/me/deletion',
+    method: 'POST',
+    requiresAuth: true,
+    consumer: 'services/auth/account-deletion-service.ts#deleteMyAccount',
+    /**
+     * Answers `{ success: true }`. The client awaits it for its status code
+     * and then runs the local purge; there is no payload it renders.
+     */
+    requiredResponseFields: ['success'],
+  },
+];
+
+/**
+ * The proofs a V1 build must be able to confirm a deletion with - one per
+ * sign-in method V1 offers. Pinned against the implementation's own
+ * `DELETION_PROOF_METHODS`, which is also the order the screen defaults to.
+ */
+export const V1_DELETION_PROOF_METHODS: readonly string[] = ['password', 'google', 'whatsapp'];
+
+/* -------------------------------------------------------------------------
  * REWARDS
  * ---------------------------------------------------------------------- */
 

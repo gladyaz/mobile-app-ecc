@@ -17,8 +17,8 @@ subsystem's real documentation is linked, not duplicated here.
 This branch is the union of every V1 mobile feature branch that landed. Fifteen
 sibling worktrees under `~/coding-folder/` and `~/mobile-app-redpanda-*` hold
 the historical branches; all of their shipped work is an ancestor of this HEAD
-or was re-applied onto it, with the one exception recorded under
-[Outstanding integration](#outstanding-integration).
+or was re-applied onto it. **No completed V1 work line remains outside this
+branch.**
 
 Work here. Do not restart development in a sibling worktree.
 
@@ -51,6 +51,7 @@ The premium/entitlement architecture still exists behind
 | Rewards | `src/features/rewards/`, `src/services/rewards/` | Daily check-in, watch missions, Instagram/TikTok/YouTube missions, coins — see [`rewards-domain-contract.md`](rewards-domain-contract.md) |
 | Ad perks | `src/services/ads/` | UMP consent gate, Skip Next Interstitial, Temporary Ad-Free Pass |
 | Backend wire contract | `docs/api-contract.md`, `docs/internal-storage.md` | Read before adding any media/file-backed field |
+| Contract regression lock | `src/services/contract/` | Manifest + checked-in canonical fixtures + 8 suites that run them through the real parsers, so auth/rewards/HLS/deletion drift fails a test here — see [`v1-contract-lock.md`](v1-contract-lock.md) |
 | Android hardening | `app.json`, `plugins/`, `scripts/check-release-android.js` | `allowBackup=false`, `dataExtractionRules`, debug-only cleartext isolation |
 
 ## Local setup
@@ -74,7 +75,7 @@ npm test -- --runInBand
 npm run release:preflight
 ```
 
-Baseline on this HEAD: lint clean, typecheck clean, **122 suites / 1970 tests
+Baseline on this HEAD: lint clean, typecheck clean, **130 suites / 2147 tests
 passing**, preflight exits 1 on external blockers only.
 
 ## External release blockers
@@ -99,20 +100,32 @@ handset you control is still owed.
 Owner-side steps: [`play-store-v1-owner-checklist.md`](play-store-v1-owner-checklist.md).
 Full readiness detail: [`release-readiness-android.md`](release-readiness-android.md).
 
-## Outstanding integration
+## Backend contract regression lock
 
-`feat/v1-backend-contract-lock` (`1e94179`) is completed, self-verified V1 work
-that is **not** an ancestor of this branch. It and this HEAD are siblings, both
-branched from `f9f36f8`. It adds `src/services/contract/` — a wire-contract
-manifest, canonical fixtures and seven suites (165 cases) that pin the V1
-backend contract so drift fails a test here — plus runtime validation of the
-three auth session responses.
+`src/services/contract/` pins the V1 backend wire contract so drift fails a
+test in this repo rather than showing up as a dead login button, an empty
+Rewards Center, or a quality menu offering a rendition that does not exist.
 
-Integrating it needs one hand-resolved conflict in
-`src/services/auth/provider-auth-service.ts`: this HEAD extracted the OTP
-parser into `services/auth/otp-challenge.ts` and dropped the file-local
-`invalidResponse` helper, which the contract-lock code calls. Keep this HEAD's
-extraction and route the new `parseAuthResponse` through the shared helper.
+It holds a policy manifest, canonical fixtures carrying their own backend
+provenance, and suites that run those fixtures through the **real** parsers and
+mappers. Coverage: auth (Google, WhatsApp request/verify, session and refresh
+responses, the error-code table), rewards (snapshot, watch and social missions,
+perks), HLS (the HLS/MP4 union, master and rendition URLs, optional 1080p),
+account deletion (all three proofs), and the V1 feature policy itself —
+Google/WhatsApp/Rewards/HLS required, payment/premium/subscription off.
+
+Fixtures are typed `satisfies` the existing wire mirrors, so `npm run typecheck`
+is the first drift detector before a test runs. `contract-boundary.test.ts`
+refuses any production import of the layer and greps every fixture for
+credential-shaped strings, so the repo stays buildable with no backend beside
+it. What is deliberately left flexible — unknown fields, unknown enum members,
+optional 1080p, optional Facebook — is written down in
+[`v1-contract-lock.md`](v1-contract-lock.md).
+
+**This is a static contract lock, not live verification.** It proves the client
+handles the shapes the backend is documented to send. It does not prove any
+Google, WhatsApp or AdMob credential works against a real service — see
+[External release blockers](#external-release-blockers).
 
 ## No production AAB yet
 

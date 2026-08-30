@@ -13,12 +13,30 @@ jest.mock('@/stores/auth', () => ({
   useAuth: () => mockUseAuth(),
 }));
 
+const mockShowToast = jest.fn();
+
 jest.mock('@/stores/toast', () => ({
-  useToast: () => ({ showToast: jest.fn() }),
+  useToast: () => ({ showToast: mockShowToast }),
 }));
 
 jest.mock('@/stores/video-interactions', () => ({
   useVideoInteractions: () => ({ savedVideoIds: [], likedVideoIds: [] }),
+}));
+
+/**
+ * The UMP consent gate is stubbed rather than exercised: whether Google
+ * reports the privacy-options control as required is settled in
+ * `services/ads/__tests__/consent-gate.test.ts`. What is under test HERE is
+ * the other half of that contract - that the Profile screen actually renders
+ * the required entry point and wires it to the SDK's form.
+ */
+const mockIsAdPrivacyOptionsRequired = jest.fn<boolean, []>();
+const mockShowAdPrivacyOptionsForm = jest.fn<Promise<boolean>, []>();
+
+jest.mock('@/services/ads/consent-gate', () => ({
+  ensureAdsConsent: () => Promise.resolve(false),
+  isAdPrivacyOptionsRequired: () => mockIsAdPrivacyOptionsRequired(),
+  showAdPrivacyOptionsForm: () => mockShowAdPrivacyOptionsForm(),
 }));
 
 describe('ProfileScreen', () => {
@@ -186,5 +204,97 @@ describe('ProfileScreen legal links', () => {
     expect(getByTestId('profile-legal-privacy')).toBeTruthy();
     expect(queryByTestId('profile-legal-terms')).toBeNull();
     expect(queryByTestId('profile-legal-deletion')).toBeNull();
+  });
+});
+
+/**
+ * The Google UMP privacy-options entry point.
+ *
+ * Google's US state regulations message - like the EEA/UK one - is only
+ * satisfied if the app ALSO exposes a persistent control that reopens the
+ * privacy form, so a viewer can change or withdraw an ad-consent choice they
+ * made earlier. The SDK decides WHETHER that control is required
+ * (`privacyOptionsRequirementStatus`); this screen is the only place that
+ * renders it, so the requirement is only actually met if these hold.
+ */
+describe('ProfileScreen ad privacy options', () => {
+  const LEGAL_KEYS = [
+    'EXPO_PUBLIC_PRIVACY_POLICY_URL',
+    'EXPO_PUBLIC_TERMS_URL',
+    'EXPO_PUBLIC_ACCOUNT_DELETION_URL',
+  ] as const;
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    // Cleared deliberately: the control must stand on its own, without
+    // depending on a build that happens to have published legal pages.
+    for (const key of LEGAL_KEYS) {
+      saved.set(key, process.env[key]);
+      delete process.env[key];
+    }
+
+    mockUseAuth.mockReturnValue({ isAuthenticated: false, logout: jest.fn(), user: null });
+    mockIsAdPrivacyOptionsRequired.mockReturnValue(false);
+    mockShowAdPrivacyOptionsForm.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    for (const key of LEGAL_KEYS) {
+      const value = saved.get(key);
+
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+
+  it('renders no privacy options row where the SDK does not require one', async () => {
+    // Outside a covered region the form opens nothing, so a row offering it
+    // would be a dead end.
+    const { queryByTestId } = await render(<ProfileScreen />);
+
+    expect(queryByTestId('profile-ad-privacy-options')).toBeNull();
+  });
+
+  it('renders the privacy options row when the SDK requires one', async () => {
+    // REQUIRED is what UMP reports for a US state covered by the published US
+    // regulations message, and for the EEA/UK under the European one. Asserted
+    // with no legal URL configured, so this proves the control appears on the
+    // strength of the SDK requirement alone.
+    mockIsAdPrivacyOptionsRequired.mockReturnValue(true);
+
+    const { getByTestId } = await render(<ProfileScreen />);
+
+    expect(getByTestId('profile-legal-section')).toBeTruthy();
+    expect(getByTestId('profile-ad-privacy-options')).toBeTruthy();
+  });
+
+  it("opens Google's privacy options form when the row is pressed", async () => {
+    // The entry point has to reach the SDK's own form; a custom consent screen
+    // would not satisfy the requirement.
+    mockIsAdPrivacyOptionsRequired.mockReturnValue(true);
+
+    const { getByTestId } = await render(<ProfileScreen />);
+
+    fireEvent.press(getByTestId('profile-ad-privacy-options'));
+
+    expect(mockShowAdPrivacyOptionsForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells the viewer when the form cannot be opened', async () => {
+    // Failing silently would leave a required control looking broken.
+    mockIsAdPrivacyOptionsRequired.mockReturnValue(true);
+    mockShowAdPrivacyOptionsForm.mockResolvedValue(false);
+
+    const { getByTestId } = await render(<ProfileScreen />);
+
+    fireEvent.press(getByTestId('profile-ad-privacy-options'));
+    await Promise.resolve();
+
+    expect(mockShowToast).toHaveBeenCalledWith(
+      'Pengaturan privasi iklan belum bisa dibuka. Coba lagi nanti.'
+    );
   });
 });

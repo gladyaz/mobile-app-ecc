@@ -80,9 +80,8 @@ passing**, preflight exits 1 on external blockers only.
 
 ## External release blockers
 
-`npm run release:preflight` fails with 7 blockers. All 7 are credentials and
-published pages that do not exist yet — none is a code defect, and none should
-be worked around in code:
+`npm run release:preflight` fails with 7 blockers on a FRESH CHECKOUT (no local
+`.env`). None is a code defect, and none should be worked around in code:
 
 1. `EXPO_PUBLIC_API_BASE_URL` not set
 2. `EXPO_PUBLIC_PRIVACY_POLICY_URL` not published
@@ -92,6 +91,31 @@ be worked around in code:
 5. `EXPO_PUBLIC_ADMOB_INTERSTITIAL_AD_UNIT_ANDROID` not set
 6. AdMob app id is still Google's public sample id
 7. Release signing not configured — the build would be debug-signed
+
+**Blockers 5 and 6 are now a configuration step, not a missing artifact
+(2026-08-30).** The AdMob app ("Red Panda Drama") and its Android interstitial
+ad unit exist, registered against `com.spark.redpanda`. Their ids live in the
+build machine's gitignored `.env` — one AdMob account's identity does not
+belong in every checkout, which is why `app.config.js` substitutes the app id
+from the environment rather than from a tracked file. Run there,
+`release:preflight` clears both and reports 5 blockers; a fresh checkout still
+reports all 7. That is the env contract working, not a regression.
+
+**Registered is not the same as earning.** Still owed on the console side, and
+none of it is verifiable from this repo:
+
+- the AdMob **payment profile is unfinished** — the legal company and payment
+  details are still outstanding;
+- AdMob has **not** approved the app for production ad serving;
+- the **GDPR/EEA and US-states consent messages** are not published under
+  AdMob → Privacy & messaging. Until they are, `requestInfoUpdate()` reports
+  `isConsentFormAvailable: false`, an EEA/UK viewer never reaches
+  `canRequestAds: true`, and the app requests no ad at all — the consent gate
+  fails closed by design (`src/services/ads/consent-gate.ts`);
+- no real interstitial has been served to a real device from the real unit.
+  Local QA cannot verify it either: `resolveAdUnitId` returns Google's test
+  unit whenever `__DEV__` is true, deliberately, so nobody generates invalid
+  traffic by clicking the app's own live ads.
 
 Two warnings: `EXPO_PUBLIC_TERMS_URL` unset, and WhatsApp login is offered but
 **no real WhatsApp OTP has ever been delivered end to end** — one live send to a

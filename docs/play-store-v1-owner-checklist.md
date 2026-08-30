@@ -131,6 +131,22 @@ and how long it takes.
 
 ## 4. Create the AdMob app and unit  → clears blockers 4 and 6
 
+**STATUS 2026-08-30 — the app and the Android unit now EXIST; this step is
+partly done.** The AdMob app "Red Panda Drama" is registered and its Android
+interstitial ad unit is created. Both ids are set in the build machine's
+gitignored `.env`, and `npm run release:preflight` no longer raises either
+AdMob blocker there. What is still owed, and what nothing in this repo can
+substitute for:
+
+- the **AdMob payment profile is not finished** — the legal company and payment
+  details are outstanding, so nothing can be paid out yet;
+- AdMob has **not** approved the app for production ad serving;
+- the two **consent messages** below are still unpublished;
+- no live ad has been observed on a real device (and local QA cannot show one —
+  a `__DEV__` build always uses Google's test unit, on purpose).
+
+Treat production ad serving as UNVERIFIED until all four are settled.
+
 Register an AdMob app against **`com.spark.redpanda`**, create one **interstitial**
 ad unit, then set both:
 

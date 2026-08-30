@@ -550,6 +550,88 @@ export const V1_OPTIONAL_SOCIAL_PLATFORMS: readonly string[] = ['FACEBOOK'];
 export const V1_PERK_TYPES: readonly string[] = ['SKIP_NEXT_INTERSTITIAL', 'TEMPORARY_AD_PASS'];
 
 /* -------------------------------------------------------------------------
+ * CATALOG
+ * ---------------------------------------------------------------------- */
+
+/**
+ * THE GUEST-BROWSABLE SURFACE, and why it is pinned here rather than left to
+ * the call sites.
+ *
+ * Red Panda V1 is free content. A viewer who has never signed in must be able
+ * to open the app, land on Home, browse Discover, and read a series' episode
+ * list. These three routes are the ENTIRE data path behind that promise, and
+ * all three are sent anonymously: `requiresAuth: false` is the product rule,
+ * not an omission somebody forgot to correct.
+ *
+ * The failure this exists to catch is a ONE-ARGUMENT edit. Adding
+ * `{ requiresAuth: true }` to any of the three call sites reads in review as a
+ * tightening - it looks strictly safer - while doing two things that break the
+ * product outright: it attaches a bearer token to reads a guest is entitled to
+ * make, and it puts those reads on the refresh-and-retry-once path, so an
+ * expired session turns a browsable catalog into a forced sign-in. Nothing
+ * about that is visible in a diff of the call site alone.
+ *
+ * `catalog-contract.test.ts` therefore asserts against the REAL client, at the
+ * `fetch` boundary, that these three carry no `Authorization` header even when
+ * the token store holds one - so the regression fails there instead of on a
+ * viewer's phone.
+ *
+ * DELIBERATELY NOT LISTED: `GET /videos/:id/playback`. It is auth-OPTIONAL on
+ * the backend exactly like these are, but it belongs to
+ * `V1_PLAYBACK_ENDPOINTS`, where its `requiresAuth: true` is explained - it
+ * carries the flag solely to keep refresh-on-401 working for a viewer who DOES
+ * hold a session, never to refuse one who does not.
+ */
+export const V1_CATALOG_ENDPOINTS: readonly V1Endpoint[] = [
+  {
+    path: 'videos/feed',
+    method: 'GET',
+    requiresAuth: false,
+    consumer: 'services/videos/video-service.ts#getVideoFeed',
+    /**
+     * The fields `mapBackendVideoToVideo` refuses to map without, plus the two
+     * that decide what a guest may SEE: `contentKind` (the user-facing catalog
+     * is the `drama` rows) and `accessTier` (free vs premium, taken from the
+     * backend and never re-derived from the episode number).
+     */
+    requiredResponseFields: [
+      'id',
+      'seriesId',
+      'title',
+      'episodeNumber',
+      'playbackUrl',
+      'likeCount',
+      'contentKind',
+      'accessTier',
+    ],
+  },
+  {
+    path: 'series',
+    method: 'GET',
+    requiresAuth: false,
+    consumer: 'services/series/series-catalog-service.ts#getSeriesCatalog',
+    /**
+     * An `{ items: [...] }` envelope; anything else is rejected as
+     * `INVALID_RESPONSE` rather than rendered as an empty catalog, so a
+     * dropped envelope surfaces as an error state instead of a Discover tab
+     * that silently claims the catalog is empty.
+     */
+    requiredResponseFields: ['items'],
+  },
+  {
+    path: 'series/:id',
+    method: 'GET',
+    requiresAuth: false,
+    consumer: 'services/series/series-catalog-service.ts#getSeriesDetail',
+    /**
+     * `episodes` is the one the detail mapper hard-asserts on; `id` and
+     * `title` come from the shared series shape it spreads.
+     */
+    requiredResponseFields: ['id', 'title', 'episodes'],
+  },
+];
+
+/* -------------------------------------------------------------------------
  * PLAYBACK
  * ---------------------------------------------------------------------- */
 

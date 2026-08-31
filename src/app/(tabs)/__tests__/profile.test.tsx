@@ -24,109 +24,175 @@ jest.mock('@/stores/video-interactions', () => ({
 }));
 
 /**
- * The UMP consent gate is stubbed rather than exercised: whether Google
- * reports the privacy-options control as required is settled in
- * `services/ads/__tests__/consent-gate.test.ts`. What is under test HERE is
- * the other half of that contract - that the Profile screen actually renders
- * the required entry point and wires it to the SDK's form.
+ * PROFILE INFORMATION ARCHITECTURE.
+ *
+ * Profile used to BE the configuration surface: a row of language chips, a
+ * "LEGAL" heading, and raw links to the privacy policy, the terms and the
+ * account-deletion page, all visible before anybody asked for them. It is now
+ * identity plus three doors, and these cases pin that - both what must appear
+ * and, just as importantly, what must NOT.
+ *
+ * The destinations themselves are covered by their own suites
+ * (`app/__tests__/language.test.tsx`, `settings.test.tsx`, `about.test.tsx`);
+ * what is under test here is the hierarchy.
  */
-const mockIsAdPrivacyOptionsRequired = jest.fn<boolean, []>();
-const mockShowAdPrivacyOptionsForm = jest.fn<Promise<boolean>, []>();
+describe('Profile information architecture', () => {
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ isAuthenticated: false, logout: jest.fn(), user: null });
+  });
 
-jest.mock('@/services/ads/consent-gate', () => ({
-  ensureAdsConsent: () => Promise.resolve(false),
-  isAdPrivacyOptionsRequired: () => mockIsAdPrivacyOptionsRequired(),
-  showAdPrivacyOptionsForm: () => mockShowAdPrivacyOptionsForm(),
-}));
+  it('renders exactly one Language row, not a list of languages', async () => {
+    // The chips were the real problem: three configuration choices spent on a
+    // screen before anybody asked to change one.
+    const { getByTestId, queryByText } = await render(<ProfileScreen />);
 
-describe('ProfileScreen', () => {
-  it('navigates to the Account Security screen when "Keamanan Akun" is pressed', async () => {
+    expect(getByTestId('profile-language-row')).toBeTruthy();
+    expect(queryByText('English')).toBeNull();
+    expect(queryByText('中文')).toBeNull();
+  });
+
+  it('shows the current language as the row value rather than as options', async () => {
+    // The value stays visible at a glance, which is what the chips were
+    // actually for - without spending the screen on the other two.
+    const { getByTestId } = await render(<ProfileScreen />);
+
+    // The row reads "Bahasa" (label) + "Bahasa Indonesia" (current value).
+    expect(getByTestId('profile-language-row')).toHaveTextContent(/Bahasa Indonesia/);
+  });
+
+  it('opens the Language screen when the row is pressed', async () => {
+    const { getByTestId } = await render(<ProfileScreen />);
+
+    fireEvent.press(getByTestId('profile-language-row'));
+
+    expect(router.push).toHaveBeenCalledWith('/language');
+  });
+
+  it('renders Account & Settings and opens Settings', async () => {
+    const { getByTestId } = await render(<ProfileScreen />);
+
+    fireEvent.press(getByTestId('profile-settings-row'));
+
+    expect(router.push).toHaveBeenCalledWith('/settings');
+  });
+
+  it('renders Help & Feedback and opens the help screen', async () => {
+    const { getByTestId } = await render(<ProfileScreen />);
+
+    fireEvent.press(getByTestId('profile-help-row'));
+
+    expect(router.push).toHaveBeenCalledWith('/help');
+  });
+
+  it('shows no LEGAL section, and no legal or ad-privacy row, on Profile itself', async () => {
+    // All of it moved to About. A raw legal block on the main screen was the
+    // specific thing this redesign set out to remove, so its absence is
+    // asserted rather than assumed.
+    process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL = 'https://example.com/privacy';
+
+    const { queryByTestId, queryByText } = await render(<ProfileScreen />);
+
+    expect(queryByTestId('profile-legal-section')).toBeNull();
+    expect(queryByTestId('profile-legal-privacy')).toBeNull();
+    expect(queryByTestId('profile-ad-privacy-options')).toBeNull();
+    expect(queryByText('Legal')).toBeNull();
+
+    delete process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL;
+  });
+
+  it('gives a guest all three rows, and never redirects them anywhere on render', async () => {
+    // Language, About (via Settings) and Help must stay reachable signed out -
+    // a guest is exactly who is most likely to want to read the privacy policy
+    // or change the app's language. Rendering must also not navigate.
+    const { getByTestId } = await render(<ProfileScreen />);
+
+    expect(getByTestId('profile-language-row')).toBeTruthy();
+    expect(getByTestId('profile-settings-row')).toBeTruthy();
+    expect(getByTestId('profile-help-row')).toBeTruthy();
+    expect(router.push).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('gives a signed-in viewer the same three rows', async () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       logout: jest.fn(),
       user: { id: 'user_1', name: 'Jane', username: 'jane', email: 'jane@example.com' },
     });
 
-    const { getByText } = await render(<ProfileScreen />);
+    const { getByTestId } = await render(<ProfileScreen />);
 
-    fireEvent.press(getByText('Keamanan Akun'));
-
-    expect(router.push).toHaveBeenCalledWith('/account-security');
+    expect(getByTestId('profile-language-row')).toBeTruthy();
+    expect(getByTestId('profile-settings-row')).toBeTruthy();
+    expect(getByTestId('profile-help-row')).toBeTruthy();
   });
 
-  it('does not render the Account Security entry for a guest', async () => {
-    mockUseAuth.mockReturnValue({ isAuthenticated: false, logout: jest.fn(), user: null });
+  it('no longer puts the account screens on Profile itself', async () => {
+    // They live under Settings now. Asserted for a SIGNED-IN viewer, since
+    // that is the state that used to render them here.
+    mockUseAuth.mockReturnValue({
+      isAuthenticated: true,
+      logout: jest.fn(),
+      user: { id: 'user_1', name: 'Jane', username: 'jane', email: 'jane@example.com' },
+    });
 
     const { queryByText } = await render(<ProfileScreen />);
 
     expect(queryByText('Keamanan Akun')).toBeNull();
+    expect(queryByText('Data & Privasi')).toBeNull();
   });
+});
 
-  it('navigates to the Data & Privasi screen when "Data & Privasi" is pressed', async () => {
+describe('ProfileScreen identity', () => {
+  it('still logs out and reports it', async () => {
+    const logout = jest.fn();
+
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
-      logout: jest.fn(),
+      logout,
       user: { id: 'user_1', name: 'Jane', username: 'jane', email: 'jane@example.com' },
     });
 
     const { getByText } = await render(<ProfileScreen />);
 
-    fireEvent.press(getByText('Data & Privasi'));
+    fireEvent.press(getByText('Logout'));
 
-    expect(router.push).toHaveBeenCalledWith('/account-data');
+    expect(logout).toHaveBeenCalledTimes(1);
+    expect(mockShowToast).toHaveBeenCalledWith('Kamu telah logout');
   });
 
-  it('does not render the Data & Privasi entry for a guest', async () => {
-    mockUseAuth.mockReturnValue({ isAuthenticated: false, logout: jest.fn(), user: null });
-
-    const { queryByText } = await render(<ProfileScreen />);
-
-    expect(queryByText('Data & Privasi')).toBeNull();
-  });
   describe('an account with no email address', () => {
     /**
      * A WhatsApp-only account always has `email: null`, and so does a Google
      * account whose token did not assert `email_verified`. The canonical
-     * contract makes that a first-class state, so the profile has to render
-     * it truthfully rather than blank or invented.
+     * contract makes that a first-class state, so the profile has to render it
+     * truthfully rather than blank or invented.
      */
     const phoneOnlyUser = { id: 'clx0000000000user003', name: null, username: null, email: null };
 
-    it('never renders an empty email line', async () => {
+    beforeEach(() => {
       mockUseAuth.mockReturnValue({
         isAuthenticated: true,
         logout: jest.fn(),
         user: phoneOnlyUser,
       });
+    });
 
+    it('never renders an empty email line', async () => {
       const { getByTestId } = await render(<ProfileScreen />);
 
-      expect(getByTestId('profile-email')).toHaveTextContent(
-        'Akun ini masuk tanpa email.'
-      );
+      expect(getByTestId('profile-email')).toHaveTextContent('Akun ini masuk tanpa email.');
     });
 
     it('never fabricates an email address', async () => {
-      mockUseAuth.mockReturnValue({
-        isAuthenticated: true,
-        logout: jest.fn(),
-        user: phoneOnlyUser,
-      });
-
       const { queryByText } = await render(<ProfileScreen />);
 
       expect(queryByText(/@/)).toBeNull();
     });
 
     it('never shows the raw user id as a display name', async () => {
-      // A cuid is a database key. Rendering one where a name goes looks
-      // like a name the account actually has.
-      mockUseAuth.mockReturnValue({
-        isAuthenticated: true,
-        logout: jest.fn(),
-        user: phoneOnlyUser,
-      });
-
+      // A cuid is a database key. Rendering one where a name goes looks like a
+      // name the account actually has.
       const { getByTestId, queryByText } = await render(<ProfileScreen />);
 
       expect(queryByText('clx0000000000user003')).toBeNull();
@@ -134,167 +200,23 @@ describe('ProfileScreen', () => {
     });
 
     it('omits the @handle rather than rendering a bare @', async () => {
-      mockUseAuth.mockReturnValue({
-        isAuthenticated: true,
-        logout: jest.fn(),
-        user: phoneOnlyUser,
-      });
-
       const { queryByTestId } = await render(<ProfileScreen />);
 
       expect(queryByTestId('profile-username')).toBeNull();
     });
+  });
 
-    it('still renders an email account normally', async () => {
-      mockUseAuth.mockReturnValue({
-        isAuthenticated: true,
-        logout: jest.fn(),
-        user: { id: 'user_1', name: 'Jane', username: 'jane', email: 'jane@example.com' },
-      });
-
-      const { getByTestId } = await render(<ProfileScreen />);
-
-      expect(getByTestId('profile-email')).toHaveTextContent('jane@example.com');
-      expect(getByTestId('profile-name')).toHaveTextContent('Jane');
-      expect(getByTestId('profile-username')).toHaveTextContent('@jane');
+  it('still renders an email account normally', async () => {
+    mockUseAuth.mockReturnValue({
+      isAuthenticated: true,
+      logout: jest.fn(),
+      user: { id: 'user_1', name: 'Jane', username: 'jane', email: 'jane@example.com' },
     });
-  });
-});
-
-describe('ProfileScreen legal links', () => {
-  const KEYS = [
-    'EXPO_PUBLIC_PRIVACY_POLICY_URL',
-    'EXPO_PUBLIC_TERMS_URL',
-    'EXPO_PUBLIC_ACCOUNT_DELETION_URL',
-  ] as const;
-  const saved = new Map<string, string | undefined>();
-
-  beforeEach(() => {
-    for (const key of KEYS) {
-      saved.set(key, process.env[key]);
-      delete process.env[key];
-    }
-  });
-
-  afterEach(() => {
-    for (const key of KEYS) {
-      const value = saved.get(key);
-
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  });
-
-  it('renders no legal section at all when no URL is configured', async () => {
-    // Which is every build today. A row that opens a page nobody has published
-    // is worse than the absence of the row.
-    const { queryByTestId } = await render(<ProfileScreen />);
-
-    expect(queryByTestId('profile-legal-section')).toBeNull();
-  });
-
-  it('renders only the rows whose URL the build actually has', async () => {
-    process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL = 'https://example.com/privacy';
-
-    const { getByTestId, queryByTestId } = await render(<ProfileScreen />);
-
-    expect(getByTestId('profile-legal-privacy')).toBeTruthy();
-    expect(queryByTestId('profile-legal-terms')).toBeNull();
-    expect(queryByTestId('profile-legal-deletion')).toBeNull();
-  });
-});
-
-/**
- * The Google UMP privacy-options entry point.
- *
- * Google's US state regulations message - like the EEA/UK one - is only
- * satisfied if the app ALSO exposes a persistent control that reopens the
- * privacy form, so a viewer can change or withdraw an ad-consent choice they
- * made earlier. The SDK decides WHETHER that control is required
- * (`privacyOptionsRequirementStatus`); this screen is the only place that
- * renders it, so the requirement is only actually met if these hold.
- */
-describe('ProfileScreen ad privacy options', () => {
-  const LEGAL_KEYS = [
-    'EXPO_PUBLIC_PRIVACY_POLICY_URL',
-    'EXPO_PUBLIC_TERMS_URL',
-    'EXPO_PUBLIC_ACCOUNT_DELETION_URL',
-  ] as const;
-  const saved = new Map<string, string | undefined>();
-
-  beforeEach(() => {
-    // Cleared deliberately: the control must stand on its own, without
-    // depending on a build that happens to have published legal pages.
-    for (const key of LEGAL_KEYS) {
-      saved.set(key, process.env[key]);
-      delete process.env[key];
-    }
-
-    mockUseAuth.mockReturnValue({ isAuthenticated: false, logout: jest.fn(), user: null });
-    mockIsAdPrivacyOptionsRequired.mockReturnValue(false);
-    mockShowAdPrivacyOptionsForm.mockResolvedValue(true);
-  });
-
-  afterEach(() => {
-    for (const key of LEGAL_KEYS) {
-      const value = saved.get(key);
-
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  });
-
-  it('renders no privacy options row where the SDK does not require one', async () => {
-    // Outside a covered region the form opens nothing, so a row offering it
-    // would be a dead end.
-    const { queryByTestId } = await render(<ProfileScreen />);
-
-    expect(queryByTestId('profile-ad-privacy-options')).toBeNull();
-  });
-
-  it('renders the privacy options row when the SDK requires one', async () => {
-    // REQUIRED is what UMP reports for a US state covered by the published US
-    // regulations message, and for the EEA/UK under the European one. Asserted
-    // with no legal URL configured, so this proves the control appears on the
-    // strength of the SDK requirement alone.
-    mockIsAdPrivacyOptionsRequired.mockReturnValue(true);
 
     const { getByTestId } = await render(<ProfileScreen />);
 
-    expect(getByTestId('profile-legal-section')).toBeTruthy();
-    expect(getByTestId('profile-ad-privacy-options')).toBeTruthy();
-  });
-
-  it("opens Google's privacy options form when the row is pressed", async () => {
-    // The entry point has to reach the SDK's own form; a custom consent screen
-    // would not satisfy the requirement.
-    mockIsAdPrivacyOptionsRequired.mockReturnValue(true);
-
-    const { getByTestId } = await render(<ProfileScreen />);
-
-    fireEvent.press(getByTestId('profile-ad-privacy-options'));
-
-    expect(mockShowAdPrivacyOptionsForm).toHaveBeenCalledTimes(1);
-  });
-
-  it('tells the viewer when the form cannot be opened', async () => {
-    // Failing silently would leave a required control looking broken.
-    mockIsAdPrivacyOptionsRequired.mockReturnValue(true);
-    mockShowAdPrivacyOptionsForm.mockResolvedValue(false);
-
-    const { getByTestId } = await render(<ProfileScreen />);
-
-    fireEvent.press(getByTestId('profile-ad-privacy-options'));
-    await Promise.resolve();
-
-    expect(mockShowToast).toHaveBeenCalledWith(
-      'Pengaturan privasi iklan belum bisa dibuka. Coba lagi nanti.'
-    );
+    expect(getByTestId('profile-email')).toHaveTextContent('jane@example.com');
+    expect(getByTestId('profile-name')).toHaveTextContent('Jane');
+    expect(getByTestId('profile-username')).toHaveTextContent('@jane');
   });
 });

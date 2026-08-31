@@ -1,136 +1,42 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
-import * as WebBrowser from 'expo-web-browser';
-import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import {
-  getAccountDeletionUrl,
-  getPrivacyPolicyUrl,
-  getTermsUrl,
-  hasAnyLegalUrl,
-} from '@/constants/legal';
-import { FontFamily, Gradients, Palette, Radius } from '@/constants/theme';
-import {
-  isAdPrivacyOptionsRequired,
-  showAdPrivacyOptionsForm,
-} from '@/services/ads/consent-gate';
-import { isInternalScreenEnabled } from '@/services/debug/internal-screens';
-import { isDemoMode } from '@/services/demo/demo-mode';
+import { SettingsRow, SettingsSection } from '@/features/settings/settings-primitives';
+import { FontFamily, Gradients, Palette, Radius, Spacing } from '@/constants/theme';
 import { resetAllPersistedState } from '@/services/storage/local-storage';
 import { useAuth } from '@/stores/auth';
-import { LANGUAGE_LABELS, LANGUAGES } from '@/services/i18n/translations';
+import { LANGUAGE_LABELS } from '@/services/i18n/translations';
 import { useTranslation } from '@/stores/language';
 import { useToast } from '@/stores/toast';
 import { useVideoInteractions } from '@/stores/video-interactions';
 
 /**
- * Links to the app's public legal pages.
+ * PROFILE: identity, then three doors.
  *
- * Rendered ONLY for the URLs a build actually has. Google Play requires a
- * privacy policy for an app that collects account data and serves ads, and a
- * web account-deletion page reachable without installing the app - but none of
- * those pages exists yet, and a row that opens a 404 is worse than no row. See
- * constants/legal.ts; publishing the pages is a configuration step, not a code
- * change.
+ * This screen used to be the app's configuration surface - a row of language
+ * chips, a "LEGAL" heading, and raw links to the privacy policy, the terms and
+ * the account-deletion page, all visible before anyone asked for them. That is
+ * now a hierarchy:
  *
- * `openBrowserAsync` rather than `Linking.openURL`: it keeps the viewer inside
- * the app in a system browser sheet they can dismiss back to where they were,
- * instead of handing them off to a separate browser app and losing the
- * session's place.
+ *   Profile -> Language            (the choice itself, on its own screen)
+ *           -> Account & Settings  -> About -> the legal + UMP rows
+ *           -> Help & Feedback
+ *
+ * NOTHING moved behind a sign-in. All three rows render, and work, for a
+ * guest: language is a device preference, and the legal pages are exactly what
+ * somebody who has not signed in is most likely to want to read first. The
+ * account-bound destinations inside Settings keep their own gate.
  */
-function LegalLinks() {
-  const { t } = useTranslation();
-  const { showToast } = useToast();
-
-  // UMP's integration requirement is not only "show a form once". Where
-  // `privacyOptionsRequirementStatus` is REQUIRED - the whole EEA and UK - the
-  // app must ALSO expose a persistent control that reopens it, so somebody who
-  // accepted personalised ads at first launch has a route back. Without one the
-  // first-launch choice is permanent. Rendered only where Google says it is
-  // required, so no other region grows a row that opens nothing.
-  const showsAdPrivacyOptions = isAdPrivacyOptionsRequired();
-
-  if (!hasAnyLegalUrl() && !showsAdPrivacyOptions) {
-    return null;
-  }
-
-  const rows = [
-    { key: 'privacy', label: t('profile.privacyPolicy'), url: getPrivacyPolicyUrl() },
-    { key: 'terms', label: t('profile.termsOfService'), url: getTermsUrl() },
-    { key: 'deletion', label: t('profile.deleteAccountHelp'), url: getAccountDeletionUrl() },
-  ].filter((row): row is { key: string; label: string; url: string } => Boolean(row.url));
-
-  /**
-   * Opens an external page, and says so when it cannot.
-   *
-   * `openBrowserAsync` REJECTS on a device with no browser exposing a Custom
-   * Tabs service, or none matching the https VIEW intent - stripped OEM images,
-   * managed profiles, a viewer who disabled Chrome. Discarding that rejection
-   * turns a legally-required link into a row that silently does nothing when
-   * tapped, which is the same dead-end shape this release is removing
-   * elsewhere. Fall back to the system browser, and only then admit failure.
-   */
-  const openExternal = async (url: string) => {
-    try {
-      await WebBrowser.openBrowserAsync(url);
-    } catch {
-      try {
-        await Linking.openURL(url);
-      } catch {
-        showToast(t('profile.linkUnavailable'));
-      }
-    }
-  };
-
-  return (
-    <View style={styles.legalSection} testID="profile-legal-section">
-      <Text style={styles.legalSectionTitle}>{t('profile.legalSection')}</Text>
-      {rows.map((row) => (
-        <Pressable
-          accessibilityRole="link"
-          key={row.key}
-          onPress={() => {
-            void openExternal(row.url);
-          }}
-          style={({ pressed }) => [styles.legalRow, pressed && styles.buttonPressed]}
-          testID={`profile-legal-${row.key}`}>
-          <Text style={styles.legalRowText}>{row.label}</Text>
-          <SymbolView
-            name={{ ios: 'arrow.up.right', android: 'open_in_new', web: 'open_in_new' }}
-            size={14}
-            tintColor={Palette.textDisabled}
-          />
-        </Pressable>
-      ))}
-      {showsAdPrivacyOptions ? (
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            void showAdPrivacyOptionsForm().then((wasShown) => {
-              if (!wasShown) {
-                showToast(t('profile.adPrivacyOptionsFailed'));
-              }
-            });
-          }}
-          style={({ pressed }) => [styles.legalRow, pressed && styles.buttonPressed]}
-          testID="profile-ad-privacy-options">
-          <Text style={styles.legalRowText}>{t('profile.adPrivacyOptions')}</Text>
-          <SymbolView
-            name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-            size={14}
-            tintColor={Palette.textDisabled}
-          />
-        </Pressable>
-      ) : null}
-    </View>
-  );
-}
 
 // Development-only escape hatch to clear persisted auth/likes/saved/watch
-// progress. Storage is cleared immediately; in-memory state for the
-// current session still needs a manual app reload to pick that up, since
-// there's no cross-platform way to force-remount every provider from here.
+// progress. Storage is cleared immediately; in-memory state for the current
+// session still needs a manual app reload to pick that up, since there's no
+// cross-platform way to force-remount every provider from here.
+//
+// Kept visually apart from the production rows above it - it is not part of
+// the information architecture, and must never read as though it were.
 function DevResetButton() {
   if (!__DEV__) {
     return null;
@@ -144,47 +50,53 @@ function DevResetButton() {
           Alert.alert('Local data cleared', 'Reload the app to see the reset state.');
         });
       }}
-      style={({ pressed }) => [styles.devResetButton, pressed && styles.buttonPressed]}>
+      style={({ pressed }) => [styles.devResetButton, pressed && styles.buttonPressed]}
+      testID="profile-dev-reset">
       <Text style={styles.devResetButtonText}>Reset Local Data (Dev)</Text>
     </Pressable>
   );
 }
 
 /**
- * Rendered in both the signed-in and the guest branch. Language is a device
- * preference, not an account setting - leaving it behind the signed-in state
- * would make it unreachable for exactly the person most likely to need it.
+ * The three navigation rows, identical for a guest and a signed-in viewer.
+ *
+ * The Language row shows the CURRENT language on the right, so the value is
+ * still visible at a glance without listing every option - which is what the
+ * chips were really for.
  */
-function LanguagePicker() {
-  const { t, language, setLanguage } = useTranslation();
+function ProfileNavigation() {
+  const { t, language } = useTranslation();
 
   return (
-    <View style={styles.languageSection}>
-      <Text style={styles.languageLabel}>{t('profile.language')}</Text>
-      <View style={styles.languageRow}>
-        {LANGUAGES.map((code) => {
-          const isSelected = code === language;
-
-          return (
-            <Pressable
-              key={code}
-              accessibilityRole="button"
-              accessibilityState={{ selected: isSelected }}
-              onPress={() => setLanguage(code)}
-              style={({ pressed }) => [
-                styles.languageChip,
-                isSelected && styles.languageChipSelected,
-                pressed && styles.buttonPressed,
-              ]}>
-              <Text
-                style={[styles.languageChipText, isSelected && styles.languageChipTextSelected]}>
-                {LANGUAGE_LABELS[code]}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-    </View>
+    <SettingsSection>
+      <SettingsRow
+        icon={{ ios: 'globe', android: 'language', web: 'language' }}
+        label={t('profile.language')}
+        onPress={() => {
+          router.push('/language');
+        }}
+        testID="profile-language-row"
+        value={LANGUAGE_LABELS[language]}
+      />
+      <SettingsRow
+        hasDivider
+        icon={{ ios: 'gearshape', android: 'settings', web: 'settings' }}
+        label={t('profile.accountSettings')}
+        onPress={() => {
+          router.push('/settings');
+        }}
+        testID="profile-settings-row"
+      />
+      <SettingsRow
+        hasDivider
+        icon={{ ios: 'questionmark.circle', android: 'help_outline', web: 'help_outline' }}
+        label={t('profile.helpFeedback')}
+        onPress={() => {
+          router.push('/help');
+        }}
+        testID="profile-help-row"
+      />
+    </SettingsSection>
   );
 }
 
@@ -196,195 +108,111 @@ export default function ProfileScreen() {
 
   if (isAuthenticated && user) {
     // Never `user.id`: a cuid is a database key, and rendering one where a
-    // name goes looks like a name the account actually has. A neutral
-    // label is the honest fallback when there is no displayName and no
-    // email local part to derive one from.
+    // name goes looks like a name the account actually has. A neutral label is
+    // the honest fallback when there is no displayName and no email local part
+    // to derive one from.
     const displayName = user.name ?? t('profile.accountFallbackName');
 
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>{t('profile.title')}</Text>
+        <ScrollView contentContainerStyle={styles.content}>
+          <Text style={styles.title}>{t('profile.title')}</Text>
 
-        <View style={styles.identityRow}>
-          <LinearGradient
-            colors={Gradients.primary}
-            end={{ x: 1, y: 1 }}
-            start={{ x: 0, y: 0 }}
-            style={styles.avatar}>
-            <Text style={styles.avatarText}>{displayName.charAt(0)}</Text>
-          </LinearGradient>
-          <View style={styles.identityText}>
-            <Text style={styles.name} testID="profile-name">
-              {displayName}
-            </Text>
-            {user.username ? (
-              <Text style={styles.username} testID="profile-username">
-                @{user.username}
+          <View style={styles.identityRow}>
+            <LinearGradient
+              colors={Gradients.primary}
+              end={{ x: 1, y: 1 }}
+              start={{ x: 0, y: 0 }}
+              style={styles.avatar}>
+              <Text style={styles.avatarText}>{displayName.charAt(0)}</Text>
+            </LinearGradient>
+            <View style={styles.identityText}>
+              <Text style={styles.name} testID="profile-name">
+                {displayName}
               </Text>
-            ) : null}
-            {/* An account can genuinely have no email address - a
-                WhatsApp-only one always does, and so does a Google account
-                whose token did not assert `email_verified`. The row is
-                OMITTED rather than filled in: an empty line reads as a
-                loading bug, and inventing an address (a synthetic
-                `…@whatsapp.local`, or the user id) would be claiming an
-                identity the account does not have. What it says instead is
-                the truth, and Account Security shows the masked identifier
-                the backend does consider safe to display. */}
-            <Text style={styles.email} testID="profile-email">
-              {user.email ?? t('profile.noEmail')}
-            </Text>
+              {user.username ? (
+                <Text style={styles.username} testID="profile-username">
+                  @{user.username}
+                </Text>
+              ) : null}
+              {/* An account can genuinely have no email address - a
+                  WhatsApp-only one always does, and so does a Google account
+                  whose token did not assert `email_verified`. The row is
+                  OMITTED rather than filled in: an empty line reads as a
+                  loading bug, and inventing an address would be claiming an
+                  identity the account does not have. */}
+              <Text style={styles.email} testID="profile-email">
+                {user.email ?? t('profile.noEmail')}
+              </Text>
+            </View>
           </View>
-        </View>
 
-        <View style={styles.statsRow}>
-          <View style={styles.statsBox}>
-            <Text style={[styles.statsValue, styles.statsValuePrimary]}>
-              {savedVideoIds.length}
-            </Text>
-            <Text style={styles.statsLabel}>{t('profile.savedCount')}</Text>
+          <View style={styles.statsRow}>
+            <View style={styles.statsBox}>
+              <Text style={[styles.statsValue, styles.statsValuePrimary]}>
+                {savedVideoIds.length}
+              </Text>
+              <Text style={styles.statsLabel}>{t('profile.savedCount')}</Text>
+            </View>
+            <View style={styles.statsBox}>
+              <Text style={styles.statsValue}>{likedVideoIds.length}</Text>
+              <Text style={styles.statsLabel}>{t('profile.likedCount')}</Text>
+            </View>
           </View>
-          <View style={styles.statsBox}>
-            <Text style={styles.statsValue}>{likedVideoIds.length}</Text>
-            <Text style={styles.statsLabel}>{t('profile.likedCount')}</Text>
-          </View>
-        </View>
 
-        <LanguagePicker />
+          <ProfileNavigation />
 
-        {/* Every destination below needs the backend: password change and
-            session management, data export and account deletion, and the
-            internal processing queue. A demo build has none of it, so these
-            entries are hidden rather than left to fail when someone taps
-            them. */}
-        {!isDemoMode() && (
-          <>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                router.push('/account-security');
-              }}
-              style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
-              <SymbolView
-                name={{ ios: 'lock.shield', android: 'security', web: 'security' }}
-                size={20}
-                tintColor={Palette.textSecondary}
-              />
-              <Text style={styles.processingButtonText}>{t('profile.accountSecurity')}</Text>
-              <SymbolView
-                name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-                size={16}
-                tintColor={Palette.textDisabled}
-              />
-            </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              logout();
+              showToast(t('profile.loggedOut'));
+            }}
+            style={({ pressed }) => [styles.logoutButton, pressed && styles.buttonPressed]}>
+            <Text style={styles.logoutButtonText}>{t('profile.logout')}</Text>
+          </Pressable>
 
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                router.push('/account-data');
-              }}
-              style={({ pressed }) => [styles.processingButton, pressed && styles.buttonPressed]}>
-              <SymbolView
-                name={{
-                  ios: 'square.and.arrow.up',
-                  android: 'file_download',
-                  web: 'file_download',
-                }}
-                size={20}
-                tintColor={Palette.textSecondary}
-              />
-              <Text style={styles.processingButtonText}>{t('profile.dataPrivacy')}</Text>
-              <SymbolView
-                name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-                size={16}
-                tintColor={Palette.textDisabled}
-              />
-            </Pressable>
-
-            {/* INTERNAL, and fabricated: /processing renders bundled fixture
-                rows including backend storage paths. `isInternalScreenEnabled`
-                keeps it out of every release artifact, not just demo ones -
-                see services/debug/internal-screens.ts. The screen itself
-                refuses too, so a `mobileappecc://processing` deep link cannot
-                reach past this. */}
-            {isInternalScreenEnabled() && (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => {
-                  router.push('../processing');
-                }}
-                style={({ pressed }) => [
-                  styles.processingButton,
-                  pressed && styles.buttonPressed,
-                ]}>
-                <SymbolView
-                  name={{ ios: 'clock', android: 'schedule', web: 'schedule' }}
-                  size={20}
-                  tintColor={Palette.textSecondary}
-                />
-                <Text style={styles.processingButtonText}>{t('profile.processingHistory')}</Text>
-                <Text style={styles.internalBadge}>INTERNAL</Text>
-                <SymbolView
-                  name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-                  size={16}
-                  tintColor={Palette.textDisabled}
-                />
-              </Pressable>
-            )}
-          </>
-        )}
-
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            logout();
-            showToast(t('profile.loggedOut'));
-          }}
-          style={({ pressed }) => [styles.logoutButton, pressed && styles.buttonPressed]}>
-          <Text style={styles.logoutButtonText}>{t('profile.logout')}</Text>
-        </Pressable>
-
-        <LegalLinks />
-
-        <DevResetButton />
+          <DevResetButton />
+        </ScrollView>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{t('profile.title')}</Text>
-      <View style={styles.guestState}>
-        <View style={styles.guestAvatar}>
-          <SymbolView
-            name={{ ios: 'person', android: 'person_outline', web: 'person_outline' }}
-            size={36}
-            tintColor={Palette.textMuted}
-          />
+      <ScrollView contentContainerStyle={styles.content}>
+        <Text style={styles.title}>{t('profile.title')}</Text>
+
+        <View style={styles.guestState}>
+          <View style={styles.guestAvatar}>
+            <SymbolView
+              name={{ ios: 'person', android: 'person_outline', web: 'person_outline' }}
+              size={36}
+              tintColor={Palette.textMuted}
+            />
+          </View>
+          <Text style={styles.guestTitle}>{t('profile.guest')}</Text>
+          <Text style={styles.description}>{t('profile.guestBlurb')}</Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              router.push('/login');
+            }}
+            style={({ pressed }) => [styles.loginButton, pressed && styles.buttonPressed]}>
+            <LinearGradient
+              colors={Gradients.primary}
+              end={{ x: 1, y: 1 }}
+              start={{ x: 0, y: 0 }}
+              style={styles.loginButtonGradient}>
+              <Text style={styles.loginButtonText}>{t('profile.login')}</Text>
+            </LinearGradient>
+          </Pressable>
         </View>
-        <Text style={styles.guestTitle}>{t('profile.guest')}</Text>
-        <Text style={styles.description}>{t('profile.guestBlurb')}</Text>
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            router.push('/login');
-          }}
-          style={({ pressed }) => [styles.loginButton, pressed && styles.buttonPressed]}>
-          <LinearGradient
-            colors={Gradients.primary}
-            end={{ x: 1, y: 1 }}
-            start={{ x: 0, y: 0 }}
-            style={styles.loginButtonGradient}>
-            <Text style={styles.loginButtonText}>{t('profile.login')}</Text>
-          </LinearGradient>
-        </Pressable>
 
-        <LanguagePicker />
-
-        <LegalLinks />
+        <ProfileNavigation />
 
         <DevResetButton />
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -392,9 +220,12 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 70,
     backgroundColor: Palette.background,
+  },
+  content: {
+    paddingHorizontal: Spacing.three,
+    paddingTop: 70,
+    paddingBottom: Spacing.six,
   },
   title: {
     fontSize: 26,
@@ -402,11 +233,10 @@ const styles = StyleSheet.create({
     color: Palette.text,
   },
   guestState: {
-    flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 10,
-    paddingBottom: 96,
+    paddingTop: Spacing.five,
+    paddingBottom: Spacing.two,
   },
   guestAvatar: {
     width: 96,
@@ -451,7 +281,7 @@ const styles = StyleSheet.create({
     color: Palette.text,
   },
   identityRow: {
-    marginTop: 24,
+    marginTop: Spacing.four,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
@@ -490,7 +320,7 @@ const styles = StyleSheet.create({
     color: Palette.textMuted,
   },
   statsRow: {
-    marginTop: 16,
+    marginTop: Spacing.three,
     flexDirection: 'row',
     gap: 12,
   },
@@ -517,96 +347,8 @@ const styles = StyleSheet.create({
     fontFamily: FontFamily.semiBold,
     color: Palette.textSecondary,
   },
-  languageSection: {
-    gap: 10,
-    marginBottom: 8,
-  },
-  languageLabel: {
-    fontSize: 13,
-    fontFamily: FontFamily.bold,
-    color: Palette.textSecondary,
-  },
-  languageRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  languageChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: Radius.pill,
-    borderWidth: 1,
-    borderColor: Palette.border,
-  },
-  languageChipSelected: {
-    borderColor: Palette.primary,
-    backgroundColor: 'rgba(255, 122, 26, 0.14)',
-  },
-  languageChipText: {
-    fontSize: 13,
-    fontFamily: FontFamily.bold,
-    color: Palette.textSecondary,
-  },
-  languageChipTextSelected: {
-    color: Palette.primary,
-  },
-  legalSection: {
-    marginTop: 24,
-    gap: 4,
-  },
-  legalSectionTitle: {
-    fontFamily: FontFamily.semiBold,
-    fontSize: 12,
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-    color: Palette.textMuted,
-    marginBottom: 4,
-  },
-  legalRow: {
-    // 44pt is the minimum comfortable touch target; these rows are the app's
-    // only route to its legal pages and to the ad-consent control.
-    height: 44,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  legalRowText: {
-    fontFamily: FontFamily.regular,
-    fontSize: 14,
-    color: Palette.textSecondary,
-  },
-  processingButton: {
-    marginTop: 16,
-    height: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: Palette.border,
-    borderRadius: Radius.xl,
-    backgroundColor: Palette.surface,
-  },
-  processingButtonText: {
-    flex: 1,
-    fontSize: 14,
-    fontFamily: FontFamily.bold,
-    color: Palette.text,
-  },
-  internalBadge: {
-    fontSize: 9,
-    letterSpacing: 1,
-    fontFamily: FontFamily.bold,
-    color: Palette.primaryHover,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 122, 26, 0.4)',
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    overflow: 'hidden',
-  },
   logoutButton: {
-    marginTop: 16,
+    marginTop: Spacing.four,
     height: 52,
     alignItems: 'center',
     justifyContent: 'center',
@@ -622,7 +364,7 @@ const styles = StyleSheet.create({
   devResetButton: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    marginTop: 12,
+    marginTop: Spacing.five,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: Radius.md,

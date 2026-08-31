@@ -46,6 +46,9 @@ yarn-error.*
 .env
 .env*.local
 .env.ios-backup
+.env.bak*
+.env.*.bak
+.env.backup*
 
 # typescript
 *.tsbuildinfo

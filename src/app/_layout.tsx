@@ -77,6 +77,15 @@ function AppContent() {
         <Stack.Screen name="processing" options={{ headerShown: false }} />
         <Stack.Screen name="account-security" options={{ headerShown: false }} />
         <Stack.Screen name="account-data" options={{ headerShown: false }} />
+        {/* The Profile -> Settings -> About hierarchy. Registered as ordinary
+            stack screens (not tabs) so each gets native back navigation, and
+            NONE of them is auth-gated at the route level: Language, About and
+            Help must stay reachable while signed out. */}
+        <Stack.Screen name="language" options={{ headerShown: false }} />
+        <Stack.Screen name="settings" options={{ headerShown: false }} />
+        <Stack.Screen name="account" options={{ headerShown: false }} />
+        <Stack.Screen name="about" options={{ headerShown: false }} />
+        <Stack.Screen name="help" options={{ headerShown: false }} />
         <Stack.Screen name="series/[id]" options={{ headerShown: false }} />
       </Stack>
     </>

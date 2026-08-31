@@ -56,7 +56,8 @@
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "typecheck:fresh-checkout": "bash ./scripts/check-fresh-checkout-typecheck.sh",
-    "release:preflight": "node ./scripts/check-release-android.js"
+    "release:preflight": "node ./scripts/check-release-android.js",
+    "dev:check-api": "node ./scripts/check-dev-api-host.js"
   },
   "private": true,
   "jest": {

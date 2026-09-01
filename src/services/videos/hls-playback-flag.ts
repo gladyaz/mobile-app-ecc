@@ -13,21 +13,27 @@
  * everywhere including CI and QA) uses the backend's HLS `masterUrl` whenever
  * a playback authorization is HLS-shaped.
  *
- * IMPORTANT - this is NOT a "prefer-MP4 fallback/rollback", despite how an
- * earlier plan described it. It cannot turn an HLS-ready video into an MP4
- * one: the backend's `GET /videos/:id/playback` returns EITHER an HLS shape
- * OR a legacy/MP4 shape for a given video based on how its media is stored
- * (never both), and an HLS-ready row's own feed `playbackUrl` is the local
- * `/videos/:id/stream` URL that 404s for R2-backed media (the exact Slice 11M
- * root cause). So there is no client-side MP4 source to fall back to for
- * HLS-ready media. When this returns false, an HLS-shaped authorization is
- * simply NOT played - it resolves to the same "video unavailable" state a
- * malformed response would (see `resolvePlaybackSource` in
- * `video-service.ts`) - while every legacy/MP4 response continues to play
- * exactly as it did before Slice 11R, byte for byte. A TRUE HLS->MP4 rollback
- * for HLS-ready media would require the backend to additionally expose an
- * authorized MP4 rendition: a separate contract/product decision NOT
- * implemented by 11R.
+ * This IS a real prefer-MP4 rollback as of work unit "HLS MP4 FALLBACK".
+ *
+ * It did not used to be, and the reason is worth keeping: Slice 11R's
+ * `GET /videos/:id/playback` returned EITHER an HLS shape OR a legacy/MP4
+ * shape for a given video, never both, and an HLS-ready row's own feed
+ * `playbackUrl` is the local `/videos/:id/stream` URL that 404s for R2-backed
+ * media (the exact Slice 11M root cause). With no authorized MP4 anywhere in
+ * an HLS response, there was nothing to fall back TO - so turning this flag
+ * off did not roll back to MP4, it just stopped the video playing at all.
+ *
+ * The backend now additionally exposes `fallback` on an HLS response (an
+ * authorized MP4 for the same row - see `types/playback.ts`'s
+ * `Mp4PlaybackFallback`), which is precisely the "separate contract decision"
+ * this comment used to say was missing. So when this returns false,
+ * `resolvePlaybackSource` (`video-service.ts`) now resolves that MP4 instead
+ * of returning `null`, and playback continues. It still degrades to the
+ * "video unavailable" state for the one case where the backend genuinely has
+ * no MP4 to offer (`fallback` absent).
+ *
+ * Every legacy/MP4 response continues to play exactly as it did before Slice
+ * 11R, byte for byte, regardless of this flag.
  */
 export function isHlsPlaybackEnabled(): boolean {
   return process.env.EXPO_PUBLIC_HLS_PLAYBACK_ENABLED !== 'false';

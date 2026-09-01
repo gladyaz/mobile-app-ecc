@@ -53,11 +53,42 @@ export type PlaybackRendition = {
   readonly url: string;
 };
 
+/**
+ * Work unit "HLS MP4 FALLBACK": the progressive-MP4 source the backend now
+ * additionally exposes on an HLS response (`HlsPlaybackResponseDto.fallback`).
+ *
+ * This is the thing `services/videos/hls-playback-flag.ts` used to say did
+ * not exist. Before it, an HLS-ready video had exactly ONE playable source:
+ * if the HLS engine could not play it - the kill switch was off, the browser
+ * has no HLS support, or the player errored on the manifest - there was
+ * nothing else to try and the item resolved to "video unavailable".
+ *
+ * Same three fields as `Mp4PlaybackAuthorization` (minus the `kind` tag)
+ * because it IS the same thing: the backend builds it with the same helper
+ * that produces a non-HLS row's whole response, so falling back lands on
+ * exactly the source this video served before it was transcoded.
+ *
+ * OPTIONAL on the wire and optional here. The backend omits it rather than
+ * sending something wrong when the row has no usable MP4 (e.g. its raw
+ * source was reclaimed after transcoding), so its PRESENCE is a promise
+ * there is something to play and its absence is not an error.
+ *
+ * `expiresAt` is this URL's own expiry, deliberately NOT the HLS token's -
+ * a presigned R2 GET is minutes where the gateway token is an hour.
+ */
+export type Mp4PlaybackFallback = {
+  readonly playbackUrl: string;
+  readonly requiresAuthHeader: boolean;
+  readonly expiresAt: string;
+};
+
 export type HlsPlaybackAuthorization = {
   readonly kind: 'hls';
   readonly masterUrl: string;
   readonly renditions: readonly PlaybackRendition[];
   readonly expiresAt: string;
+  /** See `Mp4PlaybackFallback`. Absent when the backend has no MP4 to offer. */
+  readonly fallback?: Mp4PlaybackFallback;
 };
 
 export type Mp4PlaybackAuthorization = {

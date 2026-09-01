@@ -3,7 +3,12 @@ import { ApiError, request } from '@/services/api/client';
 import { isDemoMode } from '@/services/demo/demo-mode';
 import { mapBackendVideoToVideo, type BackendVideoDto } from '@/services/videos/video-mapper';
 import { AUTO_PLAYBACK_QUALITY, type PlaybackQuality } from '@/constants/playback-quality';
-import type { Mp4PlaybackAuthorization, PlaybackAuthorization, PlaybackRendition } from '@/types/playback';
+import type {
+  Mp4PlaybackAuthorization,
+  Mp4PlaybackFallback,
+  PlaybackAuthorization,
+  PlaybackRendition,
+} from '@/types/playback';
 import type { Video, VideoCategory } from '@/types/video';
 
 // Matches the backend's real presigned-GET/stream-URL expiry window (Slice
@@ -178,11 +183,40 @@ function isValidPlaybackRendition(value: unknown): value is PlaybackRendition {
 }
 
 /**
+ * Work unit "HLS MP4 FALLBACK": validates the OPTIONAL `fallback` object on
+ * an HLS response. Same three fields the legacy shape carries, checked the
+ * same way.
+ */
+function isValidMp4Fallback(value: unknown): value is Mp4PlaybackFallback {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<Record<keyof Mp4PlaybackFallback, unknown>>;
+
+  return (
+    typeof candidate.playbackUrl === 'string' &&
+    candidate.playbackUrl.length > 0 &&
+    typeof candidate.expiresAt === 'string' &&
+    !Number.isNaN(Date.parse(candidate.expiresAt)) &&
+    typeof candidate.requiresAuthHeader === 'boolean'
+  );
+}
+
+/**
  * Validates the HLS-ready response shape (Slice 11R): `{ type: 'hls',
  * masterUrl, renditions, expiresAt }`. Every rendition entry is validated
  * too - a partially-malformed `renditions` array falls through to the same
  * shape-mismatch failure as a wholly wrong shape, rather than silently
  * dropping the bad entries.
+ *
+ * The `fallback` field is deliberately NOT part of this check. It is
+ * optional and additive, so a malformed one must not fail a response whose
+ * HLS half is perfectly good - `parsePlaybackAuthorization` drops it
+ * instead, degrading to exactly the pre-fallback behavior. That asymmetry
+ * with `renditions` is intentional: a rendition is a source the quality menu
+ * binds to and silently dropping one would make the UI claim a rung that
+ * does not exist, whereas a dropped fallback claims nothing at all.
  */
 function isValidHlsWireResponse(
   value: unknown
@@ -220,11 +254,14 @@ const PLAYBACK_SHAPE_MISMATCH_MESSAGE =
  */
 function parsePlaybackAuthorization(value: unknown): PlaybackAuthorization {
   if (isValidHlsWireResponse(value)) {
+    const rawFallback = (value as { fallback?: unknown }).fallback;
+
     return {
       kind: 'hls',
       masterUrl: value.masterUrl,
       renditions: value.renditions,
       expiresAt: value.expiresAt,
+      ...(isValidMp4Fallback(rawFallback) ? { fallback: rawFallback } : {}),
     };
   }
 
@@ -245,32 +282,46 @@ function parsePlaybackAuthorization(value: unknown): PlaybackAuthorization {
  * authorization into an `expo-video` source - components must call this
  * rather than re-deriving the branching themselves.
  *
- * - `kind: 'hls'` and HLS preference enabled: plays the backend-provided
- *   `masterUrl` verbatim, with NO headers - the gateway token is
- *   path-embedded in the manifest URL, so attaching an Authorization header
- *   would break it the same way one breaks a presigned R2 MP4 URL (see
- *   `types/playback.ts`).
+ * - `kind: 'hls'` and HLS is both enabled and usable: plays the
+ *   backend-provided `masterUrl` verbatim, with NO headers - the gateway
+ *   token is path-embedded in the manifest URL, so attaching an
+ *   Authorization header would break it the same way one breaks a presigned
+ *   R2 MP4 URL (see `types/playback.ts`).
  * - `kind: 'mp4'`: byte-identical to the pre-Slice-11R behavior - the
  *   backend's `playbackUrl`, with an `Authorization: Bearer <token>` header
  *   attached only when `requiresAuthHeader` is true.
- * - `kind: 'hls'` and HLS preference disabled (the prefer-MP4 rollback
- *   flag): returns `null`. There is no MP4 URL embedded inside an HLS
- *   response to fall back to, so this resolves to the existing "video
- *   unavailable" state rather than attempting a reconstructed or guessed
- *   URL.
+ * - `kind: 'hls'` but HLS cannot or must not be used: resolves the response's
+ *   own `fallback` MP4 (work unit "HLS MP4 FALLBACK"), treated EXACTLY like
+ *   an `mp4` authorization - same header rule, same everything. Only when
+ *   there is no fallback does this return `null` (the "video unavailable"
+ *   state), which is what the pre-fallback code did unconditionally.
  *
- * Never reconstructs or guesses at a storage/CDN path - the `masterUrl`
- * and `playbackUrl` values are echoed exactly as the backend provided them.
+ *   Two independent things route here, and they are deliberately separate
+ *   parameters rather than one merged flag:
+ *     - `hlsEnabled === false`: the operator kill switch
+ *       (`EXPO_PUBLIC_HLS_PLAYBACK_ENABLED`). This is what finally makes it
+ *       a REAL rollback: `hls-playback-flag.ts` used to have to document
+ *       that it could not actually fall back to MP4, because the backend
+ *       exposed no authorized MP4 for an HLS-ready row. It does now.
+ *     - `hlsPlayable === false`: this RUNTIME's HLS capability, or a live
+ *       failure. On web the platform may simply have no HLS engine; on any
+ *       platform the player may have already errored on the manifest. Either
+ *       way the content is fine and the MP4 plays.
+ *
+ * Never reconstructs or guesses at a storage/CDN path - the `masterUrl`,
+ * `playbackUrl` and `fallback.playbackUrl` values are echoed exactly as the
+ * backend provided them.
  */
 export function resolvePlaybackSource(
   auth: PlaybackAuthorization,
   accessToken: string | undefined,
   hlsEnabled: boolean,
-  quality: PlaybackQuality = AUTO_PLAYBACK_QUALITY
+  quality: PlaybackQuality = AUTO_PLAYBACK_QUALITY,
+  hlsPlayable: boolean = true
 ): { uri: string; headers?: Record<string, string> } | null {
   if (auth.kind === 'hls') {
-    if (!hlsEnabled) {
-      return null;
+    if (!hlsEnabled || !hlsPlayable) {
+      return auth.fallback ? toMp4Source(auth.fallback, accessToken) : null;
     }
 
     if (quality.mode === 'manual') {
@@ -290,9 +341,23 @@ export function resolvePlaybackSource(
     return { uri: auth.masterUrl };
   }
 
+  return toMp4Source(auth, accessToken);
+}
+
+/**
+ * The ONE place an MP4-shaped source (a legacy authorization, or an HLS
+ * response's `fallback`) becomes an `expo-video` source. Both carry the same
+ * `playbackUrl`/`requiresAuthHeader` pair and must be treated identically -
+ * extracting it is what guarantees the fallback can never acquire a
+ * different header rule from the legacy path it is standing in for.
+ */
+function toMp4Source(
+  source: Pick<Mp4PlaybackAuthorization, 'playbackUrl' | 'requiresAuthHeader'>,
+  accessToken: string | undefined
+): { uri: string; headers?: Record<string, string> } {
   return {
-    uri: auth.playbackUrl,
-    headers: auth.requiresAuthHeader ? { Authorization: `Bearer ${accessToken}` } : undefined,
+    uri: source.playbackUrl,
+    headers: source.requiresAuthHeader ? { Authorization: `Bearer ${accessToken}` } : undefined,
   };
 }
 

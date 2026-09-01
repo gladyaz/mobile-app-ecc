@@ -78,6 +78,54 @@ describe('getPlaybackAuthorization', () => {
       expect(result).toEqual({ kind: 'mp4', ...authorization });
     });
 
+    it('carries a well-formed `fallback` through verbatim (work unit "HLS MP4 FALLBACK")', async () => {
+      const fallback = {
+        playbackUrl: 'https://r2.example.com/bucket/source.mp4?X-Amz-Signature=abc',
+        expiresAt: '2026-08-11T10:00:00.000Z',
+        requiresAuthHeader: false,
+      };
+      mockedRequest.mockResolvedValueOnce({
+        type: 'hls' as const,
+        masterUrl: 'https://gateway.example.com/videos/video-9/master.m3u8?token=xyz',
+        renditions: [],
+        expiresAt: '2026-08-11T10:15:00.000Z',
+        fallback,
+      });
+
+      const result = await getPlaybackAuthorization('video-9');
+
+      expect(result).toMatchObject({ kind: 'hls', fallback });
+    });
+
+    it('DROPS a malformed `fallback` but still resolves the HLS response - an optional field must never fail a good response', async () => {
+      mockedRequest.mockResolvedValueOnce({
+        type: 'hls' as const,
+        masterUrl: 'https://gateway.example.com/videos/video-10/master.m3u8?token=xyz',
+        renditions: [],
+        expiresAt: '2026-08-11T10:15:00.000Z',
+        // `requiresAuthHeader` missing, `expiresAt` unparseable.
+        fallback: { playbackUrl: 'https://media.example.com/x.mp4', expiresAt: 'not-a-date' },
+      });
+
+      const result = await getPlaybackAuthorization('video-10');
+
+      expect(result).toMatchObject({ kind: 'hls' });
+      expect((result as { fallback?: unknown }).fallback).toBeUndefined();
+    });
+
+    it('omits `fallback` entirely when the backend sent none - the pre-fallback shape still parses', async () => {
+      mockedRequest.mockResolvedValueOnce({
+        type: 'hls' as const,
+        masterUrl: 'https://gateway.example.com/videos/video-11/master.m3u8?token=xyz',
+        renditions: [],
+        expiresAt: '2026-08-11T10:15:00.000Z',
+      });
+
+      const result = await getPlaybackAuthorization('video-11');
+
+      expect('fallback' in (result as object)).toBe(false);
+    });
+
     it('normalizes a type: "hls" response to kind: "hls", echoing masterUrl/renditions/expiresAt verbatim (Slice 11R)', async () => {
       const hlsResponse = {
         type: 'hls' as const,
@@ -395,6 +443,74 @@ describe('resolvePlaybackSource', () => {
     ).toBeNull();
   });
 
+  // ===== work unit "HLS MP4 FALLBACK" ==============================
+  // Before this, an HLS authorization had exactly one playable source and
+  // `resolvePlaybackSource` returned null whenever it could not be used.
+  // These pin the second source, and that the first still wins.
+  describe('MP4 fallback on an HLS authorization', () => {
+    const FALLBACK = {
+      playbackUrl: 'https://media.example.com/videos/video-1/source.mp4',
+      requiresAuthHeader: false,
+      expiresAt: '2026-08-11T10:15:00.000Z',
+    } as const;
+
+    it('still prefers HLS when HLS is usable, even though a fallback is present', () => {
+      const auth = buildHls({ fallback: FALLBACK });
+
+      expect(resolvePlaybackSource(auth, 'token-123', true)).toEqual({ uri: auth.masterUrl });
+    });
+
+    it('resolves the fallback MP4 when the kill switch is off - a REAL rollback, not "video unavailable"', () => {
+      const auth = buildHls({ fallback: FALLBACK });
+
+      expect(resolvePlaybackSource(auth, 'token-123', false)).toEqual({
+        uri: FALLBACK.playbackUrl,
+        headers: undefined,
+      });
+    });
+
+    it('resolves the fallback MP4 when this runtime cannot play HLS (a browser with no HLS engine)', () => {
+      const auth = buildHls({ fallback: FALLBACK });
+
+      expect(
+        resolvePlaybackSource(auth, 'token-123', true, AUTO_PLAYBACK_QUALITY, false)
+      ).toEqual({ uri: FALLBACK.playbackUrl, headers: undefined });
+    });
+
+    it('attaches the Authorization header to a fallback that requires one - same rule as a legacy MP4', () => {
+      const auth = buildHls({ fallback: { ...FALLBACK, requiresAuthHeader: true } });
+
+      expect(
+        resolvePlaybackSource(auth, 'token-123', true, AUTO_PLAYBACK_QUALITY, false)
+      ).toEqual({
+        uri: FALLBACK.playbackUrl,
+        headers: { Authorization: 'Bearer token-123' },
+      });
+    });
+
+    it('a manual quality choice never overrides the fallback once HLS is unusable', () => {
+      const auth = buildHls({ fallback: FALLBACK });
+
+      expect(
+        resolvePlaybackSource(
+          auth,
+          'token-123',
+          true,
+          { mode: 'manual', quality: '720p' },
+          false
+        )
+      ).toEqual({ uri: FALLBACK.playbackUrl, headers: undefined });
+    });
+
+    it('returns null - the pre-fallback behavior - when HLS is unusable and there is NO fallback', () => {
+      const auth = buildHls();
+
+      expect(
+        resolvePlaybackSource(auth, 'token-123', true, AUTO_PLAYBACK_QUALITY, false)
+      ).toBeNull();
+    });
+  });
+
   it('kind: "mp4" ignores a manual quality entirely - the MP4 path is byte-identical either way', () => {
     // A quality choice can never reach an MP4-backed video through the UI
     // (no options are offered for one), but the selector must not corrupt
@@ -432,7 +548,7 @@ describe('resolvePlaybackSource', () => {
     );
   });
 
-  it('kind: "hls" + HLS disabled (kill switch): returns null - HLS-ready media has no client-side MP4 to fall back to', () => {
+  it('kind: "hls" + HLS disabled (kill switch) + no fallback offered: returns null', () => {
     const auth = buildHls();
 
     expect(resolvePlaybackSource(auth, 'token-123', false)).toBeNull();

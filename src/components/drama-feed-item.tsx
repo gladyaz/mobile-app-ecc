@@ -42,6 +42,10 @@ import { ApiError } from '@/services/api/client';
 import { getTokens } from '@/services/auth/token-store';
 import { isPremiumExperienceEnabled } from '@/services/config/v1-scope';
 import { isHlsPlaybackEnabled } from '@/services/videos/hls-playback-flag';
+import {
+  attachWebHlsEngine,
+  canPlayHlsInThisRuntime,
+} from '@/services/videos/web-hls';
 import { getPlaybackAuthorization, resolvePlaybackSource } from '@/services/videos/video-service';
 import { useAdsStore } from '@/stores/ads-store';
 import { useEntitlement } from '@/stores/entitlement';
@@ -655,6 +659,19 @@ export function DramaFeedItem({
   // the prefer-MP4 rollback flag is disabled; `hasPlaybackUrl` folds that
   // into the same "no real playable source" state as "authorization hasn't
   // arrived yet" / "authorization failed" below.
+  // Work unit "HLS WEB PLAYBACK": set once a JavaScript HLS engine has FAILED
+  // fatally for this item (a refused manifest, a CORS rejection, MediaSource
+  // giving up). Native never sets it - `attachWebHlsEngine` is a no-op there
+  // and the platform engine reports its own failures through the player's
+  // normal error status instead.
+  const [hasWebHlsFailed, setHasWebHlsFailed] = useState(false);
+  // Whether HLS can actually be played HERE, right now. Two independent
+  // reasons it may not be: the runtime has no HLS engine at all (Chrome and
+  // Firefox have no native HLS; `canPlayHlsInThisRuntime` answers for hls.js
+  // too), or an engine was available and fatally failed. Either way
+  // `resolvePlaybackSource` swaps in the response's MP4 `fallback` rather than
+  // leaving the viewer with nothing.
+  const isHlsPlayableHere = canPlayHlsInThisRuntime() && !hasWebHlsFailed;
   const playbackSource = useMemo(
     () =>
       playbackAuth
@@ -662,11 +679,15 @@ export function DramaFeedItem({
             playbackAuth,
             accessToken,
             isHlsPlaybackEnabled(),
-            playbackQuality
+            playbackQuality,
+            isHlsPlayableHere
           )
         : null,
-    [playbackAuth, accessToken, playbackQuality]
+    [playbackAuth, accessToken, playbackQuality, isHlsPlayableHere]
   );
+  // The wrapping element the web HLS engine locates its `<video>` inside.
+  // Unused on native (`attachWebHlsEngine` ignores it there).
+  const videoLayerRef = useRef<View>(null);
   const hasPlaybackUrl = playbackSource !== null;
   const videoViewRef = useRef<VideoView>(null);
   const isInFullscreenRef = useRef(false);
@@ -675,6 +696,36 @@ export function DramaFeedItem({
     nextPlayer.loop = true;
     nextPlayer.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_SECONDS;
   });
+
+  // Work unit "HLS WEB PLAYBACK": on web, attach a JavaScript HLS engine to
+  // the `<video>` `VideoView` rendered, for the browsers that have no HLS of
+  // their own. A COMPLETE no-op on iOS and Android: Metro resolves
+  // `web-hls.ts` there, whose `attachWebHlsEngine` returns `null` without
+  // touching anything, so no native playback path gains a single instruction
+  // from this effect.
+  //
+  // Keyed on the resolved source URI rather than on `playbackAuth`, so it
+  // re-attaches when (and only when) the thing being played actually changes -
+  // a token refresh that produces the same rendition should not tear down a
+  // healthy engine mid-segment.
+  const playbackUri = playbackSource?.uri;
+  const isHlsUri = playbackUri?.includes('.m3u8') ?? false;
+  useEffect(() => {
+    if (!playbackUri || !isHlsUri) {
+      return;
+    }
+
+    const detach = attachWebHlsEngine(videoLayerRef.current, playbackUri, () => {
+      // Fatal: give up on HLS for this item and let the memo above re-resolve
+      // onto the MP4 fallback. Never retried in place - a manifest the
+      // browser refused once will be refused identically.
+      setHasWebHlsFailed(true);
+    });
+
+    return () => {
+      detach?.();
+    };
+  }, [playbackUri, isHlsUri]);
 
   // THE only function that calls `getPlaybackAuthorization`. Both effects
   // below (initial-activation/reactivation fetch, and the scheduled
@@ -2028,7 +2079,7 @@ export function DramaFeedItem({
         pinchStartDistanceRef.current = 0;
         setIsPinchInProgress(false);
       }}>
-      <View style={styles.videoLayer}>
+      <View ref={videoLayerRef} style={styles.videoLayer}>
         {isPlaybackAccessGated ? (
           // PREMIUM ENTITLEMENT ERROR UX (2026-08-22): an ACCESS refusal
           // renders its gate in the dedicated layer further down (after the

@@ -5,7 +5,15 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { SymbolView } from 'expo-symbols';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PlaybackSettingsSheet } from '@/components/playback-settings-sheet';
@@ -167,6 +175,49 @@ const PLAYBACK_AUTH_SETTLE_MS = 400;
 // all.
 const PLAYBACK_AUTH_RETRY_DELAYS_MS = [2000, 4000, 8000] as const;
 const MAX_PLAYBACK_AUTH_AUTO_RETRIES = PLAYBACK_AUTH_RETRY_DELAYS_MS.length;
+
+// STREAMING RECOVERY (2026-09-02): how long playback must be INTENDED but not
+// actually advancing before the viewer is told anything. The gap between "the
+// system committed to playing" and "frames are moving" is entirely normal for
+// a seek, a rendition switch or a one-segment rebuffer, and announcing every
+// one of those would turn healthy adaptive playback into a flickering alarm.
+// 2.5s is past all of them, and still far short of the ~55 seconds of silent
+// frozen frame the Android QA report measured.
+const PLAYBACK_STALL_VISIBLE_MS = 2500;
+
+// How long a stall must persist BEYOND that announcement before an automatic
+// in-place reload is issued, and how long each further attempt waits.
+// Escalating, and capped at three attempts, for the same reason the
+// authorization budget above is capped: a permanently-down gateway must not be
+// hammered forever.
+//
+// Two tables, because the two situations have already spent different amounts
+// of the viewer's patience. A SILENT stall means the platform engine is still
+// working the problem itself (ExoPlayer re-attempts a failed segment load on
+// its own for the better part of a minute), so the first reload waits long
+// enough to let that succeed rather than cutting it off. A player that has
+// already reported `status: 'error'` has finished giving up - waiting a
+// further six seconds before trying again would be pure dead air.
+const PLAYBACK_STALL_RECOVERY_DELAYS_MS = [6000, 12000, 24000] as const;
+const PLAYBACK_ERROR_RECOVERY_DELAYS_MS = [1000, 4000, 10000] as const;
+const MAX_PLAYBACK_RECOVERY_ATTEMPTS = PLAYBACK_STALL_RECOVERY_DELAYS_MS.length;
+
+// How long playback has to run cleanly before that recovery budget is handed
+// back. Without a delay here a network that flaps once a second would restore
+// the full budget on every brief resumption, and the "bounded" retry would be
+// unbounded in practice. Deliberately longer than the first stall delay, so
+// one recovered interruption can never immediately fund the next.
+const PLAYBACK_RECOVERY_BUDGET_RESET_MS = 15000;
+
+// How long the LAST automatic attempt is given to actually work before the
+// viewer is told it failed. Found by real-runtime QA (2026-09-02, Chrome
+// against the local gateway): without it the final reload was issued and the
+// fatal state rendered in the same instant, so an attempt that was about to
+// succeed - the media host had already come back - never got the chance, and
+// the error state then unmounted the very player that would have recovered.
+// A reload has to re-request, re-prepare and decode a first frame; 8s covers
+// that on a slow connection without leaving a genuinely dead stream spinning.
+const PLAYBACK_RECOVERY_SETTLE_MS = 8000;
 
 /**
  * Only an HTTP 429 (the backend's own per-user throttle - the exact failure
@@ -476,6 +527,42 @@ export function DramaFeedItem({
   // grouping below) because the deactivation reset block immediately after
   // `wasActive` needs to reset it too.
   const [isAuthErrorRetryable, setIsAuthErrorRetryable] = useState(false);
+  // ===== STREAMING RECOVERY (2026-09-02) ==============================
+  // Android QA: gateway loss froze the current frame for ~55 seconds with no
+  // feedback, then landed on a permanent "Video tidak tersedia" that could
+  // only be escaped by swiping away. The three pieces of state below are the
+  // whole of the fix; everything else about playback is unchanged.
+  //
+  // `isPlaybackStalled`: playback is intended, and frames have not advanced
+  // for longer than `PLAYBACK_STALL_VISIBLE_MS`. Set by a timer (below) and
+  // cleared during render the moment playback is healthy again, the same
+  // "derive state from a changed input" pattern `wasActive` uses.
+  const [isPlaybackStalled, setIsPlaybackStalled] = useState(false);
+  // `playbackRecoveryAttempt`: automatic PLAYER-level reloads spent in this
+  // active stint. Real state, not a ref, for the same reason
+  // `authRetryAttempt` is: the scheduling effect must actually re-run after
+  // each attempt to decide whether another one is still owed.
+  const [playbackRecoveryAttempt, setPlaybackRecoveryAttempt] = useState(0);
+  // `playbackReloadNonce`: bumped to reload the CURRENT player in place. It
+  // is deliberately not a source change - `useVideoPlayer` is keyed on
+  // `JSON.stringify(source)` (expo-video's `useReleasingSharedObject`), so a
+  // reload that reuses the same authorized URL would otherwise hand back the
+  // same, still-errored player. Reloading in place is also what keeps the
+  // one-active-player rule true by construction: no second instance is ever
+  // created, so there is no second instance to leak audio.
+  const [playbackReloadNonce, setPlaybackReloadNonce] = useState(0);
+  // `isPlaybackRecoveryExhausted`: the budget is spent AND the last attempt has
+  // been given `PLAYBACK_RECOVERY_SETTLE_MS` to produce frames. Deliberately
+  // its own state rather than an `attempt >= MAX` comparison: that flips true
+  // the moment the final attempt is DISPATCHED, which is exactly when it
+  // deserves to be waited on rather than written off.
+  const [isPlaybackRecoveryExhausted, setIsPlaybackRecoveryExhausted] = useState(false);
+  // Covers the one gap the two flags above cannot: a MANUAL retry whose grant
+  // is missing or expired has to make a network round trip before there is
+  // anything to show, and the viewer must not be left looking at a button
+  // that appears to have done nothing. Cleared as soon as that request lands
+  // either way, so it can never hold the reconnecting state open on its own.
+  const [isManualRetryPending, setIsManualRetryPending] = useState(false);
   // A tap-to-pause is a choice about the episode in front of the viewer, not
   // a lasting property of that episode. Without this reset it becomes one:
   // `isManuallyPaused` feeds `shouldPlay`, so swiping away from a paused
@@ -498,6 +585,16 @@ export function DramaFeedItem({
       // belonged to THIS stint must not leak into whatever the next stint's
       // own failure (if any) turns out to be.
       setIsAuthErrorRetryable(false);
+      // STREAMING RECOVERY: leaving the active slot cancels recovery outright
+      // (the scheduling effects below are all gated on `isActive`, and their
+      // cleanups clear the pending timer), and the next activation gets a
+      // fresh budget rather than inheriting this stint's spent one. This is
+      // also what makes "swipe away from a stalled episode" the clean escape
+      // it already appeared to be.
+      setIsPlaybackStalled(false);
+      setPlaybackRecoveryAttempt(0);
+      setIsPlaybackRecoveryExhausted(false);
+      setIsManualRetryPending(false);
     }
   }
   const [isInFullscreen, setIsInFullscreen] = useState(false);
@@ -590,6 +687,13 @@ export function DramaFeedItem({
     setAuthRetryAttempt(0);
     setIsAuthErrorRetryable(false);
     setHasStartedPlaying(false);
+    // STREAMING RECOVERY: a recovery in progress belongs to the video that
+    // stalled, never to whatever video this instance is handed next - the
+    // same per-video scope rule as the grant and the rate above.
+    setIsPlaybackStalled(false);
+    setPlaybackRecoveryAttempt(0);
+    setIsPlaybackRecoveryExhausted(false);
+    setIsManualRetryPending(false);
     // Same cheap insurance as the rest of this block: today's keyed FlatList
     // never recycles an instance across videos, but if one ever did, an
     // inherited rate is exactly the cross-video surprise the per-video
@@ -710,8 +814,18 @@ export function DramaFeedItem({
   // healthy engine mid-segment.
   const playbackUri = playbackSource?.uri;
   const isHlsUri = playbackUri?.includes('.m3u8') ?? false;
+  // STREAMING RECOVERY: whether a JavaScript HLS engine currently owns the
+  // `<video>` element. `attachWebHlsEngine` already answers this precisely -
+  // it returns non-null exactly when it took the element over - so no new
+  // platform question is being asked here. Always false on native, where the
+  // native no-op sibling returns null unconditionally. The reload effect
+  // further down branches on it: where hls.js owns the element, rebuilding
+  // the engine IS the reload, and calling `player.replaceAsync` as well would
+  // re-assign `<video src>` to an `.m3u8` the browser cannot decode.
+  const webHlsEngineOwnsPlaybackRef = useRef(false);
   useEffect(() => {
     if (!playbackUri || !isHlsUri) {
+      webHlsEngineOwnsPlaybackRef.current = false;
       return;
     }
 
@@ -722,10 +836,19 @@ export function DramaFeedItem({
       setHasWebHlsFailed(true);
     });
 
+    webHlsEngineOwnsPlaybackRef.current = detach !== null;
+
     return () => {
+      webHlsEngineOwnsPlaybackRef.current = false;
       detach?.();
     };
-  }, [playbackUri, isHlsUri]);
+    // STREAMING RECOVERY: `playbackReloadNonce` is a dependency so that a
+    // recovery attempt on the web tears the engine down and rebuilds it -
+    // which re-requests the manifest and re-primes MediaSource from scratch,
+    // the browser equivalent of the native `replaceAsync` below. React
+    // flushes every effect cleanup before any effect setup within a commit,
+    // so the destroy always precedes the rebuild and the two never overlap.
+  }, [playbackUri, isHlsUri, playbackReloadNonce]);
 
   // THE only function that calls `getPlaybackAuthorization`. Both effects
   // below (initial-activation/reactivation fetch, and the scheduled
@@ -1154,6 +1277,174 @@ export function DramaFeedItem({
   // the genuine "tap to resume" affordance.
   const isWaitingToStartPlayback = shouldPlay && !isPlaying;
 
+  // ===== STREAMING RECOVERY (2026-09-02) ==============================
+  // The state machine the Android QA report asked for:
+  //
+  //   PLAYING -> (interruption) -> RECONNECTING -> (bounded reload) -> PLAYING
+  //                                            \-> (budget spent) -> ERROR + Retry
+  //
+  // It sits ON TOP of the existing playback path and adds no second one: the
+  // only thing it can do is reload the player the feed already owns, or clear
+  // a dead grant so the existing authorization effects fetch a new one.
+
+  // The player itself has given up. Distinct from an authorization failure -
+  // that one never even produced a source.
+  const hasPlayerPlaybackError = status === 'error';
+
+  // An ACCESS refusal is never a transient failure. The backend answered, and
+  // it will answer the same way for the same viewer no matter how many times
+  // it is asked - so nothing below may retry it, and the dedicated sign-in /
+  // premium / no-recourse gates keep owning that copy exactly as before.
+  const isPlaybackFailureTransient = playbackAccessRequirement === null;
+
+  // Playback is healthy (or not currently wanted), so nothing is stalled.
+  // Cleared during render rather than from an effect - the same React-
+  // documented "reset state when an input changes" pattern `wasActive` and
+  // `hasStartedPlaying` already use, and self-terminating for the same reason.
+  if (isPlaybackStalled && (!shouldPlay || isPlaying)) {
+    setIsPlaybackStalled(false);
+  }
+
+  // Real frames are the only proof a recovery worked, so they are also the only
+  // thing that clears the verdict that it did not.
+  if (isPlaybackRecoveryExhausted && isPlaying) {
+    setIsPlaybackRecoveryExhausted(false);
+  }
+
+  // A manual retry is only ever "pending" until its outcome lands: playback
+  // resumed, a grant arrived, or the request failed. It can never hold the
+  // reconnecting state open by itself.
+  if (isManualRetryPending && (isPlaying || playbackAuth !== null || hasPlaybackAuthError)) {
+    setIsManualRetryPending(false);
+  }
+
+  // The EXISTING authorization budget, expressed as a question the UI can
+  // ask. Nothing about how it retries changes - only that the viewer is now
+  // told "reconnecting" while it does, instead of being shown a fatal error
+  // that the very next scheduled attempt was about to disprove.
+  const isAuthRecoveryPending =
+    hasPlaybackAuthError &&
+    isAuthErrorRetryable &&
+    authRetryAttempt < MAX_PLAYBACK_AUTH_AUTO_RETRIES;
+
+  // The new PLAYER-level budget. Gated on `shouldPlay` so a video the viewer
+  // deliberately paused is never reloaded underneath them, and the stall arm
+  // additionally requires `hasStartedPlaying`: a cold open that has yet to
+  // show a frame is already explained by the poster, and reloading it would
+  // cut short a first load that is merely slow.
+  const isPlayerRecoveryPending =
+    shouldPlay &&
+    (hasPlayerPlaybackError || (isPlaybackStalled && hasStartedPlaying)) &&
+    !isPlaybackRecoveryExhausted;
+
+  const isPlaybackReconnecting =
+    isActive &&
+    isPlaybackFailureTransient &&
+    (isAuthRecoveryPending || isPlayerRecoveryPending || isManualRetryPending);
+
+  // Reloads whatever is wrong, using only paths that already exist.
+  //
+  // A still-valid grant means the URL is fine and the PLAYER is what needs
+  // restarting, so the player is reloaded in place - no new instance, no
+  // extra authorization request against an endpoint that throttles at 60/min.
+  // A missing or expired grant is the opposite case: clearing it drops the
+  // component into the same "no authorization yet" state a fresh activation
+  // is in, and the existing fetch effect issues exactly one request for it.
+  const recoverPlayback = useCallback(() => {
+    const hasUsableGrant =
+      playbackAuth !== null && Date.parse(playbackAuth.expiresAt) > Date.now();
+
+    if (hasUsableGrant) {
+      setPlaybackReloadNonce((current) => current + 1);
+
+      return;
+    }
+
+    setPlaybackAuth(null);
+    setHasPlaybackAuthError(false);
+    setPlaybackAccessRequirement(null);
+  }, [playbackAuth]);
+
+  // Announces a stall, once it has lasted long enough to be worth announcing.
+  // Every input that means "healthy" tears the timer down through this
+  // effect's own cleanup, so a rebuffer that resolves inside the window is
+  // never shown to anyone.
+  useEffect(() => {
+    if (!isActive || !shouldPlay || isPlaying) {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => setIsPlaybackStalled(true), PLAYBACK_STALL_VISIBLE_MS);
+
+    return () => clearTimeout(timeoutId);
+  }, [isActive, shouldPlay, isPlaying]);
+
+  // The bounded automatic reload. One scheduled timer, never a loop: each
+  // attempt changes `playbackRecoveryAttempt`, which re-runs this effect to
+  // decide whether another is still owed - and the moment playback resumes,
+  // `isPlayerRecoveryPending` goes false and the cleanup cancels the pending
+  // attempt instead of firing it.
+  useEffect(() => {
+    if (!isPlayerRecoveryPending || !isPlaybackFailureTransient) {
+      return;
+    }
+
+    // The budget is spent. Give the attempt already in flight its settling
+    // window and only THEN show the failure - a reload issued a moment ago may
+    // still be re-requesting, re-preparing and decoding its first frame.
+    if (playbackRecoveryAttempt >= MAX_PLAYBACK_RECOVERY_ATTEMPTS) {
+      const settleId = setTimeout(
+        () => setIsPlaybackRecoveryExhausted(true),
+        PLAYBACK_RECOVERY_SETTLE_MS
+      );
+
+      return () => clearTimeout(settleId);
+    }
+
+    const delaysMs = hasPlayerPlaybackError
+      ? PLAYBACK_ERROR_RECOVERY_DELAYS_MS
+      : PLAYBACK_STALL_RECOVERY_DELAYS_MS;
+    const delayMs = delaysMs[playbackRecoveryAttempt] ?? delaysMs.at(-1);
+
+    const timeoutId = setTimeout(() => {
+      // AT FIRE TIME, not the value this closure captured: an item that left
+      // the active slot while this was pending must not reload a player
+      // nobody is watching, and must never be able to restart the episode the
+      // viewer has already swiped past.
+      if (!isActiveRef.current) {
+        return;
+      }
+
+      setPlaybackRecoveryAttempt((current) => current + 1);
+      recoverPlayback();
+    }, delayMs);
+
+    return () => clearTimeout(timeoutId);
+  }, [
+    isPlayerRecoveryPending,
+    isPlaybackFailureTransient,
+    hasPlayerPlaybackError,
+    playbackRecoveryAttempt,
+    recoverPlayback,
+  ]);
+
+  // Hands the recovery budget back only after playback has genuinely held,
+  // so a flapping connection cannot refinance an unbounded retry loop one
+  // brief resumption at a time.
+  useEffect(() => {
+    if (!isPlaying || playbackRecoveryAttempt === 0) {
+      return;
+    }
+
+    const timeoutId = setTimeout(
+      () => setPlaybackRecoveryAttempt(0),
+      PLAYBACK_RECOVERY_BUDGET_RESET_MS
+    );
+
+    return () => clearTimeout(timeoutId);
+  }, [isPlaying, playbackRecoveryAttempt]);
+  // ===== end streaming recovery =======================================
+
   // ===== AUTO CLEAR DISPLAY ON IDLE ==================================
   // Purely presentational: the countdown's only output is
   // `onToggleClearDisplay(true, 'auto')` - the exact state change a manual
@@ -1261,7 +1552,15 @@ export function DramaFeedItem({
   // item whose request just hasn't resolved yet - neither is a failure.
   // Only an explicit authorization failure or a player-reported error
   // counts as "this cannot play."
-  const hasPlaybackError = hasPlaybackAuthError || status === 'error';
+  //
+  // STREAMING RECOVERY (2026-09-02): `!isPlaybackReconnecting` is the whole
+  // of the change here, and it is a timing change rather than a truth one -
+  // exactly the same failures still reach this state, just not while a
+  // bounded, already-scheduled recovery attempt is still owed. A failure with
+  // no recovery left (or none permitted: every access refusal, an unusable
+  // 200, a disabled kill switch with no MP4) is fatal on arrival exactly as
+  // it was before.
+  const hasPlaybackError = (hasPlaybackAuthError || status === 'error') && !isPlaybackReconnecting;
   // PREMIUM ENTITLEMENT ERROR UX (2026-08-22): whether the CURRENT failure is
   // an ACCESS gate (the backend refused this viewer) rather than a media or
   // network one. Paired with `hasPlaybackError` so a stale requirement can
@@ -1450,6 +1749,56 @@ export function DramaFeedItem({
     isManuallyPaused,
     playbackAuth,
   ]);
+
+  // STREAMING RECOVERY (2026-09-02): the reload itself.
+  //
+  // Declared AFTER the two halves above on purpose - it seeds the same
+  // `pendingGenerationRestoreSecondsRef` they use, so a reloaded player picks
+  // the clip back up where the interruption left it instead of snapping to
+  // 0:00, and the APPLY half consumes that the first time the reloaded player
+  // reports ready.
+  //
+  // `replaceAsync` on the player the feed ALREADY owns, never a new instance:
+  // on Android it re-commits the source and calls `prepare()`, which is what
+  // clears a `PlaybackException` that would otherwise be permanent. Because
+  // no player is created, no ownership handoff is involved and there is
+  // nothing that could become a second audible player.
+  const appliedPlaybackReloadNonceRef = useRef(0);
+
+  useEffect(() => {
+    if (playbackReloadNonce === appliedPlaybackReloadNonceRef.current) {
+      return;
+    }
+
+    // Marked applied before anything can fail, so one bump is one reload
+    // even if this effect re-runs for an unrelated dependency change.
+    appliedPlaybackReloadNonceRef.current = playbackReloadNonce;
+
+    if (!playbackSource) {
+      return;
+    }
+
+    // On the web, where hls.js owns the element, the attach effect above has
+    // already rebuilt the engine for this same nonce - that IS the reload.
+    // Re-assigning `<video src>` here would hand the element back an `.m3u8`
+    // the browser cannot decode and undo it.
+    if (webHlsEngineOwnsPlaybackRef.current) {
+      return;
+    }
+
+    pendingGenerationRestoreSecondsRef.current = lastKnownPositionRef.current;
+
+    try {
+      player.replaceAsync(playbackSource).catch(() => {
+        // A reload the platform refuses is not a silent dead end: the player
+        // reports its own error status, which is exactly what schedules the
+        // next bounded attempt (or, once the budget is spent, the Retry).
+      });
+    } catch {
+      // The native shared object can already be released by the time a
+      // scheduled reload lands during teardown; there is nothing to reload.
+    }
+  }, [playbackReloadNonce, playbackSource, player]);
 
   // Throttled progress write while this item is the one actually playing -
   // not on every frame, and cleared whenever it stops being active/playing.
@@ -1769,6 +2118,26 @@ export function DramaFeedItem({
     status,
     flushProgress,
   ]);
+
+  // STREAMING RECOVERY (2026-09-02): the actionable control the error state
+  // was missing. It runs the SAME `recoverPlayback` the automatic loop does -
+  // there is deliberately no second, hand-written reload path that could
+  // behave differently from the one QA exercises - having first refunded both
+  // budgets, so a viewer who waits out an outage and then asks for playback
+  // back gets a genuinely fresh set of attempts rather than a button that
+  // re-enters an already-spent state and immediately gives up again.
+  const handleRetryPlayback = useCallback(() => {
+    setIsPlaybackStalled(false);
+    setPlaybackRecoveryAttempt(0);
+    setIsPlaybackRecoveryExhausted(false);
+    setAuthRetryAttempt(0);
+    // A retry is an explicit request to play. Clearing this matters for the
+    // case where the failure arrived while the viewer had paused: without it
+    // the reload would land on a player `shouldPlay` immediately re-pauses.
+    setIsManuallyPaused(false);
+    setIsManualRetryPending(true);
+    recoverPlayback();
+  }, [recoverPlayback]);
 
   const handleEnterFullscreen = useCallback(() => {
     void videoViewRef.current?.enterFullscreen();
@@ -2095,14 +2464,40 @@ export function DramaFeedItem({
           // normal play/pause button below is hidden for this same
           // `hasPlaybackError` state, so without this the viewer had
           // nothing to press at all while it was up.
-          <Pressable
-            testID="feed-item-play-pause"
-            accessibilityRole="button"
-            onPress={handlePlayPause}
-            style={styles.errorState}>
-            <Text style={styles.errorTitle}>{t('feed.videoUnavailable')}</Text>
-            <Text style={styles.errorHint}>{t('feed.videoUnavailableHint')}</Text>
-          </Pressable>
+          <>
+            <Pressable
+              testID="feed-item-play-pause"
+              accessibilityRole="button"
+              onPress={handlePlayPause}
+              style={styles.errorState}>
+              <Text style={styles.errorTitle}>{t('feed.videoUnavailable')}</Text>
+              <Text style={styles.errorHint}>{t('feed.videoUnavailableHint')}</Text>
+            </Pressable>
+            {/* STREAMING RECOVERY (2026-09-02): the tap-to-retry above is
+                invisible - nothing on screen says the message itself is a
+                button, which is the "pressed play repeatedly, nothing
+                happened" report in miniature. This is the same recovery made
+                discoverable, styled as the sign-in and Rewards gate buttons
+                already are so the feed has ONE recovery affordance rather
+                than three shapes of it.
+
+                A SIBLING of that Pressable, never a child. React Native Web
+                renders an `accessibilityRole="button"` Pressable as a real
+                `<button>`, and a nested one is invalid DOM - caught in
+                browser QA, where Chrome reported "<button> cannot contain a
+                nested <button>". As siblings inside this column-centred
+                layer they stack correctly on native AND stay valid on web,
+                and the button - declared later - still wins its own taps. */}
+            <Pressable
+              testID="feed-item-playback-retry"
+              accessibilityRole="button"
+              accessibilityLabel={t('common.retry')}
+              hitSlop={8}
+              onPress={handleRetryPlayback}
+              style={({ pressed }) => [styles.signInButton, pressed && styles.buttonPressed]}>
+              <Text style={styles.signInButtonText}>{t('common.retry')}</Text>
+            </Pressable>
+          </>
         ) : (
           <>
             <VideoView
@@ -2148,6 +2543,29 @@ export function DramaFeedItem({
             )}
           </>
         )}
+        {/* STREAMING RECOVERY (2026-09-02): the feedback that was missing for
+            the whole ~55-second freeze. Unobtrusive by construction - a small
+            spinner and one line, centred over the last real frame rather than
+            covering it, so the viewer can see the video is still there.
+            `pointerEvents="none"` keeps every control underneath it live,
+            including the play/pause target that already re-authorizes. */}
+        {isPlaybackReconnecting ? (
+          <View
+            testID="feed-item-reconnecting"
+            accessibilityRole="progressbar"
+            accessibilityLabel={t('feed.reconnecting')}
+            pointerEvents="none"
+            style={styles.reconnectingOverlay}>
+            <View style={styles.reconnectingBadge}>
+              <ActivityIndicator color={Palette.text} size="small" />
+              <Text
+                maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}
+                style={styles.reconnectingLabel}>
+                {t('feed.reconnecting')}
+              </Text>
+            </View>
+          </View>
+        ) : null}
       </View>
 
       {/* SINGLE TAP -> toggle clear display. Declared FIRST among the
@@ -2321,8 +2739,15 @@ export function DramaFeedItem({
               backgrounded, an ad, or an explicit user pause -
               `isWaitingToStartPlayback` is false in every one of those
               states because `shouldPlay` is already false), this still
-              shows the real "tap to resume" affordance exactly as before. */}
-          {isIndicatorVisible && !isWaitingToStartPlayback ? (
+              shows the real "tap to resume" affordance exactly as before.
+
+              STREAMING RECOVERY (2026-09-02): `!isPlaybackReconnecting`
+              extends that same rule to the case where playback is not
+              intended only because authorization has just failed and a retry
+              is already scheduled. Offering "tap to resume" next to
+              "reconnecting" would be two contradictory claims about the same
+              moment; the frame stays tappable either way. */}
+          {isIndicatorVisible && !isWaitingToStartPlayback && !isPlaybackReconnecting ? (
             <View testID="feed-item-play-pause-indicator" style={styles.playPauseCircle}>
               <SymbolView
                 name={{ ios: isPlaying ? 'pause.fill' : 'play.fill', android: isPlaying ? 'pause' : 'play_arrow', web: isPlaying ? 'pause' : 'play_arrow' }}
@@ -2622,6 +3047,33 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     paddingHorizontal: 32,
+  },
+  // STREAMING RECOVERY (2026-09-02): same geometry as `poster`/`video` so the
+  // badge centres over the frozen frame, but with NO background of its own -
+  // the last decoded frame stays fully visible behind it, which is what makes
+  // this read as "still working on it" rather than as a failure screen.
+  reconnectingOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reconnectingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+  },
+  reconnectingLabel: {
+    fontSize: 13,
+    fontFamily: FontFamily.medium,
+    color: Palette.text,
   },
   errorTitle: {
     fontSize: 16,

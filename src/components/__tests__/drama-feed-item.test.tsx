@@ -119,6 +119,21 @@ jest.mock('@/services/videos/hls-playback-flag', () => ({
   isHlsPlaybackEnabled: () => mockIsHlsPlaybackEnabled(),
 }));
 
+// Work unit "HLS WEB PLAYBACK" / STREAMING RECOVERY (2026-09-02): the
+// platform-split HLS engine module. Metro resolves the NATIVE half under Jest,
+// whose `attachWebHlsEngine` is an unconditional no-op returning `null` - so
+// these defaults ARE the native behavior, and every existing test in this file
+// behaves exactly as it did. The web branch (where a JavaScript engine owns
+// the `<video>` element, and rebuilding it - not `replaceAsync` - is the
+// reload) is unreachable in a native test runtime any other way.
+const mockAttachWebHlsEngine = jest.fn<(() => void) | null, unknown[]>(() => null);
+const mockCanPlayHlsInThisRuntime = jest.fn(() => true);
+
+jest.mock('@/services/videos/web-hls', () => ({
+  attachWebHlsEngine: (...args: unknown[]) => mockAttachWebHlsEngine(...args),
+  canPlayHlsInThisRuntime: () => mockCanPlayHlsInThisRuntime(),
+}));
+
 const mockUseEntitlement = jest.fn();
 
 jest.mock('@/stores/entitlement', () => ({
@@ -186,6 +201,12 @@ jest.mock('expo-video', () => {
           play: jest.fn(),
           pause: jest.fn(),
           seekBy: jest.fn(),
+          // STREAMING RECOVERY (2026-09-02): the in-place reload the recovery
+          // loop issues. A spy (not a no-op) so a test can assert that a
+          // reload actually reached the player it already owns, rather than
+          // inferring it from a second player having been constructed - which
+          // is precisely the thing that must NOT happen.
+          replaceAsync: jest.fn(() => Promise.resolve()),
           rateWrites,
         };
 
@@ -498,6 +519,10 @@ describe('DramaFeedItem', () => {
     // Slice 11R: defaults to HLS preferred/enabled; the "prefer-MP4
     // rollback flag" describe block below overrides this per test.
     mockIsHlsPlaybackEnabled.mockReturnValue(true);
+    // Back to the native no-op shape; the web-engine recovery case installs
+    // its own attach for the length of that one test.
+    mockAttachWebHlsEngine.mockReturnValue(null);
+    mockCanPlayHlsInThisRuntime.mockReturnValue(true);
     // clearMocks only clears calls, not return values, so a case that turns
     // demo mode on (or signs the user out) would otherwise leak into every
     // test after it.
@@ -1575,18 +1600,45 @@ describe('DramaFeedItem', () => {
       // A transport failure is not an entitlement problem. Turning every
       // error into a Premium upsell would be its own lie - and would send a
       // viewer to Rewards to fix their wifi.
-      mockGetPlaybackAuthorization.mockRejectedValue(
-        new ApiError(0, 'NETWORK_ERROR', 'Network request failed.')
-      );
+      //
+      // STREAMING RECOVERY (2026-09-02): a network failure is also the one
+      // class of failure the client CAN do something about, so it now spends
+      // its bounded 2s/4s/8s budget behind a "reconnecting" state first. What
+      // this test has always been about is unchanged and asserted in both
+      // halves below: at no point does a transport failure become a premium
+      // upsell, and once the retries are genuinely spent it lands on the
+      // generic unavailable copy - never anywhere else.
+      jest.useFakeTimers();
+      try {
+        mockGetPlaybackAuthorization.mockRejectedValue(
+          new ApiError(0, 'NETWORK_ERROR', 'Network request failed.')
+        );
 
-      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
-      const { getByText, queryByTestId } = await renderFeedItem(
-        <DramaFeedItem video={video} {...baseProps} />
-      );
+        const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+        const { getByText, getByTestId, queryByTestId, queryByText } = await renderFeedItem(
+          <DramaFeedItem video={video} {...baseProps} />
+        );
 
-      expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
-      expect(getByText('Video tidak tersedia')).toBeTruthy();
-      expect(getByText('Periksa koneksi internetmu, lalu coba lagi.')).toBeTruthy();
+        // While the budget lasts: honest "still trying", and still not a gate.
+        expect(getByTestId('feed-item-reconnecting')).toBeTruthy();
+        expect(queryByText('Video tidak tersedia')).toBeNull();
+        expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+
+        // Past the whole 2s + 4s + 8s budget, advanced in steps so React
+        // flushes each failure before the next timer is due.
+        for (let step = 0; step < 5; step += 1) {
+          await act(async () => {
+            await jest.advanceTimersByTimeAsync(5000);
+          });
+        }
+
+        expect(queryByTestId('feed-item-reconnecting')).toBeNull();
+        expect(queryByTestId('feed-item-premium-required-gate')).toBeNull();
+        expect(getByText('Video tidak tersedia')).toBeTruthy();
+        expect(getByText('Periksa koneksi internetmu, lalu coba lagi.')).toBeTruthy();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('keeps a 409 with no usable media on the generic unavailable state', async () => {
@@ -5851,6 +5903,478 @@ describe('DramaFeedItem', () => {
 
         expect(player.play).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  // STREAMING RECOVERY (2026-09-02). Android QA, real device: gateway/network
+  // loss froze the current frame, gave ~55 seconds of no useful feedback, then
+  // landed on a truthful-but-terminal "Video tidak tersedia" - and restoring
+  // connectivity recovered nothing, because there was no retry, no Retry
+  // button, and no code path anywhere that reloaded a player. Every test below
+  // is anchored to one clause of that report.
+  describe('STREAMING RECOVERY: transient network/HLS failure', () => {
+    // The component's own constants, mirrored rather than imported for the
+    // same reason `TEST_PLAYBACK_AUTH_SETTLE_MS` above is: a test that reads
+    // the implementation's number cannot catch that number changing.
+    const TEST_STALL_VISIBLE_MS = 2500;
+    const TEST_STALL_RECOVERY_DELAYS_MS = [6000, 12000, 24000];
+    const TEST_ERROR_RECOVERY_DELAYS_MS = [1000, 4000, 10000];
+    const TEST_RECOVERY_BUDGET_RESET_MS = 15000;
+    const TEST_RECOVERY_SETTLE_MS = 8000;
+
+    type MockPlayer = {
+      play: jest.Mock;
+      pause: jest.Mock;
+      replaceAsync: jest.Mock;
+      playing: boolean;
+      status: string;
+      currentTime: number;
+      duration: number;
+    };
+
+    function playerFor(uri: string) {
+      return findPlayerByUri(uri) as unknown as MockPlayer;
+    }
+
+    function countPlayersCreated() {
+      const { useVideoPlayer } = jest.requireMock<typeof import('expo-video')>('expo-video');
+
+      // Distinct player OBJECTS, not hook calls: the mock (like expo-video's
+      // real `useReleasingSharedObject`) returns the same instance across
+      // renders that carry an unchanged source, so counting identities is what
+      // actually answers "was a second player ever built".
+      return new Set((useVideoPlayer as jest.Mock).mock.results.map((result) => result.value)).size;
+    }
+
+    /**
+     * The state the field report starts from: the active episode is authorized
+     * and has genuinely rendered frames. `hasStartedPlaying` gates the stall
+     * arm of recovery precisely so a cold open - which the poster already
+     * explains - is never mistaken for an interruption, so a test about
+     * interruptions has to get there honestly first.
+     */
+    async function renderPlayingItem(video = buildVideo()) {
+      const view = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} isActive />);
+      const uri = `https://media.example.com/${video.id}.mp4`;
+      const player = playerFor(uri);
+
+      player.playing = true;
+      player.status = 'readyToPlay';
+      await act(async () => {
+        view.rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      return { view, video, uri, player };
+    }
+
+    /** Frames stop advancing - exactly what a gateway/network loss looks like. */
+    async function interrupt(
+      view: { rerender: (ui: ReactElement) => void },
+      video: Video,
+      player: MockPlayer,
+      props: Record<string, unknown> = {}
+    ) {
+      player.playing = false;
+      await act(async () => {
+        view.rerender(<DramaFeedItem video={video} {...baseProps} isActive {...props} />);
+      });
+    }
+
+    /**
+     * Advanced in steps rather than one large jump, for the same reason the
+     * bounded-authorization-retry tests above are: each recovery attempt's
+     * state change has to be flushed by React before the effect can schedule
+     * the next one, and a single jump fires only the timer that was already
+     * pending when it started.
+     */
+    async function advanceInSteps(totalMs: number, stepMs = 2000) {
+      for (let elapsed = 0; elapsed < totalMs; elapsed += stepMs) {
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(stepMs);
+        });
+      }
+    }
+
+    /** Long enough that every delay in both tables has come and gone. */
+    const PAST_EVERY_DELAY_MS = 90000;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('1: a stalled stream shows "Menyambungkan kembali…", not the fatal error', async () => {
+      const { view, video, player } = await renderPlayingItem();
+
+      await interrupt(view, video, player);
+
+      // A one-segment rebuffer must stay invisible: announcing every gap
+      // between "committed to playing" and "frames moving" would turn healthy
+      // adaptive playback into a flickering alarm.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_STALL_VISIBLE_MS - 100);
+      });
+      expect(view.queryByTestId('feed-item-reconnecting')).toBeNull();
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(100);
+      });
+
+      expect(view.getByTestId('feed-item-reconnecting')).toBeTruthy();
+      expect(view.getByText('Menyambungkan kembali…')).toBeTruthy();
+      // The exact defect: ~55 seconds of frozen frame ending in fatal copy.
+      // Neither may be on screen while a bounded retry is still owed.
+      expect(view.queryByText('Video tidak tersedia')).toBeNull();
+      expect(view.queryByTestId('feed-item-playback-retry')).toBeNull();
+    });
+
+    it('2: recovers automatically - reloads the player it already owns, and clears once frames resume', async () => {
+      const { view, video, uri, player } = await renderPlayingItem();
+      const playersBefore = countPlayersCreated();
+
+      await interrupt(view, video, player);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_STALL_VISIBLE_MS);
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_STALL_RECOVERY_DELAYS_MS[0]);
+      });
+
+      // The reload is issued against the SAME authorized source - no second
+      // authorization request, no cache-busted URL, nothing that would
+      // invalidate a signed one.
+      expect(player.replaceAsync).toHaveBeenCalledTimes(1);
+      expect(player.replaceAsync).toHaveBeenCalledWith({
+        uri,
+        headers: { Authorization: 'Bearer test-access-token' },
+      });
+
+      // Connectivity returns.
+      player.playing = true;
+      player.status = 'readyToPlay';
+      await act(async () => {
+        view.rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      expect(view.queryByTestId('feed-item-reconnecting')).toBeNull();
+      expect(view.queryByText('Video tidak tersedia')).toBeNull();
+      // Recovery happened entirely inside the player the feed already owned.
+      expect(countPlayersCreated()).toBe(playersBefore);
+    });
+
+    it('3: bounds the automatic retries, then shows an actionable Retry', async () => {
+      const { view, video, player } = await renderPlayingItem();
+
+      player.status = 'error';
+      await interrupt(view, video, player);
+
+      // A player that has already reported `error` has finished giving up, so
+      // recovery uses the shorter table - waiting out the silent-stall delays
+      // again would be pure dead air.
+      for (const delayMs of TEST_ERROR_RECOVERY_DELAYS_MS) {
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(delayMs);
+        });
+      }
+
+      expect(player.replaceAsync).toHaveBeenCalledTimes(TEST_ERROR_RECOVERY_DELAYS_MS.length);
+
+      // Well past any further delay: the budget is spent, not merely slow.
+      await advanceInSteps(PAST_EVERY_DELAY_MS);
+
+      expect(player.replaceAsync).toHaveBeenCalledTimes(TEST_ERROR_RECOVERY_DELAYS_MS.length);
+      expect(view.queryByTestId('feed-item-reconnecting')).toBeNull();
+      expect(view.getByText('Video tidak tersedia')).toBeTruthy();
+      // The thing the field report said was missing: something to press.
+      expect(view.getByTestId('feed-item-playback-retry')).toBeTruthy();
+      expect(view.getByText('Coba Lagi')).toBeTruthy();
+    });
+
+    it('4: manual Retry reloads playback cleanly and refunds the budget', async () => {
+      const { view, video, uri, player } = await renderPlayingItem();
+      const playersBefore = countPlayersCreated();
+
+      player.status = 'error';
+      await interrupt(view, video, player);
+      await advanceInSteps(PAST_EVERY_DELAY_MS);
+
+      const reloadsBeforeRetry = player.replaceAsync.mock.calls.length;
+
+      await act(async () => {
+        fireEvent.press(view.getByTestId('feed-item-playback-retry'));
+      });
+
+      // Reloaded immediately, against the same source, on the same player.
+      expect(player.replaceAsync).toHaveBeenCalledTimes(reloadsBeforeRetry + 1);
+      expect(player.replaceAsync).toHaveBeenLastCalledWith({
+        uri,
+        headers: { Authorization: 'Bearer test-access-token' },
+      });
+      expect(countPlayersCreated()).toBe(playersBefore);
+      // And it is a genuinely fresh attempt, not a button that re-enters an
+      // already-spent state and gives up again on the spot.
+      expect(view.getByTestId('feed-item-reconnecting')).toBeTruthy();
+      expect(view.queryByText('Video tidak tersedia')).toBeNull();
+    });
+
+    it('5: a swipe away cancels a pending retry - nothing fires later', async () => {
+      const { view, video, player } = await renderPlayingItem();
+
+      await interrupt(view, video, player);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_STALL_VISIBLE_MS);
+      });
+      expect(view.getByTestId('feed-item-reconnecting')).toBeTruthy();
+
+      // Swiped past, mid-backoff.
+      await act(async () => {
+        view.rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+      });
+      await advanceInSteps(PAST_EVERY_DELAY_MS);
+
+      expect(player.replaceAsync).not.toHaveBeenCalled();
+      expect(view.queryByTestId('feed-item-reconnecting')).toBeNull();
+    });
+
+    it('6: unmounting cancels a pending retry', async () => {
+      const { view, video, player } = await renderPlayingItem();
+
+      await interrupt(view, video, player);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_STALL_VISIBLE_MS);
+      });
+
+      // Wrapped in act because React flushes passive-effect cleanups
+      // asynchronously - the same reason the unmount-flush test above is.
+      await act(async () => {
+        view.unmount();
+      });
+      await advanceInSteps(PAST_EVERY_DELAY_MS);
+
+      expect(player.replaceAsync).not.toHaveBeenCalled();
+    });
+
+    it('7: only the ACTIVE episode may recover - an inactive one never reloads', async () => {
+      const { view, video, player } = await renderPlayingItem();
+
+      // Already swiped past when the failure surfaces. A reload here would be
+      // episode A restarting itself underneath episode B - the exact shape of
+      // a second audible player.
+      player.playing = false;
+      player.status = 'error';
+      await act(async () => {
+        view.rerender(<DramaFeedItem video={video} {...baseProps} isActive={false} />);
+      });
+      await advanceInSteps(PAST_EVERY_DELAY_MS);
+
+      expect(player.replaceAsync).not.toHaveBeenCalled();
+      expect(view.queryByTestId('feed-item-reconnecting')).toBeNull();
+    });
+
+    it('8: recovery never creates a second player, and never violates single-playback', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const { view, video, player } = await renderPlayingItem();
+        const playersBefore = countPlayersCreated();
+
+        player.status = 'error';
+        await interrupt(view, video, player);
+        await advanceInSteps(PAST_EVERY_DELAY_MS);
+
+        // Three reloads spent, still exactly one player object in existence.
+        expect(player.replaceAsync).toHaveBeenCalledTimes(TEST_ERROR_RECOVERY_DELAYS_MS.length);
+        expect(countPlayersCreated()).toBe(playersBefore);
+        expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+          '[PlaybackInvariantViolation]',
+          expect.anything()
+        );
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    it('9: recovery follows the MP4 fallback, never back to the HLS master', async () => {
+      // The kill switch is off, so `resolvePlaybackSource` has already chosen
+      // the response's MP4 `fallback`. A reload must reload THAT - re-pointing
+      // at the master would undo the fallback the architecture just made.
+      mockIsHlsPlaybackEnabled.mockReturnValue(false);
+      mockGetPlaybackAuthorization.mockResolvedValueOnce({
+        ...buildHlsPlaybackAuthorization(),
+        fallback: {
+          playbackUrl: 'https://media.example.com/fallback.mp4',
+          requiresAuthHeader: false,
+          expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        },
+      } satisfies HlsPlaybackAuthorization);
+
+      const video = buildVideo();
+      const view = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} isActive />);
+      const player = playerFor('https://media.example.com/fallback.mp4');
+
+      expect(player).toBeDefined();
+
+      player.playing = true;
+      player.status = 'readyToPlay';
+      await act(async () => {
+        view.rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      await interrupt(view, video, player);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_STALL_VISIBLE_MS);
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_STALL_RECOVERY_DELAYS_MS[0]);
+      });
+
+      expect(player.replaceAsync).toHaveBeenCalledWith({
+        uri: 'https://media.example.com/fallback.mp4',
+        // A presigned/fallback source with `requiresAuthHeader: false` must
+        // not acquire a Bearer header on the way through recovery.
+        headers: undefined,
+      });
+    });
+
+    it('10: an entitlement refusal is never retried and never shows "reconnecting"', async () => {
+      mockGetPlaybackAuthorization.mockRejectedValue(
+        new ApiError(403, 'ENTITLEMENT_REQUIRED', 'no entitlement')
+      );
+
+      const video = buildVideo({ accessTier: 'premium', episodeNumber: 6 });
+      const view = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} isActive />);
+
+      // The backend answered. It will answer the same way however many times
+      // it is asked, so the gate is immediate and permanent - unchanged.
+      expect(view.queryByTestId('feed-item-reconnecting')).toBeNull();
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+
+      await advanceInSteps(PAST_EVERY_DELAY_MS);
+
+      expect(mockGetPlaybackAuthorization).toHaveBeenCalledTimes(1);
+      expect(view.queryByTestId('feed-item-reconnecting')).toBeNull();
+      expect(latestMockPlayer()?.play).not.toHaveBeenCalled();
+    });
+
+    it('gives the LAST automatic attempt time to succeed before declaring failure', async () => {
+      // REGRESSION GUARD, found by real-runtime QA (2026-09-02, Chrome against
+      // the local gateway): the final reload was dispatched and the fatal state
+      // rendered in the SAME instant, because "exhausted" was
+      // `attempt >= MAX` - true the moment the last attempt started. The media
+      // host had already come back, that reload would have worked, and the
+      // error state then unmounted the very player that was recovering.
+      const { view, video, player } = await renderPlayingItem();
+
+      player.status = 'error';
+      await interrupt(view, video, player);
+
+      for (const delayMs of TEST_ERROR_RECOVERY_DELAYS_MS) {
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(delayMs);
+        });
+      }
+
+      // Last attempt dispatched - and still presented as reconnecting, not as
+      // a failure, because nothing yet knows whether it worked.
+      expect(player.replaceAsync).toHaveBeenCalledTimes(TEST_ERROR_RECOVERY_DELAYS_MS.length);
+      expect(view.getByTestId('feed-item-reconnecting')).toBeTruthy();
+      expect(view.queryByTestId('feed-item-playback-retry')).toBeNull();
+
+      // The connection comes back inside that settling window, exactly as it
+      // did in the QA run, and the already-issued reload starts producing
+      // frames. No Retry is ever shown, and no fourth attempt is spent.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_RECOVERY_SETTLE_MS - 1000);
+      });
+
+      player.playing = true;
+      player.status = 'readyToPlay';
+      await act(async () => {
+        view.rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+      await advanceInSteps(PAST_EVERY_DELAY_MS);
+
+      expect(view.queryByTestId('feed-item-reconnecting')).toBeNull();
+      expect(view.queryByTestId('feed-item-playback-retry')).toBeNull();
+      expect(view.queryByText('Video tidak tersedia')).toBeNull();
+      expect(player.replaceAsync).toHaveBeenCalledTimes(TEST_ERROR_RECOVERY_DELAYS_MS.length);
+    });
+
+    it('on the web, recovery rebuilds the HLS engine instead of re-pointing the <video> element', async () => {
+      // The browser branch. `attachWebHlsEngine` returning non-null is exactly
+      // "a JavaScript engine took the element over", so recovery there means
+      // tearing that engine down and rebuilding it - re-requesting the
+      // manifest and re-priming MediaSource. Calling `replaceAsync` as well
+      // would re-assign `<video src>` to an `.m3u8` Chrome cannot decode and
+      // undo the very thing that makes web HLS work.
+      const detach = jest.fn();
+
+      mockAttachWebHlsEngine.mockReturnValue(detach);
+      mockGetPlaybackAuthorization.mockResolvedValueOnce(buildHlsPlaybackAuthorization());
+
+      const video = buildVideo();
+      const view = await renderFeedItem(<DramaFeedItem video={video} {...baseProps} isActive />);
+      const masterUrl = 'https://gateway.example.com/videos/video-1/master.m3u8?token=abc';
+      const player = playerFor(masterUrl);
+
+      expect(mockAttachWebHlsEngine).toHaveBeenCalledTimes(1);
+      expect(mockAttachWebHlsEngine.mock.calls[0][1]).toBe(masterUrl);
+
+      player.playing = true;
+      player.status = 'readyToPlay';
+      await act(async () => {
+        view.rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+
+      await interrupt(view, video, player);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_STALL_VISIBLE_MS);
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_STALL_RECOVERY_DELAYS_MS[0]);
+      });
+
+      // Torn down and rebuilt, against the same authorized manifest.
+      expect(detach).toHaveBeenCalled();
+      expect(mockAttachWebHlsEngine).toHaveBeenCalledTimes(2);
+      expect(mockAttachWebHlsEngine.mock.calls[1][1]).toBe(masterUrl);
+      // And the player was left alone - one reload, not two competing ones.
+      expect(player.replaceAsync).not.toHaveBeenCalled();
+    });
+
+    it('does not refinance the retry budget on a flapping connection', async () => {
+      // Without a settling period, one brief resumption per stall would hand
+      // the full budget back every time and the "bounded" retry would be
+      // unbounded in practice.
+      const { view, video, player } = await renderPlayingItem();
+
+      player.status = 'error';
+      await interrupt(view, video, player);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_ERROR_RECOVERY_DELAYS_MS[0]);
+      });
+      expect(player.replaceAsync).toHaveBeenCalledTimes(1);
+
+      // A flicker of playback, far shorter than the settling period.
+      player.playing = true;
+      player.status = 'readyToPlay';
+      await act(async () => {
+        view.rerender(<DramaFeedItem video={video} {...baseProps} isActive />);
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(TEST_RECOVERY_BUDGET_RESET_MS - 1000);
+      });
+
+      player.status = 'error';
+      await interrupt(view, video, player);
+      await advanceInSteps(PAST_EVERY_DELAY_MS);
+
+      // The budget carried over: 3 total, not 3 more.
+      expect(player.replaceAsync).toHaveBeenCalledTimes(TEST_ERROR_RECOVERY_DELAYS_MS.length);
+      expect(view.getByTestId('feed-item-playback-retry')).toBeTruthy();
     });
   });
 });

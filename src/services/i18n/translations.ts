@@ -340,6 +340,11 @@ const id = {
 
   'feed.videoUnavailable': 'Video tidak tersedia',
   'feed.videoUnavailableHint': 'Periksa koneksi internetmu, lalu coba lagi.',
+  // STREAMING RECOVERY (2026-09-02): shown WHILE a bounded automatic retry
+  // is still owed, in place of the fatal copy above. The ellipsis is load-
+  // bearing: it says the app is still working, which is the one thing a
+  // frozen frame could not say for the ~55 seconds this replaces.
+  'feed.reconnecting': 'Menyambungkan kembali…',
   'feed.signInToPlay': 'Masuk untuk menonton episode ini',
   'feed.signInToPlayHint': 'Episode ini butuh akun yang sudah masuk. Episode gratis tetap bisa diputar tanpa masuk.',
   'feed.signIn': 'Masuk',
@@ -816,6 +821,7 @@ const en: Copy = {
 
   'feed.videoUnavailable': 'Video unavailable',
   'feed.videoUnavailableHint': 'Check your internet connection and try again.',
+  'feed.reconnecting': 'Reconnecting…',
   'feed.signInToPlay': 'Sign in to watch this episode',
   'feed.signInToPlayHint': 'This episode needs a signed-in account. Free episodes play without one.',
   'feed.signIn': 'Sign in',
@@ -1277,6 +1283,7 @@ const zh: Copy = {
 
   'feed.videoUnavailable': '视频不可用',
   'feed.videoUnavailableHint': '请检查网络连接后重试。',
+  'feed.reconnecting': '正在重新连接…',
   'feed.signInToPlay': '登录后观看本集',
   'feed.signInToPlayHint': '本集需要已登录的账号。免费剧集无需登录即可播放。',
   'feed.signIn': '登录',

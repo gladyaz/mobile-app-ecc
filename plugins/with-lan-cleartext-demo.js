@@ -47,9 +47,56 @@ const DEBUG_RESOURCE_RELATIVE_PATH = resourceRelativePath('debug');
  */
 const DEV_SERVER_DOMAINS = ['localhost', '127.0.0.1'];
 
-/** Renders the resource for one source set. Android treats domains as a set. */
+/**
+ * Collapses a domain list to the unique hosts Android will accept, keeping
+ * first-seen order so the generated resource stays deterministic.
+ *
+ * THIS IS LOAD-BEARING, NOT TIDINESS. Android does NOT treat repeated
+ * `<domain>` values as a harmless set - `XmlConfigSource.parseDomain` throws
+ * `ParserException: <host> has already been specified`, which surfaces as
+ * `Failed to parse XML configuration from network_security_config` and kills
+ * the process in `LoadedApk.makeApplicationInner`, BEFORE React Native or any
+ * JavaScript runs. There is no splash, no error screen, and no JS error
+ * boundary that can catch it: the app simply never opens.
+ *
+ * The duplicate is not hypothetical. The debug source set is rendered as
+ * `[host, ...DEV_SERVER_DOMAINS]`, so ANY build whose API host is itself a
+ * dev-server domain - `EXPO_PUBLIC_API_BASE_URL=http://localhost:3000`, the
+ * value this repo ships in `.env` - emitted `localhost` twice and could not
+ * start. Normalising here rather than at the call site means no future caller
+ * can reintroduce it by concatenating one more list.
+ *
+ * Hostnames are case-insensitive, so comparison is done lowercased; empty and
+ * whitespace-only entries are dropped rather than emitted as a `<domain>` that
+ * matches nothing.
+ *
+ * @param {readonly string[]} domains
+ * @returns {string[]} unique, normalised hosts in first-seen order
+ */
+function normalizeDomains(domains) {
+  const seen = new Set();
+
+  return domains.reduce((unique, domain) => {
+    const normalized = String(domain).trim().toLowerCase();
+
+    if (normalized === '' || seen.has(normalized)) {
+      return unique;
+    }
+
+    seen.add(normalized);
+
+    return [...unique, normalized];
+  }, []);
+}
+
+/**
+ * Renders the resource for one source set.
+ *
+ * Every `<domain>` it emits is unique - see `normalizeDomains` for why a
+ * duplicate is a startup crash rather than a cosmetic flaw.
+ */
 function renderNetworkSecurityConfig(domains, note) {
-  const entries = domains
+  const entries = normalizeDomains(domains)
     .map((domain) => `        <domain includeSubdomains="false">${domain}</domain>`)
     .join('\n');
 

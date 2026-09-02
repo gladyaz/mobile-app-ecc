@@ -53,6 +53,105 @@ describe('renderNetworkSecurityConfig', () => {
   });
 });
 
+/**
+ * REGRESSION GUARD for a P0 found by human Android QA (2026-09-01): a debug
+ * build generated with this repo's own `.env`
+ * (`EXPO_PUBLIC_API_BASE_URL=http://localhost:3000`) could not start at all.
+ *
+ *   FATAL EXCEPTION: main
+ *   java.lang.RuntimeException: Unable to instantiate application
+ *   Caused by: Failed to parse XML configuration from network_security_config
+ *   Caused by: XmlConfigSource$ParserException:
+ *              localhost has already been specified at: Binary XML file line #15
+ *
+ * The debug resource is rendered as `[host, ...DEV_SERVER_DOMAINS]`, so when
+ * the API host IS a dev-server domain, `localhost` was emitted twice. Android
+ * rejects a repeated `<domain>` outright and kills the process before React
+ * Native starts - no splash, no JS, nothing catchable.
+ *
+ * The suite missed it because every previous case used a LAN host that could
+ * never collide with `DEV_SERVER_DOMAINS`. These cases pin the collision
+ * itself, so the fix cannot be undone by a caller concatenating another list.
+ */
+describe('duplicate <domain> entries (Android startup crash)', () => {
+  /** Every host Android will actually be asked to parse, in document order. */
+  const domainsIn = (xml) => [...xml.matchAll(/<domain[^>]*>([^<]+)<\/domain>/g)].map((m) => m[1]);
+
+  const countOf = (xml, host) => domainsIn(xml).filter((domain) => domain === host).length;
+
+  test('an API host of localhost yields exactly one localhost and one 127.0.0.1', () => {
+    // Precisely what prebuild renders for the debug source set when
+    // EXPO_PUBLIC_API_BASE_URL=http://localhost:3000.
+    const xml = renderNetworkSecurityConfig(['localhost', ...DEV_SERVER_DOMAINS], DEBUG_NOTE);
+
+    expect(countOf(xml, 'localhost')).toBe(1);
+    expect(countOf(xml, '127.0.0.1')).toBe(1);
+    expect(domainsIn(xml)).toEqual(['localhost', '127.0.0.1']);
+  });
+
+  test('an API host of 127.0.0.1 yields exactly one 127.0.0.1 and one localhost', () => {
+    const xml = renderNetworkSecurityConfig(['127.0.0.1', ...DEV_SERVER_DOMAINS], DEBUG_NOTE);
+
+    expect(countOf(xml, '127.0.0.1')).toBe(1);
+    expect(countOf(xml, 'localhost')).toBe(1);
+    // First-seen order: the API host leads, the dev server follows.
+    expect(domainsIn(xml)).toEqual(['127.0.0.1', 'localhost']);
+  });
+
+  test('a LAN host keeps all three hosts, each exactly once', () => {
+    const xml = renderNetworkSecurityConfig(['192.168.1.10', ...DEV_SERVER_DOMAINS], DEBUG_NOTE);
+
+    expect(domainsIn(xml)).toEqual(['192.168.1.10', 'localhost', '127.0.0.1']);
+    expect(countOf(xml, '192.168.1.10')).toBe(1);
+    expect(countOf(xml, 'localhost')).toBe(1);
+    expect(countOf(xml, '127.0.0.1')).toBe(1);
+  });
+
+  test('the emulator host alias is preserved alongside the dev server', () => {
+    // 10.0.2.2 is the emulator's alias for its host machine - a legitimate
+    // API host that must keep working, not a workaround for this bug.
+    const xml = renderNetworkSecurityConfig(['10.0.2.2', ...DEV_SERVER_DOMAINS], DEBUG_NOTE);
+
+    expect(domainsIn(xml)).toEqual(['10.0.2.2', 'localhost', '127.0.0.1']);
+  });
+
+  test('no rendered config can ever repeat a host, however the list is built', () => {
+    const xml = renderNetworkSecurityConfig(
+      ['localhost', 'LOCALHOST', ' localhost ', '127.0.0.1', '127.0.0.1', ''],
+      DEBUG_NOTE
+    );
+    const domains = domainsIn(xml);
+
+    // Hostnames are case-insensitive and an empty <domain> matches nothing.
+    expect(domains).toEqual(['localhost', '127.0.0.1']);
+    expect(new Set(domains).size).toBe(domains.length);
+  });
+
+  test('the release resource is still a single host and still never localhost', () => {
+    const xml = renderNetworkSecurityConfig([LAN_HOST], MAIN_NOTE);
+
+    expect(domainsIn(xml)).toEqual([LAN_HOST]);
+    expect(xml).not.toContain('localhost');
+    expect(xml).not.toContain('127.0.0.1');
+  });
+
+  test('the generated XML stays valid Android network-security XML', () => {
+    const xml = renderNetworkSecurityConfig(['localhost', ...DEV_SERVER_DOMAINS], DEBUG_NOTE);
+
+    expect(xml.startsWith('<?xml version="1.0" encoding="utf-8"?>')).toBe(true);
+    expect(xml).toContain('<network-security-config>');
+    expect(xml).toContain('</network-security-config>');
+    expect(xml).toContain('<domain-config cleartextTrafficPermitted="true">');
+    expect(xml).toContain('</domain-config>');
+    // Nothing listed here may widen to every host.
+    expect(xml).not.toContain('base-config');
+    // Balanced tags - an unclosed element is the other way to fail the parser.
+    expect(xml.match(/<domain /g)).toHaveLength(xml.match(/<\/domain>/g).length);
+    expect(xml.match(/<domain-config /g)).toHaveLength(1);
+    expect(xml.match(/<\/domain-config>/g)).toHaveLength(1);
+  });
+});
+
 describe('resolveCleartextHost', () => {
   const originalUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
 
@@ -328,6 +427,57 @@ describe('withLanCleartextDemo (the plugin function itself)', () => {
       // build; the whole point of the scoped resource is not to need it.
       expect(application['android:usesCleartextTraffic']).toBeUndefined();
     });
+  });
+
+  /**
+   * End-to-end cover for the P0: this is the exact configuration the repo
+   * ships in `.env`, driven through the real plugin, asserting on the bytes
+   * actually written to disk rather than on a hand-built domain list.
+   */
+  describe('local backend (http://localhost) - the configuration that crashed', () => {
+    beforeEach(() => {
+      process.env.EXPO_PUBLIC_API_BASE_URL = 'http://localhost:3000';
+      withLanCleartextDemo(baseConfig());
+    });
+
+    test('the DEBUG resource names localhost once and 127.0.0.1 once', () => {
+      const { debug } = runAndroidResourceMod();
+      const domains = [...debug.matchAll(/<domain[^>]*>([^<]+)<\/domain>/g)].map((m) => m[1]);
+
+      expect(domains).toEqual(['localhost', '127.0.0.1']);
+      expect(domains.filter((d) => d === 'localhost')).toHaveLength(1);
+      expect(domains.filter((d) => d === '127.0.0.1')).toHaveLength(1);
+      // The literal shape Android's parser rejected.
+      expect(debug).not.toContain(
+        '<domain includeSubdomains="false">localhost</domain>\n' +
+          '        <domain includeSubdomains="false">localhost</domain>'
+      );
+    });
+
+    test('the RELEASE resource still names exactly one host', () => {
+      const { main } = runAndroidResourceMod();
+      const domains = [...main.matchAll(/<domain[^>]*>([^<]+)<\/domain>/g)].map((m) => m[1]);
+
+      expect(domains).toEqual(['localhost']);
+      expect(main).not.toContain('base-config');
+    });
+  });
+
+  test('an https backend still emits no cleartext resource, dedupe or not', () => {
+    // Normalising domains must not have given the production branch a reason
+    // to emit anything. The https path still registers a mod - that mod is the
+    // REMOVAL branch, which cleans up after an earlier LAN prebuild - but it
+    // must never write a config of its own.
+    process.env.EXPO_PUBLIC_API_BASE_URL = 'https://api.redpanda.example';
+    withLanCleartextDemo(baseConfig());
+
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'red-panda-cleartext-'));
+
+    temporaryRoots.push(projectRoot);
+    captured.dangerous[0].action({ modRequest: { platformProjectRoot: projectRoot } });
+
+    expect(exists(projectRoot, RESOURCE_RELATIVE_PATH)).toBe(false);
+    expect(exists(projectRoot, DEBUG_RESOURCE_RELATIVE_PATH)).toBe(false);
   });
 
   test('refuses a malformed backend URL loudly rather than silently skipping the exemption', () => {

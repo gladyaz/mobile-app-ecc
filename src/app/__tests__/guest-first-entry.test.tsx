@@ -293,6 +293,42 @@ describe('guest-first app entry', () => {
     expect(await AsyncStorage.getItem(STORAGE_KEYS.auth)).toBeNull();
   });
 
+  it('is untouched when WhatsApp sign-in is withdrawn from the release', async () => {
+    // WITHDRAWAL REGRESSION (2026-09-03). V1 ships with
+    // EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false, which removes one LOGIN method.
+    // Guest browsing is a different path entirely and must not notice: the
+    // feed is auth-optional, so a change to what the login screen offers has
+    // no business altering whether a signed-out viewer can watch anything.
+    // Pinned because the failure mode would be silent and total - a viewer who
+    // opens the app and finds an empty Home has no way to report "the WhatsApp
+    // flag did this".
+    const previous = process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
+
+    process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = 'false';
+
+    try {
+      const { getByTestId } = await renderApp();
+
+      await waitFor(() => {
+        expect(getByTestId('feed-item-video-1')).toBeTruthy();
+      });
+
+      // Still the same unauthenticated catalog read, still no session.
+      const feedCalls = mockedRequest.mock.calls.filter(([path]) => path === 'videos/feed');
+
+      expect(feedCalls).toHaveLength(1);
+      expect(feedCalls[0][2]).toBeUndefined();
+      expect(getTokens()).toBeNull();
+      assertNoAuthRedirect();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED;
+      } else {
+        process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = previous;
+      }
+    }
+  });
+
   it('adopts a restored session without re-routing, so hydration cannot loop', async () => {
     // L: asynchronous auth restoration must not bounce the viewer between
     // Home and an auth route. The feed is already up before hydration

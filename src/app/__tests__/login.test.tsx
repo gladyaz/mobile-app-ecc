@@ -669,6 +669,44 @@ describe('form input behaviour survives the focus treatment', () => {
       expect(getByTestId('login-submit')).toBeTruthy();
     });
 
+    it('ships the V1 RELEASE login profile: no WhatsApp, Google still offered', async () => {
+      // THE PROFILE THIS RELEASE ACTUALLY SHIPS (decided 2026-09-03), pinned as
+      // one case because the risk is not either half on its own - it is the
+      // COMBINATION silently becoming "no providers at all". Withdrawing
+      // WhatsApp is deliberate: no Meta WhatsApp Business sender exists, so a
+      // deployed backend can only answer 503 WHATSAPP_AUTH_DISABLED, and an
+      // absent method is honester than a button that always fails. Google is
+      // the method that does work, so it must survive that withdrawal.
+      process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = 'false';
+
+      const { getByTestId, queryByTestId } = await render(<LoginScreen />);
+
+      expect(queryByTestId('login-whatsapp')).toBeNull();
+      expect(getByTestId('login-google')).toBeTruthy();
+      // ...and the provider block itself is still rendered, rather than
+      // collapsing to the empty-divider state the case below describes.
+      expect(getByTestId('login-submit')).toBeTruthy();
+    });
+
+    it('leaves the withdrawn WhatsApp route intact, so re-offering it is configuration only', async () => {
+      // The kill switch gates the ENTRY POINT, never the implementation: the
+      // route, the service and their suites are untouched. This is what makes
+      // restoring the method a `.env` change and a rebuild rather than a
+      // revert - and it is why the withdrawal is safe to take for one release.
+      process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = 'false';
+
+      const { queryByTestId } = await render(<LoginScreen />);
+
+      expect(queryByTestId('login-whatsapp')).toBeNull();
+
+      // Flipping the flag back is the whole restoration - no code changes.
+      process.env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED = 'true';
+
+      const restored = await render(<LoginScreen />);
+
+      expect(restored.getByTestId('login-whatsapp')).toBeTruthy();
+    });
+
     it('hides the whole provider block when no provider can be offered', async () => {
       // With nothing to put under it, the "or continue with" divider is just a
       // heading over empty space.

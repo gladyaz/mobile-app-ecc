@@ -24,6 +24,8 @@ const {
   evaluateReleaseContract,
   collectImportSpecifiers,
   EXPECTED_ANDROID_PACKAGE,
+  WHATSAPP_WITHDRAWAL_ACK_VAR,
+  WHATSAPP_WITHDRAWAL_ACK_VALUE,
   GOOGLE_SAMPLE_ADMOB_PUBLISHER,
   ANDROID_DATA_EXTRACTION_PLUGIN,
   REQUIRED_EXTRACTION_DOMAINS,
@@ -325,11 +327,128 @@ describe('release contract: a release cannot ship with sample AdMob ids', () => 
   });
 });
 
-describe('release contract: a release cannot ship with WhatsApp Login withdrawn', () => {
-  it('blocks EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false, because WhatsApp Login is required in V1', () => {
+describe('release contract: WhatsApp Login may be withdrawn, but only on purpose', () => {
+  /**
+   * THE RULE THIS SUITE PINS (decided 2026-09-03).
+   *
+   * `EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false` used to be an unconditional
+   * blocker. It no longer is - not because the risk went away, but because the
+   * risk was never the withdrawal itself. A release owner may correctly decide
+   * not to offer a login method whose server half has no credentials: the
+   * deployed backend can only answer 503 WHATSAPP_AUTH_DISABLED, and an absent
+   * method is honester than a button that always fails.
+   *
+   * The risk is INHERITING that withdrawal from a stale `.env` nobody re-read.
+   * So the kill switch says what the binary does, and a second, non-public
+   * variable says a human meant it - and the two may not disagree.
+   */
+  const WITHDRAWN = {
+    EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED: 'false',
+    [WHATSAPP_WITHDRAWAL_ACK_VAR]: WHATSAPP_WITHDRAWAL_ACK_VALUE,
+  };
+
+  it('ACCEPTS an intentionally withdrawn WhatsApp: acknowledged, so not a blocker', () => {
+    // The exact configuration the V1 release ships. This is the case that has
+    // to open the gate; if it does not, the release cannot be cut.
+    expect(blockerTitles(evaluate({ env: WITHDRAWN }))).toEqual([]);
+  });
+
+  it('still SAYS SO, loudly, rather than passing in silence', () => {
+    // Accepting is not the same as hiding. The artifact's login screen has one
+    // method fewer than the V1 scope document describes, so the preflight has
+    // to report that every single time - a release owner reading the output
+    // must not have to already know to look for it.
+    const titles = evaluate({ env: WITHDRAWN }).warnings.map((entry) => entry.title);
+
+    expect(titles).toContain('WhatsApp sign-in is deliberately WITHDRAWN from this release');
+    // And it must not ALSO claim the method is offered - that would describe
+    // the opposite artifact from the one being built.
+    expect(titles).not.toContain(
+      'WhatsApp sign-in is offered (EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED is not "false")'
+    );
+  });
+
+  it('blocks a withdrawal nobody acknowledged, which is the stale-.env case', () => {
+    // Unchanged from the original rule, and the whole reason the
+    // acknowledgement exists rather than simply deleting the blocker.
     expectBlocked(
       evaluate({ env: { EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED: 'false' } }),
       /^EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false$/
+    );
+  });
+
+  it('blocks an acknowledgement that contradicts the flag it is meant to explain', () => {
+    // Ack set, kill switch not - the release notes would say "withdrawn"
+    // while the artifact ships the button. Whichever half a release owner
+    // happened to read, they would be wrong about what ships.
+    expectBlocked(
+      evaluate({ env: { [WHATSAPP_WITHDRAWAL_ACK_VAR]: WHATSAPP_WITHDRAWAL_ACK_VALUE } }),
+      new RegExp(`^${WHATSAPP_WITHDRAWAL_ACK_VAR} is set but `)
+    );
+  });
+
+  it('accepts ONLY the exact acknowledgement value, so a truthy-looking string cannot open the gate', () => {
+    for (const value of ['true', 'yes', '1', 'INTENTIONAL', 'intentional ', '']) {
+      expectBlocked(
+        evaluate({
+          env: {
+            EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED: 'false',
+            [WHATSAPP_WITHDRAWAL_ACK_VAR]: value,
+          },
+        }),
+        /^EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false$/
+      );
+    }
+  });
+
+  it('makes re-enabling WhatsApp demand the real Meta production configuration again', () => {
+    // The withdrawal must not become a way to LOSE the credential debt. A
+    // later release that clears both variables gets the owed-credentials
+    // warning back, naming the Meta values and the end-to-end OTP that is
+    // still owed - it does not inherit a quiet gate from this release.
+    const reEnabled = evaluate({
+      env: { EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED: undefined, [WHATSAPP_WITHDRAWAL_ACK_VAR]: undefined },
+    });
+
+    expect(blockerTitles(reEnabled)).toEqual([]);
+
+    const owed = reEnabled.warnings.find((entry) =>
+      entry.title.startsWith('WhatsApp sign-in is offered')
+    );
+
+    expect(owed).toBeDefined();
+    expect(owed.detail).toMatch(/CREDENTIALS/);
+    expect(owed.detail).toMatch(/Meta values are configured server-side/);
+    expect(owed.detail).toMatch(/one end-to-end\s+OTP to a handset you control is still owed/);
+  });
+
+  it('does NOT let a withdrawal weaken the client-integrity rules behind it', () => {
+    // The entry point is gated; the implementation is not deleted, and must
+    // still be real - otherwise "withdrawn" would become a place for a faked
+    // client to hide until someone re-enables the method.
+    expectBlocked(
+      evaluate({
+        env: WITHDRAWN,
+        whatsAppServiceSource: "import { signIn } from '@/services/auth/mock-whatsapp';\n",
+      }),
+      /no longer calls the real OTP endpoints|imports a fake\/mock module/
+    );
+  });
+
+  it('does NOT let a withdrawal weaken any unrelated release check', () => {
+    // Spot-check across three independent rules: the withdrawal must change
+    // exactly one thing about the contract and nothing else.
+    expectBlocked(
+      evaluate({ env: { ...WITHDRAWN, EXPO_PUBLIC_API_BASE_URL: 'http://192.168.1.10:3000' } }),
+      /EXPO_PUBLIC_API_BASE_URL/
+    );
+    expectBlocked(
+      evaluate({ env: { ...WITHDRAWN, EXPO_PUBLIC_DEMO_MODE: 'true' } }),
+      /EXPO_PUBLIC_DEMO_MODE=true/
+    );
+    expectBlocked(
+      evaluate({ env: { ...WITHDRAWN, EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: undefined } }),
+      /EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID/
     );
   });
 

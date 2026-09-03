@@ -64,6 +64,29 @@ const GOOGLE_PLACEHOLDER_PATTERN =
   /^1234567890-|your[-_.]?(web|ios|client)|placeholder|changeme|change[-_]me|<[^>]*>|xxxx|\btodo\b|\bdummy\b/i;
 
 /**
+ * The release profile's explicit, deliberate withdrawal of WhatsApp sign-in.
+ *
+ * WHY AN ACKNOWLEDGEMENT RATHER THAN SIMPLY HONOURING THE KILL SWITCH: the
+ * danger `EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false` was blocked for is not the
+ * withdrawal itself. A release owner may legitimately decide not to offer a
+ * login method whose server half has no credentials yet - an absent method is
+ * honest, while an offered one that can only answer 503 is a dead end at the
+ * moment a first-time viewer is deciding whether the app works at all. The
+ * danger is INHERITING that withdrawal from a stale `.env` nobody re-read, and
+ * shipping a V1 with one fewer login method than anyone intended.
+ *
+ * Two variables separate those cases: the kill switch says what the BINARY
+ * does, this says that a human MEANT it, for this release. Neither alone is
+ * enough, and they may not disagree.
+ *
+ * Deliberately NOT an `EXPO_PUBLIC_*` name: it is a statement about the release
+ * process, not a value the app reads, and that prefix would inline it into the
+ * shipped JavaScript bundle.
+ */
+const WHATSAPP_WITHDRAWAL_ACK_VAR = 'RELEASE_WHATSAPP_WITHDRAWN';
+const WHATSAPP_WITHDRAWAL_ACK_VALUE = 'intentional';
+
+/**
  * Payment rails, card processors and store-billing bridges. Kept identical to
  * `src/services/entitlement/__tests__/v1-payment-boundary.test.ts`, which
  * guards the same boundary from the source side. Deliberately does NOT include
@@ -492,18 +515,61 @@ function evaluateReleaseContract(facts) {
     );
   }
 
-  // WHATSAPP LOGIN. A confirmed V1 method, offered by default. The flag is a
-  // kill switch; using it in a V1 release withdraws a required feature.
-  if (env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED === 'false') {
+  // WHATSAPP LOGIN. A V1 login method, offered by default. The flag is a kill
+  // switch, and the flag ALONE does not decide this rule: the PAIR does.
+  //
+  //   false + acknowledged -> withdrawn on purpose. Warned, never silent.
+  //   false alone          -> blocked, on exactly the reasoning it always was:
+  //                           a withdrawal inherited from a stale `.env` ships
+  //                           a V1 with a login method nobody meant to drop.
+  //   acknowledged alone   -> blocked. The two halves contradict each other.
+  const isWhatsAppWithdrawn = env.EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED === 'false';
+  const isWhatsAppWithdrawalAcknowledged =
+    env[WHATSAPP_WITHDRAWAL_ACK_VAR] === WHATSAPP_WITHDRAWAL_ACK_VALUE;
+
+  if (isWhatsAppWithdrawn && isWhatsAppWithdrawalAcknowledged) {
+    // Reported every time, because it is not a detail: this artifact's login
+    // screen has one method fewer than the V1 scope document describes.
+    warning(
+      'WhatsApp sign-in is deliberately WITHDRAWN from this release',
+      `${WHATSAPP_WITHDRAWAL_ACK_VAR}=${WHATSAPP_WITHDRAWAL_ACK_VALUE} records this as a release ` +
+        'decision rather than a stale flag, so it is not a blocker - but be clear about what ' +
+        'ships: NO WhatsApp option appears on the login screen ' +
+        '(src/services/auth/provider-availability.ts), and Google sign-in is the only provider ' +
+        'a viewer can complete. That is the intended behaviour while the Meta WhatsApp Business ' +
+        'sender and its four production values do not exist, because a deployed backend can ' +
+        'only answer 503 WHATSAPP_AUTH_DISABLED. Nothing is deleted: the routes, the services ' +
+        'and their tests are untouched, so restoring the method is a configuration change and a ' +
+        'rebuild. To restore it clear BOTH variables - and expect the credential warning below ' +
+        'to return in its place, because configuring the server is still owed.'
+    );
+  } else if (isWhatsAppWithdrawn) {
+    // Withdrawn, but nobody said so. Blocked on exactly the original
+    // reasoning, and NOT described by the "offered" warning below - that
+    // warning would name the opposite artifact from the one being built.
     blocker(
       'EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false',
-      'WhatsApp Login is a REQUIRED V1 feature and this flag withdraws its entry point ' +
-        'entirely (src/services/auth/provider-availability.ts) - the login screen would ship ' +
-        'with no WhatsApp option at all. Leave it unset or "true" for V1. It exists as a kill ' +
-        'switch for a deliberate rollback, which is a decision to take on purpose and not one ' +
-        'to inherit from a stale .env.'
+      'This flag withdraws the WhatsApp entry point entirely ' +
+        '(src/services/auth/provider-availability.ts) - the login screen would ship with no ' +
+        'WhatsApp option at all. That can be a correct release decision, but it is not one to ' +
+        'inherit from a stale .env, so it has to be stated: set ' +
+        `${WHATSAPP_WITHDRAWAL_ACK_VAR}=${WHATSAPP_WITHDRAWAL_ACK_VALUE} alongside it to confirm ` +
+        'this release means to ship without WhatsApp sign-in. Clear both to offer the method.'
     );
   } else {
+    if (isWhatsAppWithdrawalAcknowledged) {
+      // The two declarations disagree about the same release. Whichever one a
+      // release owner happened to read, they would be wrong about what ships.
+      blocker(
+        `${WHATSAPP_WITHDRAWAL_ACK_VAR} is set but EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED is not "false"`,
+        'These two say opposite things about this build. The acknowledgement records that ' +
+          'WhatsApp sign-in was withdrawn on purpose, while the kill switch leaves its button ' +
+          'on the login screen - so the artifact offers a method the release notes call ' +
+          'withdrawn. Set EXPO_PUBLIC_WHATSAPP_AUTH_ENABLED=false to actually withdraw it, or ' +
+          `clear ${WHATSAPP_WITHDRAWAL_ACK_VAR} to offer it.`
+      );
+    }
+
     // Offered, which is correct - but the SERVER half is a credential the
     // repository cannot supply or verify. Still a warning, not a blocker.
     warning(
@@ -1297,6 +1363,8 @@ module.exports = {
   isGoogleSampleAdMobId,
   isUsableLegalUrl,
   EXPECTED_ANDROID_PACKAGE,
+  WHATSAPP_WITHDRAWAL_ACK_VAR,
+  WHATSAPP_WITHDRAWAL_ACK_VALUE,
   GOOGLE_SAMPLE_ADMOB_PUBLISHER,
   GOOGLE_WEB_CLIENT_ID_PATTERN,
   PAYMENT_SDK_PATTERN,
